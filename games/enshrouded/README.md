@@ -1,8 +1,11 @@
 # Takaro Enshrouded Connector
 
-A server-side-only connector (plugin **0.4.2** + sidecar) that connects an Enshrouded dedicated
+A server-side-only connector (plugin + sidecar) that connects an Enshrouded dedicated
 server to Takaro. Tested against game build **1024233** (Steam build 23178631) running in the
 `mornedhels/enshrouded-server` Docker image; players do not install anything.
+
+The plugin alone cannot talk to Takaro, and the sidecar alone cannot read player positions,
+inventories, items or entities. Install both.
 
 ## Install
 
@@ -15,52 +18,81 @@ You need:
   Wine/Proton. The plugin is a **Windows DLL**, so a native Windows dedicated server should work the
   same way, but that has never been tried — only the Linux/Wine container is verified.
 - **Docker** with the Compose plugin on the same host (the sidecar runs as a container that shares
-  the game container's network).
-- **zig 0.13** to build the plugin (see step 2 — there is no download).
+  the game container's network). Node.js 22 on the host works too — see step 3.
 - A **Takaro account** with a game server created of type **Generic**, and its **registration
   token** (Takaro shows it when you create the game server).
 
-### 2. Get the plugin and the sidecar
+Nothing has to be compiled: both parts are published as release assets.
 
-**There is no tagged release yet** — nothing is published on the releases page, and the repository
-contains no prebuilt `dbghelp.dll` and no published Docker image. Both parts are built from this
-repository:
+### 2. Download
 
-```bash
-git clone https://github.com/gettakaro/connectors.git
-cd connectors/games/enshrouded
-./mod/build.sh            # -> mod/build/dbghelp.dll  (needs zig 0.13; set ZIG=/path/to/zig)
-```
+From the latest `enshrouded-vX.Y.Z` release on the releases page:
 
-The sidecar is not built by hand: `docker-compose.example.yml` builds it from `sidecar/` with
-`docker compose ... up -d --build` in step 5.
+> https://github.com/gettakaro/connectors/releases
+
+Download both files:
+
+- **`takaro-enshrouded-plugin.zip`** — the game-server plugin (`dbghelp.dll` proxy)
+- **`takaro-enshrouded-sidecar.zip`** — the sidecar that talks to Takaro
+
+Direct link pattern:
+`https://github.com/gettakaro/connectors/releases/download/enshrouded-v<version>/takaro-enshrouded-plugin.zip`
+
+The two **"Source code (zip/tar.gz)"** links GitHub adds to every release are an archive of this
+whole repository, not the connector — do not download those. Also do not use the `enshrouded-dev`
+pre-release or a `pr-<number>-enshrouded` build; those are untested rolling builds.
 
 ### 3. Copy it into place
 
-The plugin is the file `mod/build/dbghelp.dll`. It is loaded by the game server as a **dbghelp
-proxy**, so it has to sit next to `enshrouded_server.exe` and the server has to be told to prefer
-it over the system copy.
+Stop the game server first — a running server holds `dbghelp.dll` open.
 
-With the example compose file, put it in the plugin mount directory:
+**Plugin.** `takaro-enshrouded-plugin.zip` contains one folder:
 
 ```
-games/enshrouded/
+TakaroEnshrouded/
+    dbghelp.dll
+    README.txt
+```
+
+The game server loads `dbghelp.dll` as a **dbghelp proxy**, so it has to sit next to
+`enshrouded_server.exe` and the server has to be told to prefer it over the system copy. With
+`docker-compose.example.yml`, copy **the DLL itself** (not the folder around it) to
+`data/enshrouded-plugin/dbghelp.dll`.
+
+**Sidecar.** `takaro-enshrouded-sidecar.zip` contains one folder, `TakaroEnshroudedSidecar/`, with
+`dist/`, `package.json`, `package-lock.json`, `Dockerfile`, `.dockerignore`, `.env.example` and
+`README.release.txt`. `docker-compose.example.yml` builds the sidecar image from `./sidecar`, so
+unzip it next to the compose file and **rename the folder to `sidecar`**:
+
+```
+<your compose dir>/
     docker-compose.example.yml
     .env
+    sidecar/                   <- TakaroEnshroudedSidecar renamed
+        Dockerfile
+        dist/
+        package.json
+        package-lock.json
     data/
         enshrouded/            (game server data, created by the container)
         enshrouded-plugin/
-            dbghelp.dll        <- the file you just built
+            dbghelp.dll        <- from takaro-enshrouded-plugin.zip
         enshrouded-sidecar/    (sidecar cursor/online state, created by the container)
 ```
 
 ```bash
 mkdir -p data/enshrouded-plugin data/enshrouded-sidecar
-cp mod/build/dbghelp.dll data/enshrouded-plugin/
+cp /path/to/TakaroEnshrouded/dbghelp.dll data/enshrouded-plugin/
+mv /path/to/TakaroEnshroudedSidecar ./sidecar
 ```
 
-The compose file bind-mounts it **read-only** to `/opt/enshrouded/server/dbghelp.dll`, so SteamCMD
-updates of the game cannot overwrite or delete it, and sets
+If you would rather not use Docker for the sidecar, run it with Node.js 22 instead:
+`npm ci --omit=dev && node dist/index.js`, with the same environment variables the compose service
+sets (see `README.release.txt` inside the zip). It must reach the plugin on
+`http://127.0.0.1:18890`, i.e. run on the game server's network.
+
+The compose file bind-mounts the DLL **read-only** to `/opt/enshrouded/server/dbghelp.dll`, so
+SteamCMD updates of the game cannot overwrite or delete it, and sets
 `WINEDLLOVERRIDES: "dbghelp=n,b"` on the game container so the server loads this DLL instead of the
 system one. If you use your own compose file or a native Windows server, you must reproduce both of
 those yourself.
@@ -104,12 +136,15 @@ docker compose -f docker-compose.example.yml logs -f
 In the plugin's own log, `data/enshrouded/server/takaro/plugin.log`:
 
 ```
-takaro enshrouded plugin 0.4.2 starting (pid ...)
+takaro enshrouded plugin <version> starting (pid ...)
 http: token from env TAKARO_PLUGIN_TOKEN
 http: listening on 127.0.0.1:18890
 game build: 1024233
 capabilities: {...}
 ```
+
+`<version>` is the release you downloaded — that line is how you confirm which plugin build is
+actually loaded.
 
 If you see `http: WARNING no token configured; all requests will be rejected with 401`, the shared
 secret did not reach the game container — re-check `TAKARO_ENSHROUDED_PLUGIN_TOKEN` in `.env`.
@@ -134,16 +169,18 @@ means a game update moved code the plugin hooks (see Known issues).
 **Stop the game container first** — the running server holds `dbghelp.dll` open.
 
 ```bash
-./mod/build.sh
 docker compose -f docker-compose.example.yml stop enshrouded
-cp mod/build/dbghelp.dll data/enshrouded-plugin/dbghelp.dll
+# replace the DLL in place, keeping the bind mount valid
+cp /path/to/new/TakaroEnshrouded/dbghelp.dll data/enshrouded-plugin/dbghelp.dll
+# replace the sidecar folder with the new one, then rebuild
+rm -rf sidecar && mv /path/to/new/TakaroEnshroudedSidecar ./sidecar
 docker compose -f docker-compose.example.yml up -d --build
 ```
 
-Replacing the DLL in place keeps the bind mount valid. Your `.env`, the world in `data/enshrouded/`
-and the sidecar state in `data/enshrouded-sidecar/` (event cursor, online players) survive the
-upgrade — keep the cursor file so events are not replayed. Rebuilding with `--build` also picks up
-a newer sidecar.
+Download both zips from the same release and upgrade them together. Your `.env`, the world in
+`data/enshrouded/` and the sidecar state in `data/enshrouded-sidecar/` (event cursor, online
+players) survive the upgrade — keep the cursor file so events are not replayed. Confirm the new
+version in the `takaro enshrouded plugin <version> starting` log line.
 
 ## What works, what doesn't
 
