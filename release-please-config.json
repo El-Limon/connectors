@@ -55,6 +55,14 @@
       "component": "conan-exiles",
       "changelog-path": "CHANGELOG.md"
     },
+    "games/enshrouded": {
+      "release-type": "simple",
+      "component": "enshrouded",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        { "type": "generic", "path": "mod/src/common.h" }
+      ]
+    },
     "games/terraria": {
       "release-type": "simple",
       "component": "terraria",
