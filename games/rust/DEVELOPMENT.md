@@ -37,27 +37,32 @@ Everything lives in one file: `mod/TakaroConnector.cs`.
 
 ### Quick start
 
-```bash
-# Configure (from repo root)
-cp .env.example .env
-# Edit .env: set TAKARO_WS_URL and TAKARO_REGISTRATION_TOKEN
+The Rust test server runs in the shared dev rig under `dev-servers/` — there is no per-game
+compose file here any more.
 
-# Build and start the Rust server (first build downloads ~6GB)
-cd games/rust
-docker compose up -d rust
+```bash
+# Configure (from repo root), one time
+cp dev-servers/.env.example dev-servers/.env
+# Edit dev-servers/.env: set TAKARO_WS_URL and TAKARO_REGISTRATION_TOKEN
+
+# Install and start the Rust server (first install downloads ~6GB)
+just dev-install rust
+just dev-start rust
 
 # Wait for the server to finish booting (first boot takes several minutes)
-# Check with: docker compose logs -f rust | grep "Server startup complete"
+# Check with: just dev-logs rust | grep "Server startup complete"
 
 # Deploy plugin
-./scripts/deploy.sh
+just dev-deploy rust
 
 # Hot-reload
-./scripts/reload.sh
+cd games/rust && ./scripts/reload.sh
 ```
 
-`docker-compose.yml` mounts `_data/plugins` at `/rust/carbon/plugins`, so `deploy.sh` just copies
-`mod/TakaroConnector.cs` into `_data/plugins/`.
+`dev-servers/compose/rust.yml` mounts `dev-servers/_data/rust/plugins` at `/rust/carbon/plugins`,
+so deploying just copies `mod/TakaroConnector.cs` into that directory.
+`games/rust/scripts/deploy.sh` is a thin wrapper around
+`dev-servers/scripts/deploy-connector.sh rust`.
 
 ### Environment variables
 
@@ -65,9 +70,9 @@ docker compose up -d rust
 |----------|-------------|---------|
 | `TAKARO_WS_URL` | Takaro WebSocket endpoint | `wss://connect.takaro.io/` |
 | `TAKARO_REGISTRATION_TOKEN` | Server registration token | (required) |
-| `TAKARO_IDENTITY_TOKEN` | Unique server identity | `takaro-rust-dev` |
+| `TAKARO_IDENTITY_TOKEN` | Unique server identity | `takaro-dev-rust` |
 | `TAKARO_DEBUG` | Enable debug logging | `false` |
-| `RCON_PASSWORD` | RCON password (dev only) | `takaro123` |
+| `RCON_PASSWORD` | RCON password (dev only) | (required, set in `dev-servers/.env`) |
 
 ### Edit loop
 
@@ -76,11 +81,11 @@ docker compose up -d rust
 vim mod/TakaroConnector.cs
 
 # Deploy and reload (no build step — Carbon compiles .cs at runtime)
-./scripts/deploy.sh
+just dev-deploy rust
 ./scripts/reload.sh  # requires Node.js v22+
 
 # View logs
-just rust-logs
+just dev-logs rust
 ```
 
 ## Build and release

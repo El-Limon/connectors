@@ -67,21 +67,9 @@ terraria-bridge-build:
 
 # === Rust Connector ===
 
-# Start the Rust dev server
-rust-up *args:
-    cd games/rust && docker compose up {{args}}
-
-# Stop the Rust dev server
-rust-down *args:
-    cd games/rust && docker compose down {{args}}
-
-# View Rust server logs
-rust-logs *args='--tail 100 -f':
-    cd games/rust && docker compose logs {{args}}
-
-# Deploy the Rust plugin to the dev server
+# Deploy the Rust plugin to the dev-servers rig
 rust-deploy:
-    cd games/rust && ./scripts/deploy.sh
+    ./dev-servers/scripts/deploy-connector.sh rust
 
 # Hot-reload the Rust plugin via RCON
 rust-reload:
@@ -97,27 +85,15 @@ minecraft-build *args:
 minecraft-build-module module *args:
     cd games/minecraft/mod && ./gradlew :{{module}}:build {{args}}
 
-# Start Minecraft dev server(s)
-minecraft-up *args:
-    cd games/minecraft && docker compose up {{args}}
-
-# Stop Minecraft dev server(s)
-minecraft-down *args:
-    cd games/minecraft && docker compose down {{args}}
-
-# View Minecraft server logs
-minecraft-logs *args='--tail 100 -f':
-    cd games/minecraft && docker compose logs {{args}}
-
-# Deploy Minecraft JARs to dev server(s)
+# Deploy Minecraft JARs to the dev-servers rig (platform: paper|neoforge|fabric)
 minecraft-deploy platform:
-    cd games/minecraft && ./scripts/deploy.sh {{platform}}
+    ./dev-servers/scripts/deploy-connector.sh minecraft-{{platform}}
 
 # Reload Minecraft plugin via RCON
 minecraft-reload platform:
     cd games/minecraft && ./scripts/reload.sh {{platform}}
 
-# Start the Minecraft test bot
+# Start the Minecraft test bot (the only service left in games/minecraft/docker-compose.yml)
 minecraft-bot-up *args:
     cd games/minecraft && docker compose up bot {{args}}
 
@@ -131,9 +107,9 @@ sevend2d-setup:
 sevend2d-build:
     cd games/7d2d && ./scripts/build-mod.sh
 
-# Build and deploy the 7D2D mod to the local test server
+# Build the 7D2D mod and deploy it into the dev-servers rig
 sevend2d-build-deploy:
-    cd games/7d2d && ./scripts/build-mod.sh deploy
+    ./dev-servers/scripts/deploy-connector.sh 7d2d
 
 # Run the Generic Connector protocol contract harness
 sevend2d-test-contract:
@@ -143,15 +119,15 @@ sevend2d-test-contract:
 sevend2d-test-regressions:
     python3 -m unittest tests/test_7d2d_connector_regressions.py
 
-# Start the 7D2D dev services
+# Start the 7D2D build services (steamcmd/builder/deps; the test server lives in dev-servers/)
 sevend2d-up *args:
     cd games/7d2d && docker compose up {{args}}
 
-# Stop the 7D2D dev services
+# Stop the 7D2D build services
 sevend2d-down *args:
     cd games/7d2d && docker compose down {{args}}
 
-# View 7D2D service logs
+# View 7D2D build service logs
 sevend2d-logs *args='--tail 100 -f':
     cd games/7d2d && docker compose logs {{args}}
 
