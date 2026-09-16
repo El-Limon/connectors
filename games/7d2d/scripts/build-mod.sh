@@ -24,9 +24,7 @@ if [ "$MODE" == "deploy" ]; then
   cp -r ./_data/build/Mods/Takaro/* ./_data/ServerFiles/Mods/Takaro/
   echo "Mod deployed to game server."
 
-  # Optional: restart server if running
-  if docker compose ps -q 7dtdserver &>/dev/null; then
-    echo "Restarting game server to apply changes..."
-    docker compose restart 7dtdserver
-  fi
+  # The test server no longer lives in this compose file. To build and deploy
+  # straight into the shared dev rig (and restart it), run:
+  #   ./dev-servers/scripts/deploy-connector.sh 7d2d
 fi

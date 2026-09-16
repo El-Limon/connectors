@@ -23,24 +23,6 @@ services:
       - ./_data/lib:/app/lib
     command: ["bash", "-c", "echo 'Builder container ready' && tail -f /dev/null"]
 
-  # Game server service (for reference/testing)
-  7dtdserver:
-    image: vinanrra/7dtd-server@sha256:2e5349ee7589a0a8623d6fcd4dfe9e1e922323f8a75fb4d9cc45db09e5c25943
-    environment:
-      - START_MODE=3
-      - PUID=1000
-      - PGID=1000
-      - TimeZone=Europe/Brussels
-      - VERSION=stable
-    volumes:
-      - ./_data/ServerFiles:/home/sdtdserver/serverfiles/
-      - ./_data/7DaysToDie:/home/sdtdserver/.local/share/7DaysToDie/
-      - ./_data/7d2d-log:/home/sdtdserver/log/
-    ports:
-      - "26900-26902:26900-26902/udp"
-      - "26900:26900/tcp"
-      - "8080-8083:8080-8083/tcp"
-
   # Dependency service for fetching and building dependencies
   deps:
     build:

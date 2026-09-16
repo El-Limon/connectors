@@ -44,47 +44,56 @@ Release artifacts are collected by `scripts/build-release.sh <version> <out-dir>
 `.github/workflows/minecraft.yml` runs in CI before publishing the jars to the
 `minecraft-v<version>` release.
 
-## Run servers with Docker Compose
+## Run servers
 
-> **Legacy.** The `games/minecraft/docker-compose.yml` environment below (including the Mineflayer
-> bot) is kept for connector development only. The live rig is `dev-servers/` — see
-> [dev-servers/README.md](../../dev-servers/README.md) — which runs Fabric on 26.2 / Java 25 and
-> Paper/NeoForge on 1.21.11 / Java 21.
+The Minecraft dev servers live in the shared rig `dev-servers/` — see
+[dev-servers/README.md](../../dev-servers/README.md). It runs Fabric on 26.2 / Java 25 and
+Paper/NeoForge on 1.21.11 / Java 21. The per-game compose file that used to be here is gone;
+`games/minecraft/docker-compose.yml` now contains only the Mineflayer test bot, which has no rig
+equivalent yet.
 
 ```bash
-# Copy and fill in your Takaro credentials (from repo root)
-cp ../.env.example ../.env
+# Copy and fill in your Takaro credentials (from repo root), one time
+cp dev-servers/.env.example dev-servers/.env
 
-# Start all 3 servers
-docker compose up -d
+# Install and start a platform
+just dev-install minecraft-paper
+just dev-start minecraft-paper
 
-# Or start a specific platform
-docker compose up -d paper
+# Repeat for minecraft-neoforge / minecraft-fabric as needed
+just dev-logs minecraft-paper
 ```
 
-| Service | Platform | Game Port | RCON Port |
-|---------|----------|-----------|-----------|
-| paper | Paper | 25565 | 25575 |
-| neoforge | NeoForge | 25566 | 25576 |
-| fabric | Fabric | 25567 | 25577 |
+| Rig game | Platform | Container | Game Port | RCON Port |
+|----------|----------|-----------|-----------|-----------|
+| minecraft-paper | Paper | takaro-dev-minecraft-paper | 25565 | 25575 |
+| minecraft-neoforge | NeoForge | takaro-dev-minecraft-neoforge | 25566 | 25576 |
+| minecraft-fabric | Fabric | takaro-dev-minecraft-fabric | 25567 | 25577 |
 
-RCON password: `takaro123`
+RCON password: set `RCON_PASSWORD` in `dev-servers/.env`.
+
+### Mineflayer test bot
+
+```bash
+just minecraft-bot-up
+```
+
+The bot joins the rig servers over the host network on the ports above.
 
 ## Deploy and reload
 
 ```bash
-# Build and deploy to Paper
-just minecraft-build
-just minecraft-deploy paper
+# Build and deploy to Paper (builds from the working tree into the rig)
+just dev-deploy minecraft-paper
 
-# Repeat for other platforms as needed (neoforge, fabric)
+# Repeat for other platforms as needed (minecraft-neoforge, minecraft-fabric)
 
 just minecraft-reload paper
 ```
 
 > **Note:** `just minecraft-reload` (which calls `scripts/reload.sh`) only works for **Paper**. For
-> NeoForge and Fabric, use `docker compose restart neoforge` or `docker compose restart fabric`
-> instead.
+> NeoForge and Fabric, restart the rig server instead:
+> `just dev-stop minecraft-neoforge && just dev-start minecraft-neoforge`.
 
 ## Configuration
 
@@ -107,7 +116,7 @@ container gets a hardcoded `TAKARO_IDENTITY_TOKEN` (e.g. `takaro-paper-dev`).
 Each platform has its own config format and location. In the Docker Compose rig these live under
 `_data/<platform>/`; on a real server they are relative to the server directory (see the README).
 
-**Paper** (`_data/paper/plugins/TakaroMinecraft/config.yml`):
+**Paper** (`dev-servers/_data/minecraft-paper/plugins/TakaroMinecraft/config.yml`):
 
 ```yaml
 takaro:
@@ -124,7 +133,7 @@ takaro:
   debug: false
 ```
 
-**NeoForge** (`_data/neoforge/config/takaro.properties`):
+**NeoForge** (`dev-servers/_data/minecraft-neoforge/config/takaro.properties`):
 
 ```properties
 takaro.websocket.url=wss://connect.takaro.io/
@@ -133,7 +142,7 @@ takaro.authentication.registration_token=your-registration-token
 takaro.debug=false
 ```
 
-**Fabric** (`_data/fabric/config/takaro.json`):
+**Fabric** (`dev-servers/_data/minecraft-fabric/config/takaro.json`):
 
 ```json
 {
@@ -157,7 +166,7 @@ games/minecraft/
 │   └── fabric/     # Fabric adapter
 ├── bot/            # Mineflayer test bot
 ├── scripts/        # Build-release, deploy, reload scripts
-└── docker-compose.yml
+└── docker-compose.yml  # Mineflayer test bot only (servers live in dev-servers/)
 ```
 
 `core` owns `TakaroConnector`, `TakaroWebSocketClient`, `TakaroConfig` and the `GameAdapter` /
