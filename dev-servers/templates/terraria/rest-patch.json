@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "Merged into the config.json TShock generates on first boot by",
+    "dev-servers/scripts/install.sh — we patch rather than replace so this",
+    "survives TShock schema changes. Result lands in",
+    "_data/terraria/tshock/config.json, which is gitignored.",
+    "The Terraria connector plugin has no Takaro config of its own; Takaro",
+    "talks to TShock over this REST API.",
+    "ApplicationRestTokens maps token -> {Username, UserGroupName}."
+  ],
+  "Settings": {
+    "ServerName": "${SERVER_NAME}",
+    "MaxSlots": ${TERRARIA_MAXPLAYERS},
+    "RestApiEnabled": true,
+    "RestApiPort": 7878,
+    "LogRest": false,
+    "EnableTokenEndpointAuthentication": false,
+    "RESTMaximumRequestsPerInterval": 500,
+    "RESTRequestBucketDecreaseIntervalMinutes": 1,
+    "ApplicationRestTokens": {
+      "${TERRARIA_REST_TOKEN}": {
+        "Username": "takaro",
+        "UserGroupName": "superadmin"
+      }
+    }
+  }
+}

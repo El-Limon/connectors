@@ -1,0 +1,26 @@
+---
+name: takaro-dev-valheim
+
+services:
+  valheim:
+    image: lloesche/valheim-server:latest
+    container_name: takaro-dev-valheim
+    cap_add:
+      - SYS_NICE
+    stop_grace_period: 2m
+    ports:
+      - "2456-2457:2456-2457/udp"
+    environment:
+      SERVER_NAME: "${VALHEIM_SERVER_NAME:-Takaro Dev Valheim}"
+      WORLD_NAME: "${VALHEIM_WORLD_NAME:-TakaroDev}"
+      SERVER_PASS: "${VALHEIM_SERVER_PASSWORD:?set VALHEIM_SERVER_PASSWORD (min 5 chars) in dev-servers/.env}"
+      SERVER_PORT: "2456"
+      SERVER_PUBLIC: "false"
+      # Installs BepInExPack Valheim into /config/bepinex on first boot. The
+      # Takaro plugin and its com.takaro.valheim.cfg are placed there by
+      # install.sh / deploy-connector.sh — the connector has no env-var config.
+      BEPINEX: "true"
+    volumes:
+      - ../_data/valheim/config:/config
+      - ../_data/valheim/server:/opt/valheim
+    restart: unless-stopped

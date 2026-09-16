@@ -1,0 +1,26 @@
+---
+name: takaro-dev-7d2d
+
+services:
+  7d2d:
+    image: vinanrra/7dtd-server:latest
+    container_name: takaro-dev-7d2d
+    environment:
+      START_MODE: "3"
+      PUID: "${DEV_UID:-1000}"
+      PGID: "${DEV_GID:-1000}"
+      TimeZone: "${TZ:-Etc/UTC}"
+      VERSION: "stable"
+      # The Takaro mod reads <server cwd>/Takaro/Config.xml, not the environment.
+      # install.sh renders that file into _data/7d2d/ServerFiles/Takaro/Config.xml.
+    volumes:
+      - ../_data/7d2d/ServerFiles:/home/sdtdserver/serverfiles/
+      - ../_data/7d2d/7DaysToDie:/home/sdtdserver/.local/share/7DaysToDie/
+      - ../_data/7d2d/log:/home/sdtdserver/log/
+    ports:
+      - "26900:26900/tcp"
+      - "26900-26902:26900-26902/udp"
+      # Web dashboard / telnet shifted off 8080 so they cannot collide with
+      # anything else on a dev box.
+      - "127.0.0.1:8180-8182:8080-8082/tcp"
+    restart: unless-stopped

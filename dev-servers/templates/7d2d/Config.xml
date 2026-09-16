@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Rendered by dev-servers/scripts/install.sh into
+  _data/7d2d/ServerFiles/Takaro/Config.xml.
+  The mod reads <server cwd>/Takaro/Config.xml; it has no environment-variable
+  configuration. Pre-rendering this avoids the start/stop/edit/restart dance.
+-->
+<Takaro>
+  <WebSocket>
+    <Url>${TAKARO_WS_URL}</Url>
+    <IdentityToken>${IDENTITY_TOKEN}</IdentityToken>
+    <RegistrationToken>${TAKARO_REGISTRATION_TOKEN}</RegistrationToken>
+    <Enabled>true</Enabled>
+    <ReconnectIntervalSeconds>30</ReconnectIntervalSeconds>
+  </WebSocket>
+</Takaro>
