@@ -1,0 +1,43 @@
+name: takaro-dev-zomboid
+services:
+  zomboid:
+    image: renegademaster/zomboid-dedicated-server:latest
+    container_name: takaro-dev-zomboid
+    restart: unless-stopped
+    stop_grace_period: 2m
+    ports:
+      - "16261:16261/udp"
+      - "16262:16262/udp"
+      - "127.0.0.1:25582:27015/tcp"
+    environment:
+      SERVER_NAME: Takaro Dev Zomboid
+      SERVER_PASSWORD: "${ZOMBOID_SERVER_PASSWORD:?required}"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: "${ZOMBOID_ADMIN_PASSWORD:?required}"
+      RCON_PASSWORD: "${ZOMBOID_RCON_PASSWORD:?required}"
+      RCON_PORT: "27015"
+      MAX_RAM: 8192m
+      MAX_PLAYERS: "16"
+      GAME_VERSION: public
+      UDP_PORT: "16262"
+      TZ: Europe/Brussels
+      # Takaro connector: injected into the PZ server JVM. The native launcher
+      # (ProjectZomboid64 -> JNI_CreateJavaVM) has no JAVA_OPTS knob, and the
+      # install dir is reverted by SteamCMD validate on every start, so the
+      # agent lives in the persistent cache-dir mount and is injected here.
+      JAVA_TOOL_OPTIONS: "-javaagent:/home/steam/Zomboid/Takaro/TakaroConnector.jar"
+      # Connector config. The agent's ConfigLoader reads these env vars and lets
+      # them OVERRIDE any Zomboid/Takaro/TakaroConfig.txt, so this is the single
+      # source of truth (env-var connector, like Minecraft/Rust).
+      TAKARO_WS_URL: "${TAKARO_WS_URL:-wss://connect.takaro.io/}"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_ZOMBOID:-takaro-dev-zomboid}"
+      TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:-}"
+      TAKARO_DEBUG: "${TAKARO_DEBUG:-false}"
+    volumes:
+      - ../_data/zomboid/config:/home/steam/Zomboid
+      - ../_data/zomboid/server:/home/steam/ZomboidDedicatedServer
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

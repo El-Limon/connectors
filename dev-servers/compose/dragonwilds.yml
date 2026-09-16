@@ -1,0 +1,77 @@
+# RuneScape: Dragonwilds — TAKARO DEV RIG (disposable).
+#
+# Host UDP port: 7797 — Conan Exiles already publishes 7787/udp, which
+# `just dev-validate` rejects as a collision.
+name: takaro-dev-dragonwilds
+services:
+  dragonwilds:
+    build: ../images/dragonwilds
+    image: takaro-dev-dragonwilds:latest
+    container_name: takaro-dev-dragonwilds
+    restart: unless-stopped
+    stop_grace_period: 2m
+    ports:
+      - "7797:7777/udp"
+    environment:
+      SERVER_PORT: "7777"
+      TZ: Europe/Brussels
+      # The server owner's EOS Player ID (client Settings, bottom). If left empty the
+      # server idles on L_ServerStartup with an "[OwnerId] ... empty" warning.
+      OWNER_ID: "${DRAGONWILDS_OWNER_ID:-}"
+      SERVER_NAME: "Takaro Dev Dragonwilds"
+      DEFAULT_WORLD_NAME: "TakaroDev"
+      WORLD_PASSWORD: "${DRAGONWILDS_DEV_WORLD_PASSWORD:?required}"
+      ADMIN_PASSWORD: "${DRAGONWILDS_DEV_ADMIN_PASSWORD:?required}"
+      # The rig is version-locked on purpose: the joining client must match.
+      ENABLE_AUTO_UPDATE: "false"
+      BACKUP_DAILY: "false"
+      BACKUP_AFTER_UPDATE: "false"
+      ENABLE_DISCORD_NOTIF: "false"
+      TAKARO_PLUGIN_TOKEN: "${TAKARO_DRAGONWILDS_PLUGIN_TOKEN:?required}"
+      # Consumed by the patched entrypoint wrapper: LD_PRELOAD on the game binary only.
+      TAKARO_PLUGIN_SO: /opt/takaro/libtakaro-dragonwilds.so
+    volumes:
+      - ../_data/dragonwilds-dev:/home/ubuntu/Steam
+      # The DIRECTORY is mounted read-only (not the .so itself) so compose still starts
+      # while the plugin does not exist yet, and so SteamCMD `validate` can never touch it.
+      - ../_data/dragonwilds-plugin:/opt/takaro:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Takaro sidecar (connector bridge). Shares the game container's network namespace so the
+  # plugin's loopback-only API (127.0.0.1:18890) is reachable and never exposed on the host.
+  # Behind the `sidecar` profile: the source tree does not exist yet, and `up -d` without the
+  # profile must not try to build it.
+  dragonwilds-takaro:
+    build: ${DRAGONWILDS_SIDECAR_SRC:-../../games/dragonwilds/sidecar}
+    image: takaro-dragonwilds-sidecar:dev
+    container_name: takaro-dev-dragonwilds-sidecar
+    restart: unless-stopped
+    network_mode: "service:dragonwilds"
+    depends_on:
+      - dragonwilds
+    profiles: ["sidecar"]
+    environment:
+      TAKARO_WS_URL: "${TAKARO_WS_URL:-wss://connect.takaro.io/}"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_DRAGONWILDS:-takaro-dev-dragonwilds}"
+      TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:?required}"
+      TAKARO_SERVER_NAME: "Takaro Dev Dragonwilds"
+      TAKARO_PLUGIN_URL: "http://127.0.0.1:18890"
+      TAKARO_PLUGIN_TOKEN: "${TAKARO_DRAGONWILDS_PLUGIN_TOKEN:?required}"
+      DRAGONWILDS_LOG_FILE: /home/ubuntu/Steam/RSDragonwilds/Saved/Logs/RSDragonwilds.log
+      DRAGONWILDS_LOG_TAIL: "auto"
+      DRAGONWILDS_LOG_EVENTS: "${DRAGONWILDS_LOG_EVENTS:-filtered}"
+      TAKARO_CURSOR_FILE: /data/event-cursor.json
+      SIDECAR_HEALTH_PORT: "18891"
+      DEBUG: "1"
+    volumes:
+      - ../_data/dragonwilds-dev:/home/ubuntu/Steam:ro
+      - ../_data/dragonwilds-sidecar:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

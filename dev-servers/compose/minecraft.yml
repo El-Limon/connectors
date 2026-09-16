@@ -1,0 +1,67 @@
+---
+name: takaro-dev-minecraft
+
+x-minecraft-common: &minecraft-common
+  image: itzg/minecraft-server:java21
+  restart: unless-stopped
+  tty: true
+  stdin_open: true
+  environment: &minecraft-env
+    EULA: "TRUE"
+    VERSION: "${MINECRAFT_VERSION:-1.21.11}"
+    MEMORY: "${MINECRAFT_MEMORY:-2G}"
+    ENABLE_RCON: "true"
+    RCON_PORT: "25575"
+    ONLINE_MODE: "false"
+    RCON_PASSWORD: "${RCON_PASSWORD:?set RCON_PASSWORD in dev-servers/.env}"
+    TAKARO_WS_URL: "${TAKARO_WS_URL:-wss://connect.takaro.io/}"
+    TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:-}"
+    TAKARO_DEBUG: "${TAKARO_DEBUG:-false}"
+
+services:
+  paper:
+    <<: *minecraft-common
+    profiles: ["paper"]
+    container_name: takaro-dev-minecraft-paper
+    ports:
+      - "25565:25565/tcp"
+      - "127.0.0.1:25575:25575"
+    environment:
+      <<: *minecraft-env
+      TYPE: "PAPER"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_PAPER:-takaro-dev-paper}"
+    volumes:
+      - ../_data/minecraft/paper:/data
+
+  neoforge:
+    <<: *minecraft-common
+    profiles: ["neoforge"]
+    container_name: takaro-dev-minecraft-neoforge
+    ports:
+      - "25566:25565/tcp"
+      - "127.0.0.1:25576:25575"
+    environment:
+      <<: *minecraft-env
+      TYPE: "NEOFORGE"
+      NEOFORGE_VERSION: "beta"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_NEOFORGE:-takaro-dev-neoforge}"
+    volumes:
+      - ../_data/minecraft/neoforge:/data
+
+  fabric:
+    <<: *minecraft-common
+    # MC 26.2 requires Java 25.
+    image: itzg/minecraft-server:java25
+    profiles: ["fabric"]
+    container_name: takaro-dev-minecraft-fabric
+    ports:
+      - "25567:25565/tcp"
+      - "127.0.0.1:25577:25575"
+    environment:
+      <<: *minecraft-env
+      VERSION: "${MINECRAFT_FABRIC_VERSION:-26.2}"
+      TYPE: "FABRIC"
+      MODRINTH_PROJECTS: "fabric-api"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_FABRIC:-takaro-dev-fabric}"
+    volumes:
+      - ../_data/minecraft/fabric:/data

@@ -1,0 +1,35 @@
+---
+name: takaro-dev-terraria
+
+services:
+  terraria:
+    image: ghcr.io/pryaxis/tshock:stable
+    container_name: takaro-dev-terraria
+    stdin_open: true
+    tty: true
+    ports:
+      - "7777:7777/tcp"
+      - "127.0.0.1:7878:7878"
+    # The image entrypoint already sets -configpath /tshock -worldselectpath
+    # /worlds -additionalplugins /plugins; these args autocreate the world so
+    # the server never blocks on the interactive world-selection prompt.
+    command:
+      - "-world"
+      - "/worlds/${TERRARIA_WORLD_NAME:-TakaroDev}.wld"
+      - "-worldname"
+      - "${TERRARIA_WORLD_NAME:-TakaroDev}"
+      - "-autocreate"
+      - "${TERRARIA_WORLD_SIZE:-1}"
+      - "-difficulty"
+      - "${TERRARIA_DIFFICULTY:-0}"
+      - "-maxplayers"
+      - "${TERRARIA_MAXPLAYERS:-8}"
+      - "-port"
+      - "7777"
+    volumes:
+      # config.json (with the REST token Takaro uses) is rendered by install.sh
+      - ../_data/terraria/tshock:/tshock
+      - ../_data/terraria/worlds:/worlds
+      # TakaroTerrariaEvents.dll is deployed here by deploy-connector.sh
+      - ../_data/terraria/plugins:/plugins
+    restart: unless-stopped

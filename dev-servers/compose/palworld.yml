@@ -1,0 +1,45 @@
+---
+name: takaro-dev-palworld
+
+services:
+  palworld:
+    image: thijsvanloef/palworld-server-docker:latest
+    container_name: takaro-dev-palworld
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "8211:8211/udp"
+      - "27016:27015/udp"
+      - "127.0.0.1:8212:8212/tcp"
+      - "127.0.0.1:25581:25575/tcp"
+    environment:
+      PUID: "${DEV_UID:-1000}"
+      PGID: "${DEV_GID:-1000}"
+      PORT: "8211"
+      QUERY_PORT: "27015"
+      PLAYERS: "${PALWORLD_MAXPLAYERS:-8}"
+      SERVER_NAME: "${PALWORLD_SERVER_NAME:-Takaro Dev Palworld}"
+      MULTITHREADING: "true"
+      COMMUNITY: "false"
+      # The Takaro bridge drives the REST API, so it must be on.
+      RCON_ENABLED: "true"
+      RCON_PORT: "25575"
+      REST_API_ENABLED: "true"
+      REST_API_PORT: "8212"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?set ADMIN_PASSWORD in dev-servers/.env}"
+    volumes:
+      - ../_data/palworld/server:/palworld
+
+  palworld-bridge:
+    build:
+      context: ../images/palworld-bridge
+    container_name: takaro-dev-palworld-bridge
+    depends_on:
+      - palworld
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      # TakaroConfig.txt (contains the registration token) is rendered by
+      # install.sh and lives only under _data/. The bridge reads it from cwd.
+      - ../_data/palworld/bridge/TakaroConfig.txt:/bridge/TakaroConfig.txt
+    restart: unless-stopped

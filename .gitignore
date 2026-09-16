@@ -41,3 +41,13 @@ docs/plans/
 **/qa/
 CLAUDE.md
 CONTEXT.md
+
+# dev-servers rig: data and secrets never committed
+dev-servers/_data/
+dev-servers/.env
+dev-servers/.env.*
+!dev-servers/.env.example
+dev-servers/**/*.bak-*
+dev-servers/ADDITIONAL-SERVERS.md
+dev-servers/compose/*-*.yml
+!dev-servers/compose/conan-exiles.yml

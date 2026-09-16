@@ -1,0 +1,17 @@
+# Real credentials — never commit
+.env
+.env.*
+!.env.example
+
+# Backups of configs and credentials
+*.bak-*
+
+# Persistent game data, world saves, rendered runtime configs
+_data/
+
+# Private/local-only server definitions and notes.
+# Only the shared dev-rig compose files are tracked; any other local variant
+# (compose/<game>-<something>.yml) stays out of the repo.
+ADDITIONAL-SERVERS.md
+compose/*-*.yml
+!compose/conan-exiles.yml

@@ -1,0 +1,50 @@
+---
+name: takaro-dev-conan-exiles
+
+services:
+  conan-exiles:
+    build:
+      context: ../images/conan-exiles
+    container_name: takaro-dev-conan-exiles
+    ports:
+      # Shifted off Conan's 7777/7778 defaults so no row in the dev-servers
+      # port map is ambiguous next to Terraria's 7777/tcp.
+      - "7787:7777/udp"
+      - "7788:7778/udp"
+      - "27015:27015/udp"
+      - "127.0.0.1:25580:25575"
+    environment:
+      RCON_PASSWORD: "${RCON_PASSWORD:?set RCON_PASSWORD in dev-servers/.env}"
+      CONAN_GAME_PORT: "7777"
+      CONAN_QUERY_PORT: "27015"
+      CONAN_RCON_PORT: "25575"
+    volumes:
+      - ../_data/conan-exiles/server:/conan
+    restart: unless-stopped
+
+  conan-bridge:
+    image: node:22-slim
+    container_name: takaro-dev-conan-bridge
+    working_dir: /bridge/app
+    depends_on:
+      - conan-exiles
+    ports:
+      - "127.0.0.1:3010:3010"
+    environment:
+      BRIDGE_CONFIG: "/bridge/config/TakaroConfig.txt"
+      NODE_ENV: "production"
+    volumes:
+      # The connector itself, built on the host by deploy-connector.sh
+      # (npm ci && npm run build). Read-only: the container never writes here.
+      - ../../conan-exiles:/bridge/app:ro
+      # The sidecar's logger does mkdirSync("logs") in its working directory,
+      # which fails against the read-only source mount above. Give it a writable
+      # path so the source can stay read-only.
+      - ../_data/conan-exiles/logs:/bridge/app/logs
+      # TakaroConfig.txt (contains the registration token) is rendered by
+      # install.sh and lives only under _data/.
+      - ../_data/conan-exiles/bridge:/bridge/config
+      # Log tailing for chat/log events; matches logFiles in TakaroConfig.txt.
+      - ../_data/conan-exiles/server/ConanSandbox/Saved/Logs:/bridge/logs:ro
+    command: ["node", "dist/index.js"]
+    restart: unless-stopped

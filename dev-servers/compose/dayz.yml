@@ -1,0 +1,92 @@
+name: takaro-dev-dayz
+services:
+  # DayZ Linux dedicated server (Steam app 223350). Game files are NOT downloaded
+  # by this image — the depot requires a Steam account that owns DayZ — they are
+  # pre-fetched into _data/dayz/server. See images/dayz/entrypoint.sh.
+  dayz:
+    build:
+      context: ../images/dayz
+    image: takaro-dev-dayz:latest
+    container_name: takaro-dev-dayz
+    restart: unless-stopped
+    stop_grace_period: 90s
+    # tcpdump inside the game netns is the oracle for "did Enfusion RestApi open a
+    # socket to the sidecar?".
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    ports:
+      - "2302-2306:2302-2306/udp"
+      # Host 27116, not 27016: palworld already publishes 27016/udp. The container
+      # (and therefore serverDZ.cfg steamQueryPort) keeps DayZ's default 27016.
+      - "27116:27016/udp"
+      # BattlEye RCON: a second, game-side oracle. Loopback-only, never exposed.
+      - "127.0.0.1:2310:2310/udp"
+    environment:
+      DAYZ_HOSTNAME: "Takaro Dev DayZ"
+      DAYZ_PASSWORD: "${DAYZ_SERVER_PASSWORD:?required}"
+      DAYZ_ADMIN_PASSWORD: "${DAYZ_ADMIN_PASSWORD:?required}"
+      DAYZ_RCON_PASSWORD: "${DAYZ_RCON_PASSWORD:?required}"
+      DAYZ_MAX_PLAYERS: "8"
+      # M3b (2026-09-14): BattlEye CANNOT be turned off on DayZServer 1.29 Linux.
+      # BattlEye=0 in serverDZ.cfg is ignored: BE still initialises and kicks a
+      # non-BE client ("Game restart required"). With -bepath pointing at a dir
+      # without beserver_x64.so the server re-installs the .so; if it cannot, it
+      # logs "BattlEye initialization failed" and stalls before "Player connect
+      # enabled". Keep 1 (the default); the entrypoint still enforces this key.
+      DAYZ_BATTLEYE: "${DAYZ_BATTLEYE:-1}"
+      DAYZ_QUERY_PORT: "27016"
+      DAYZ_RCON_PORT: "2310"
+      DAYZ_SERVERMOD: "${DAYZ_SERVERMOD:-@takarointegration}"
+      DAYZ_EXTRA_ARGS: "${DAYZ_EXTRA_ARGS:--dologs -adminlog -netlog -freezecheck -limitFPS=60}"
+      DAYZ_CPU_COUNT: "4"
+      DAYZ_SKIP_UPDATE: "${DAYZ_SKIP_UPDATE:-1}"
+      TZ: Europe/Brussels
+    volumes:
+      - ../_data/dayz/server:/dayz
+      - ../_data/dayz/profiles:/dayz/profiles
+      # Mod folder is swappable (ladder variants A–D) via DAYZ_MOD_DIR/DAYZ_SERVERMOD.
+      # NOT :ro — DayZServer (Linux, 1.29) silently skips every PBO in a read-only
+      # bind-mounted mod dir (M0 finding 2026-09-14: folder is scanned, addons never load).
+      - ${DAYZ_MOD_DIR:-../_data/dayz/mod/@takarointegration}:/dayz/${DAYZ_SERVERMOD:-@takarointegration}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Takaro sidecar. Shares the game container's network namespace so the mod's
+  # Enfusion RestApi calls to 127.0.0.1:8088 reach it over loopback — a
+  # cross-container hop over a bridge network does not work here.
+  dayz-takaro:
+    build:
+      context: ${DAYZ_BRIDGE_SRC:-../../games/dayz/DayZ-Bridge}
+      dockerfile: ${DAYZ_BRIDGE_DOCKERFILE:-../../../dev-servers/images/dayz-bridge/Dockerfile}
+    image: takaro-dayz-bridge:dev
+    container_name: takaro-dev-dayz-bridge
+    restart: unless-stopped
+    network_mode: "service:dayz"
+    depends_on:
+      - dayz
+    environment:
+      TAKARO_WS_URL: "${TAKARO_WS_URL:-wss://connect.takaro.io/}"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_DAYZ:-takaro-dev-dayz}"
+      TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:?required}"
+      TAKARO_SERVER_NAME: "Takaro Dev DayZ"
+      BRIDGE_LOCAL_PORT: "8088"
+      BRIDGE_BIND_ADDR: "127.0.0.1"
+      BRIDGE_CONFIG: /data/TakaroConfig.txt
+      DEBUG: "${TAKARO_DEBUG_DAYZ:-1}"
+      DAYZ_LOG_DIR: /profiles   # M1: enables `log` events (F9)
+      # M3: exit (-> restart policy) if the mod stops polling for 60 s, e.g. after the
+      # game container restarted into a new netns that this sidecar is not in.
+      BRIDGE_POLL_WATCHDOG_SEC: "60"
+    volumes:
+      - ../_data/dayz/bridge:/data
+      # RPT/ADM logs, read-only — the sidecar tails them for `log` events (F9).
+      - ../_data/dayz/profiles:/profiles:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

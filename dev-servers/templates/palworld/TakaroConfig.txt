@@ -1,0 +1,20 @@
+# Rendered by dev-servers/scripts/install.sh into
+# _data/palworld/bridge/TakaroConfig.txt
+
+# ── Takaro connection ────────────────────────────────────────────────────────
+SERVER_NAME=${SERVER_NAME}
+REGISTRATION_TOKEN=${TAKARO_REGISTRATION_TOKEN}
+
+# HTTP endpoint for the TakaroChat UE4SS mod. That mod is Windows-only, so on
+# this Linux box nothing connects to it — see dev-servers/README.md.
+HTTP_PORT=3001
+
+# Do not announce bridge updates in-game on a test server.
+ANNOUNCE_UPDATES=false
+
+# ── Palworld REST API ────────────────────────────────────────────────────────
+# Reached over the compose network, not the host.
+PALWORLD_HOST=palworld
+PALWORLD_PORT=8212
+PALWORLD_USERNAME=admin
+PALWORLD_PASSWORD=${ADMIN_PASSWORD}
