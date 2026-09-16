@@ -33,6 +33,9 @@ jobs:
       terraria_released: ${{ steps.rp.outputs['games/terraria--release_created'] }}
       terraria_tag: ${{ steps.rp.outputs['games/terraria--tag_name'] }}
       terraria_version: ${{ steps.rp.outputs['games/terraria--version'] }}
+      enshrouded_released: ${{ steps.rp.outputs['games/enshrouded--release_created'] }}
+      enshrouded_tag: ${{ steps.rp.outputs['games/enshrouded--tag_name'] }}
+      enshrouded_version: ${{ steps.rp.outputs['games/enshrouded--version'] }}
     steps:
       # Author Release PRs as takaro-ci-bot[bot] instead of GITHUB_TOKEN. PRs/commits made
       # with GITHUB_TOKEN don't fire downstream events, so the required `conventional-title`
@@ -136,3 +139,15 @@ jobs:
     with:
       version: ${{ needs.release-please.outputs.terraria_version }}
       tag: ${{ needs.release-please.outputs.terraria_tag }}
+
+  release-enshrouded:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.enshrouded_released == 'true' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/enshrouded.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.release-please.outputs.enshrouded_version }}
+      tag: ${{ needs.release-please.outputs.enshrouded_tag }}

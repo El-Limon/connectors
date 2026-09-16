@@ -142,5 +142,22 @@ Status from live testing against Takaro (oracle: Takaro MCP), last updated 2026-
 
 ## Releases
 
-There is no Enshrouded release workflow and no tagged release yet: the plugin is built from source
-with `mod/build.sh` and the sidecar image is built from `sidecar/` by compose.
+Releases are cut by release-please (`release-please-config.json`, package `games/enshrouded`,
+component `enshrouded`, tags `enshrouded-vX.Y.Z`). Merging a conventional commit that touches
+`games/enshrouded/**` opens/updates a `chore(main): release enshrouded X.Y.Z` PR; merging that PR
+tags the release and bumps both `games/enshrouded/version.txt` and the annotated
+`#define TAKARO_PLUGIN_VERSION "X.Y.Z" // x-release-please-version` line in `mod/src/common.h`,
+so the plugin's `takaro enshrouded plugin <version> starting` log line always matches the tag.
+
+`.github/workflows/enshrouded.yml` does the building. It runs the sidecar tests plus
+`mod/tests/run.sh` on every PR/push, cross-compiles `dbghelp.dll` with a sha256-pinned zig 0.13.0
+and packages two assets via `scripts/build-release.sh` and `scripts/build-sidecar-release.sh`:
+
+- `takaro-enshrouded-plugin.zip` — `TakaroEnshrouded/dbghelp.dll` + `README.txt`
+- `takaro-enshrouded-sidecar.zip` — `TakaroEnshroudedSidecar/` with `dist/`, `package.json`,
+  `package-lock.json`, `Dockerfile`, `.dockerignore`, `.env.example`, `README.release.txt`
+
+Where they go depends on the trigger (`scripts/release-params.sh`): a PR gets a disposable
+`pr-<n>-enshrouded` pre-release plus a sticky PR comment, a push to main refreshes the rolling
+`enshrouded-dev` pre-release, and a release-please release calls this workflow through
+`release-please.yml`'s `release-enshrouded` job to attach both zips to the real tag.
