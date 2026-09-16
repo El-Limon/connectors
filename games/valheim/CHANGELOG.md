@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.3](https://github.com/gettakaro/connectors/compare/valheim-v3.0.2...valheim-v3.0.3) (2026-09-16)
+
+
+### Miscellaneous Chores
+
+* remove internal plans, handoffs and evidence from the public repo ([#139](https://github.com/gettakaro/connectors/issues/139)) ([a78bfc2](https://github.com/gettakaro/connectors/commit/a78bfc2cc972eeeff40a20177a93996e9c755077))
+
 ## [3.0.2](https://github.com/gettakaro/connectors/compare/valheim-v3.0.1...valheim-v3.0.2) (2026-09-16)
 
 
