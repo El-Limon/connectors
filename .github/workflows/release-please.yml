@@ -33,6 +33,9 @@ jobs:
       terraria_released: ${{ steps.rp.outputs['games/terraria--release_created'] }}
       terraria_tag: ${{ steps.rp.outputs['games/terraria--tag_name'] }}
       terraria_version: ${{ steps.rp.outputs['games/terraria--version'] }}
+      dragonwilds_released: ${{ steps.rp.outputs['games/dragonwilds--release_created'] }}
+      dragonwilds_tag: ${{ steps.rp.outputs['games/dragonwilds--tag_name'] }}
+      dragonwilds_version: ${{ steps.rp.outputs['games/dragonwilds--version'] }}
       enshrouded_released: ${{ steps.rp.outputs['games/enshrouded--release_created'] }}
       enshrouded_tag: ${{ steps.rp.outputs['games/enshrouded--tag_name'] }}
       enshrouded_version: ${{ steps.rp.outputs['games/enshrouded--version'] }}
@@ -151,3 +154,15 @@ jobs:
     with:
       version: ${{ needs.release-please.outputs.enshrouded_version }}
       tag: ${{ needs.release-please.outputs.enshrouded_tag }}
+
+  release-dragonwilds:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.dragonwilds_released == 'true' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/dragonwilds.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.release-please.outputs.dragonwilds_version }}
+      tag: ${{ needs.release-please.outputs.dragonwilds_tag }}
