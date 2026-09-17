@@ -239,7 +239,7 @@ again on the game side.
 | Economy: currency | ✅ | Balances are set, read and debited by Takaro. |
 | Economy: balance / top list in game | ✅ | The in-game economy commands answer in chat. |
 | Discord: game chat → Discord | ✅ | In-game chat is relayed to the linked Discord channel. |
-| Discord: Discord → game chat | ⚠️ | The Discord-to-game hook is installed and fires, but it was never confirmed with a real person's Discord post, so it is not proven. |
+| Discord: Discord → game chat | ✅ | A message posted in the linked Discord channel appears in the game chat as `[D] <name>: <text>`. |
 | Discord: module hook / cronjob posts | ✅ | Module hooks and cronjobs can post to Discord and edit their own messages. |
 | Discord: join/leave notices | ✅ | Join and leave notices posted to Discord by the chat-bridge module. |
 | Discord: no echo of server messages | ✅ | The stock `chatBridge` module re-posts Takaro's own server messages to Discord (a Takaro-core echo affecting every game); the `chatBridgeNoEcho` fork does not. |
@@ -276,8 +276,6 @@ again on the game side.
   ban expires, it is lifted when it comes back.
 - **The entity catalogue is not the full bestiary.** Dragonwilds streams creatures in on demand, so
   only the ones the server has loaded so far are known.
-- **Discord → game chat is not proven.** The hook is installed and fires; it was never confirmed
-  with a real person posting in Discord.
 - **Log events are forwarded but not stored.** Takaro does not keep server log lines as searchable
   events, so they cannot be used in modules.
 - **There is no map.** Takaro does not support map tiles for this connector type.
