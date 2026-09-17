@@ -199,3 +199,11 @@ then goes back to the front of the pending queue and is re-sent in order after t
 Neither the ping interval nor the missed-pong budget is configurable by env — they are
 `TakaroWsClient` options defaulting to `5_000` / `2` in `sidecar/src/takaro/client.ts`. Trade-off: a pong lost after Takaro stored an event re-sends that event, so a duplicate is
 possible within one heartbeat. Proof: `evidence/2026-09-17-l4c-outage-delivery.md`.
+
+## Performance
+
+Measured on the dev rig over three 10-minute windows (no plugin / plugin / plugin after tuning), same
+world, one player online: the game thread went from **10.26 %** CPU without the plugin to **10.46 %**
+with it, and the plugin's own work inside one server tick averages **~3 µs** — about 0.01 % of the
+33 ms tick budget, worst observed tick 2.4 ms. A busy server with many players has never been
+measured, so treat these as a floor. `GET /debug/perf` reports the live figures on any server.
