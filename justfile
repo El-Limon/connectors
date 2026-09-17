@@ -220,6 +220,10 @@ dev-sync *args:
 dev-install-hooks *args:
     ./dev-servers/scripts/install-git-hooks.sh {{args}}
 
+# Declare which games this box is working on and reconcile the running set
+dev-focus *args:
+    ./dev-servers/scripts/focus.sh {{args}}
+
 # Validate every dev-servers compose file and check for port collisions
 dev-validate:
     ./dev-servers/scripts/validate.sh

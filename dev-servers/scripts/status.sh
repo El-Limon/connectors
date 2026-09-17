@@ -84,3 +84,10 @@ printf 'running: %d game(s), ~%d GB of %d GB budget\n' "$running_count" "$runnin
 printf 'host:    %s GB RAM free, %s GB disk free\n' \
     "$(free -g | awk '/^Mem:/ {print $7}')" "$(ds_free_disk_gb)"
 printf 'data:    %s in dev-servers/_data\n' "$(du -sh "$DS_DATA" 2>/dev/null | cut -f1)"
+
+if [ -s "$DS_FOCUS" ]; then
+    printf 'focus:   %s (focus.sh status)\n' \
+        "$(awk 'NF && $1 !~ /^#/ {printf "%s ", $1}' "$DS_FOCUS")"
+else
+    printf 'focus:   (not declared — focus.sh set <game>... to declare this box'"'"'s active set)\n'
+fi

@@ -58,7 +58,9 @@ total=$((running_ram + wanted_ram))
 if [ "$total" -gt "$BUDGET" ] && [ "$FORCE" -ne 1 ]; then
     ds_die "starting ${GAMES[*]} would need ~${total} GB RAM (already running: ~${running_ram} GB${running_list:+ — ${running_list[*]}}).
   That is over DEV_SERVERS_RAM_BUDGET_GB=${BUDGET}.
-  Stop something first (stop.sh <game>), raise the budget in dev-servers/.env, or pass --force."
+  Stop something first (stop.sh <game>), raise the budget in dev-servers/.env, or pass --force.
+  Or declare what this box is working on and let focus do it:
+    dev-servers/scripts/focus.sh add ${GAMES[*]} && dev-servers/scripts/focus.sh apply"
 fi
 
 # ── Start ────────────────────────────────────────────────────────────────────
