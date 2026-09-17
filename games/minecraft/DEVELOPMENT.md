@@ -36,8 +36,8 @@ games/minecraft/mod/buildSrc/                    the conventions that read the r
 ```
 
 The Gradle project is named after the target and reads its own record, so adding a target is adding
-a JSON file and a directory — `settings.gradle.kts` picks it up on its own. The current targets are
-`fabric-26.2`, `paper-1.21.11` and `neoforge-1.21.11`.
+a JSON file and a directory — `settings.gradle.kts` picks it up on its own. `just maint targets list --game minecraft`
+prints the targets that exist right now.
 
 See [catalog/README.md](../../catalog/README.md) for the record format, the fingerprint and how to
 add or retire a target.
