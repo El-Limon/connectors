@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/inputs/fabric-launcher.schema.json",
+  "title": "Fabric server launcher input",
+  "description": "The Fabric meta server-launcher jar for one (game, loader, launcher) triple. Never resolved through a loader listing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "source", "hashOrigin", "gameVersion", "loaderVersion", "launcherVersion", "path", "sha256", "installPath"],
+  "properties": {
+    "kind": {"const": "fabric-launcher"},
+    "source": {"type": "string", "minLength": 1},
+    "hashOrigin": {"enum": ["upstream", "self-recorded"]},
+    "gameVersion": {"type": "string", "minLength": 1},
+    "loaderVersion": {"type": "string", "minLength": 1},
+    "launcherVersion": {"type": "string", "minLength": 1},
+    "path": {"type": "string", "pattern": "^/v2/versions/loader/[^/]+/[^/]+/[^/]+/server/jar$"},
+    "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "size": {"type": "integer", "minimum": 1},
+    "installPath": {"type": "string", "minLength": 1}
+  }
+}

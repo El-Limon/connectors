@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "minecraft",
+  "name": "Minecraft",
+  "connector": "minecraft",
+  "platforms": ["fabric", "paper", "neoforge"],
+  "sources": {
+    "mojang-meta": {"provider": "mojang", "baseUrl": "https://piston-meta.mojang.com"},
+    "mojang-data": {"provider": "mojang", "baseUrl": "https://piston-data.mojang.com"},
+    "fabric-meta": {"provider": "fabric", "baseUrl": "https://meta.fabricmc.net"},
+    "fabric-maven": {"provider": "fabric", "baseUrl": "https://maven.fabricmc.net"}
+  },
+  "build": {
+    "system": "gradle",
+    "projectDir": "games/minecraft/mod",
+    "versionCatalog": "gradle/libs.versions.toml"
+  },
+  "componentRoles": {
+    "server-mod": {
+      "description": "Server-side Takaro mod or plugin loaded by the game server",
+      "artifactPattern": "takaro-minecraft-mod-{target}-{version}.jar"
+    }
+  },
+  "legacyAssetAliases": {},
+  "devServers": {"composeFile": "minecraft.yml"}
+}

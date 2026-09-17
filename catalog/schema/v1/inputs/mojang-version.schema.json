@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/inputs/mojang-version.schema.json",
+  "title": "Mojang version input",
+  "description": "A Mojang piston version manifest plus the dedicated server jar it points at.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "source", "hashOrigin", "version", "javaMajor", "manifest", "server"],
+  "properties": {
+    "kind": {"const": "mojang-version"},
+    "source": {"type": "string", "minLength": 1},
+    "hashOrigin": {"enum": ["upstream", "self-recorded"]},
+    "version": {"type": "string", "minLength": 1},
+    "javaMajor": {"type": "integer", "minimum": 8},
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha1"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^/"},
+        "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "path", "sha1", "size", "installPath"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "pattern": "^/"},
+        "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "size": {"type": "integer", "minimum": 1},
+        "installPath": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
