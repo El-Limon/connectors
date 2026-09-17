@@ -176,41 +176,101 @@ class Wired:
         write_target(self.root, record, target_id)
 
 
+def _fabric_fixture_dirs(record: dict[str, Any]) -> tuple[list[Path], dict[str, Any]] | None:
+    """The stand-in files a Fabric target needs, or ``None`` when this copy has none for it."""
+    revision = record["revision"]
+    mojang_dir = FIXTURES / "upstream/mojang" / revision
+    fabric_dir = FIXTURES / "upstream/fabric" / revision
+    loader_version = record["inputs"]["loader"]["loaderVersion"]
+    api_name = Path(record["inputs"]["fabricApi"]["path"]).name
+    needed = [
+        mojang_dir / "server.jar",
+        mojang_dir / f"{revision}.json",
+        fabric_dir / "launcher.jar",
+        fabric_dir / api_name,
+        fabric_dir / f"fabric-loader-{loader_version}.jar",
+    ]
+    if not all(path.is_file() for path in needed):
+        return None
+    return needed, {"loader_version": loader_version}
+
+
+def _repin_fabric(record: dict[str, Any], upstream: Any) -> bool:
+    """Point one Fabric target's downloads at the fake upstream; False when it cannot be served."""
+    found = _fabric_fixture_dirs(record)
+    if found is None:
+        return False
+    needed, extra = found
+    loader_version = extra["loader_version"]
+    server_bytes, manifest_source, launcher_bytes, api_bytes, loader_bytes = (
+        needed[0].read_bytes(),
+        needed[1],
+        needed[2].read_bytes(),
+        needed[3].read_bytes(),
+        needed[4].read_bytes(),
+    )
+
+    manifest = json.loads(manifest_source.read_text())
+    manifest["downloads"]["server"] = {
+        "sha1": sha1(server_bytes),
+        "size": len(server_bytes),
+        "url": upstream.base_url + record["inputs"]["game"]["server"]["path"],
+    }
+    manifest_bytes = json.dumps(manifest).encode("utf-8")
+
+    revision = record["revision"]
+    game = record["inputs"]["game"]
+    game["manifest"]["path"] = f"/v1/packages/{sha1(manifest_bytes)}/{revision}.json"
+    game["manifest"]["sha1"] = sha1(manifest_bytes)
+    game["server"]["sha1"] = sha1(server_bytes)
+    game["server"]["size"] = len(server_bytes)
+    record["inputs"]["loader"]["sha256"] = sha256(launcher_bytes)
+    record["inputs"]["fabricApi"]["sha256"] = sha256(api_bytes)
+    record["build"]["deps"]["fabric-api"]["sha256"] = sha256(api_bytes)
+    record["build"]["deps"]["fabric-loader"]["sha256"] = sha256(loader_bytes)
+
+    upstream.add(game["manifest"]["path"], manifest_bytes)
+    upstream.add(game["server"]["path"], server_bytes)
+    upstream.add(record["inputs"]["loader"]["path"], launcher_bytes)
+    upstream.add(record["inputs"]["fabricApi"]["path"], api_bytes)
+    upstream.add(
+        f"/net/fabricmc/fabric-loader/{loader_version}/fabric-loader-{loader_version}.jar",
+        loader_bytes,
+    )
+    return True
+
+
+# One re-pinner per platform, so a new platform is served by adding a function here and never
+# by teaching the fixture below about it.
+_REPINNERS: dict[str, Any] = {"fabric": _repin_fabric}
+
+
 @pytest.fixture
 def wired(catalog_copy: Path) -> Any:
-    """Serve tiny stand-ins for the three real downloads and re-pin the catalog to them."""
+    """Serve tiny stand-ins for the real downloads and re-pin every catalog target to them.
+
+    ``catalog validate --online`` walks every non-retired target, so the fake upstream has to
+    answer for all of them, not only the default one. A target this fixture cannot serve --
+    an unknown platform, or one whose stand-in fixtures are not in the tree -- is unlinked from
+    the catalog copy instead, so it never makes an unrelated test fail.
+    """
     from fake_upstream import FakeUpstream
 
+    target_files = sorted((catalog_copy / "catalog/minecraft/targets").glob("*.json"))
+    assert target_files, "the copied catalog has no minecraft targets"
+
     with FakeUpstream() as upstream:
-        record = read_target(catalog_copy)
-        server_bytes = (FIXTURES / "upstream/mojang/26.2/server.jar").read_bytes()
-        launcher_bytes = (FIXTURES / "upstream/fabric/26.2/launcher.jar").read_bytes()
-        api_bytes = (FIXTURES / "upstream/fabric/26.2/fabric-api-0.160.0+26.2.jar").read_bytes()
-        loader_bytes = (FIXTURES / "upstream/fabric/26.2/fabric-loader-0.19.5.jar").read_bytes()
+        repinned = 0
+        for target_file in target_files:
+            record = json.loads(target_file.read_text())
+            repinner = _REPINNERS.get(record["platform"])
+            if repinner is not None and repinner(record, upstream):
+                write_target(catalog_copy, record, record["id"])
+                repinned += 1
+                continue
+            # No stand-ins for this one: drop it from the copy rather than serve it half-pinned.
+            target_file.unlink()
 
-        manifest = json.loads((FIXTURES / "upstream/mojang/26.2/26.2.json").read_text())
-        manifest["downloads"]["server"] = {
-            "sha1": sha1(server_bytes),
-            "size": len(server_bytes),
-            "url": upstream.base_url + record["inputs"]["game"]["server"]["path"],
-        }
-        manifest_bytes = json.dumps(manifest).encode("utf-8")
-
-        game = record["inputs"]["game"]
-        game["manifest"]["path"] = f"/v1/packages/{sha1(manifest_bytes)}/26.2.json"
-        game["manifest"]["sha1"] = sha1(manifest_bytes)
-        game["server"]["sha1"] = sha1(server_bytes)
-        game["server"]["size"] = len(server_bytes)
-        record["inputs"]["loader"]["sha256"] = sha256(launcher_bytes)
-        record["inputs"]["fabricApi"]["sha256"] = sha256(api_bytes)
-        record["build"]["deps"]["fabric-api"]["sha256"] = sha256(api_bytes)
-        record["build"]["deps"]["fabric-loader"]["sha256"] = sha256(loader_bytes)
-        write_target(catalog_copy, record)
+        assert repinned, "no minecraft target could be re-pinned at the fake upstream"
         point_at(catalog_copy, upstream.base_url)
-
-        upstream.add(game["manifest"]["path"], manifest_bytes)
-        upstream.add(game["server"]["path"], server_bytes)
-        upstream.add(record["inputs"]["loader"]["path"], launcher_bytes)
-        upstream.add(record["inputs"]["fabricApi"]["path"], api_bytes)
-        upstream.add("/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar", loader_bytes)
         yield Wired(catalog_copy, upstream)

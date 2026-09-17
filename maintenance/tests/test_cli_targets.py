@@ -44,9 +44,8 @@ def test_list_json_carries_every_summary_field(run: Any) -> None:
     code, payload, _ = run("targets", "list", "--game", "minecraft")
 
     assert code == 0
-    assert payload["count"] == 1
-    row = payload["targets"][0]
-    assert row["id"] == "fabric-26.2"
+    assert payload["count"] >= 1
+    row = next(r for r in payload["targets"] if r["id"] == "fabric-26.2")
     assert row["platform"] == "fabric"
     assert row["revision"] == "26.2"
     assert row["status"] == "maintained"
@@ -67,7 +66,7 @@ def test_list_gha_emits_a_matrix_array(run: Any) -> None:
     assert code == 0
     assert payload.startswith("targets=")
     rows = json.loads(payload.split("=", 1)[1])
-    assert [row["id"] for row in rows] == ["fabric-26.2"]
+    assert "fabric-26.2" in [row["id"] for row in rows]
 
 
 def test_list_filters_by_status(run: Any, catalog_copy: Path) -> None:
@@ -77,7 +76,15 @@ def test_list_filters_by_status(run: Any, catalog_copy: Path) -> None:
     write_target(catalog_copy, record, "fabric-26.1.2")
 
     code, payload, _ = run(
-        "targets", "list", "--game", "minecraft", "--status", "candidate,maintained", repo=catalog_copy
+        "targets",
+        "list",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--status",
+        "candidate,maintained",
+        repo=catalog_copy,
     )
 
     assert code == 0
@@ -92,7 +99,7 @@ def test_list_filters_by_rig_game(run: Any) -> None:
 
 
 def test_list_rig_game_that_matches_nothing_is_empty(run: Any) -> None:
-    code, payload, _ = run("targets", "list", "--rig-game", "minecraft-paper")
+    code, payload, _ = run("targets", "list", "--rig-game", "minecraft-bedrock")
 
     assert code == 0
     assert payload["targets"] == []
@@ -111,7 +118,7 @@ def test_explicit_target_beats_the_declared_default(run: Any, catalog_copy: Path
 def test_no_target_uses_the_single_default(run: Any, catalog_copy: Path) -> None:
     second_target(catalog_copy)
 
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft", repo=catalog_copy)
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", repo=catalog_copy)
 
     assert code == 0
     assert payload["id"] == "fabric-26.2"
@@ -127,7 +134,7 @@ def test_an_unknown_target_exits_three(run: Any) -> None:
 def test_two_defaults_exit_three(run: Any, catalog_copy: Path) -> None:
     second_target(catalog_copy, default=True)
 
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft", repo=catalog_copy)
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", repo=catalog_copy)
 
     assert code == 3
     assert "2 default targets" in payload["error"]
@@ -138,7 +145,7 @@ def test_zero_defaults_exit_three(run: Any, catalog_copy: Path) -> None:
     record["default"] = False
     write_target(catalog_copy, record)
 
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft", repo=catalog_copy)
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", repo=catalog_copy)
 
     assert code == 3
     assert "no default target" in payload["error"]
@@ -163,7 +170,18 @@ def test_resolve_json_carries_the_derived_deployment_facts(run: Any) -> None:
 
 
 def test_resolve_env_prints_exactly_the_documented_keys(run: Any) -> None:
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--format", "env", "--prefix", "MC_FABRIC")
+    code, payload, _ = run(
+        "targets",
+        "resolve",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--format",
+        "env",
+        "--prefix",
+        "MC_FABRIC",
+    )
 
     assert code == 0
     keys = {line.split("=", 1)[0] for line in payload.strip().splitlines()}
@@ -182,6 +200,8 @@ def test_resolve_env_out_file_is_private(run: Any, tmp_path: Path) -> None:
         "resolve",
         "--game",
         "minecraft",
+        "--platform",
+        "fabric",
         "--format",
         "env",
         "--prefix",
@@ -196,7 +216,7 @@ def test_resolve_env_out_file_is_private(run: Any, tmp_path: Path) -> None:
 
 
 def test_resolve_gha_carries_one_key_per_line_plus_env(run: Any) -> None:
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--format", "gha")
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", "--format", "gha")
 
     assert code == 0
     lines = dict(line.split("=", 1) for line in payload.strip().splitlines())

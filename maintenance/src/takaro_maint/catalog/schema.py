@@ -30,6 +30,11 @@ def load_schema(name: str) -> dict[str, Any]:
     return json.loads((paths.schema_dir() / name).read_text(encoding="utf-8"))
 
 
+def has_schema(name: str) -> bool:
+    """Whether ``catalog/schema/v1/<name>`` exists — the kind gate asks before dispatching."""
+    return (paths.schema_dir() / name).is_file()
+
+
 def validator_for(name: str) -> Draft202012Validator:
     schema = load_schema(name)
     return Draft202012Validator(schema, registry=_registry(str(paths.schema_dir())))
