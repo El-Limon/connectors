@@ -11,37 +11,43 @@
 dev-version connector:
     ./scripts/dev-version.sh {{connector}}
 
+# === Maintenance ===
+
+# Run the catalog-driven maintenance command (targets list/resolve, install, build, deploy, verify)
+maint *args:
+    ./maintenance/bin/takaro-maint {{args}}
+
 # Build the Rust connector release artifact locally into <out-dir>
 build-release-rust version out-dir='dist':
-    ./rust/scripts/build-release.sh {{version}} {{out-dir}}
+    ./games/rust/scripts/build-release.sh {{version}} {{out-dir}}
 
 # Build the Minecraft connector release artifacts locally into <out-dir>
 build-release-minecraft version out-dir='dist':
-    ./minecraft/scripts/build-release.sh {{version}} {{out-dir}}
+    ./games/minecraft/scripts/build-release.sh {{version}} {{out-dir}}
 
 # Build the 7D2D connector release artifact locally into <out-dir>
 build-release-7d2d version out-dir='dist':
-    ./7d2d/scripts/build-release.sh {{version}} {{out-dir}}
+    ./games/7d2d/scripts/build-release.sh {{version}} {{out-dir}}
 
 # Build the Project Zomboid connector release artifact locally into <out-dir>
 build-release-zomboid version out-dir='dist':
-    ./zomboid/scripts/build-release.sh {{version}} {{out-dir}}
+    ./games/zomboid/scripts/build-release.sh {{version}} {{out-dir}}
 
 # Build the Conan Exiles connector release artifact locally into <out-dir>
 build-release-conan version out-dir='dist':
-    ./conan-exiles/scripts/build-release.sh {{version}} {{out-dir}}
+    ./games/conan-exiles/scripts/build-release.sh {{version}} {{out-dir}}
 
 # Build the Terraria TShock plugin release artifact locally into <out-dir>
 build-release-terraria version out-dir='dist':
-    ./terraria/scripts/build-release.sh {{version}} {{out-dir}}
+    ./games/terraria/scripts/build-release.sh {{version}} {{out-dir}}
 
 # Build the Terraria bridge release artifact locally into <out-dir>
 build-release-terraria-bridge version out-dir='dist':
-    ./terraria/scripts/build-bridge-release.sh {{version}} {{out-dir}}
+    ./games/terraria/scripts/build-bridge-release.sh {{version}} {{out-dir}}
 
 # Build the Valheim connector release artifacts locally into <out-dir>
 build-release-valheim version out-dir='dist':
-    ./valheim/scripts/build-release.sh {{version}} {{out-dir}}
+    ./games/valheim/scripts/build-release.sh {{version}} {{out-dir}}
 
 # === Terraria Plugin ===
 

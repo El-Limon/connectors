@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/inputs/container-image.schema.json",
+  "title": "Container image input",
+  "description": "An OCI image pinned by an immutable tag and its manifest digest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "image", "tag", "digest"],
+  "properties": {
+    "kind": {"const": "container-image"},
+    "image": {"type": "string", "minLength": 1},
+    "tag": {
+      "type": "string",
+      "pattern": "^[0-9][A-Za-z0-9._-]*$",
+      "description": "Must start with a digit, which rejects floating tags such as latest, stable, beta, java21 and java25."
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "env": {"type": "object", "additionalProperties": {"type": "string"}}
+  }
+}

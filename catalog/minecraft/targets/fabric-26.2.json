@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "id": "fabric-26.2",
+  "game": "minecraft",
+  "platform": "fabric",
+  "revision": "26.2",
+  "default": true,
+  "support": {
+    "status": "maintained",
+    "since": "2026-09-14",
+    "evidence": ["games/minecraft/README.md (What works, what doesn't — verified 2026-09-14 on Fabric 26.2 / Java 25)"],
+    "notes": "Connector 0.1.x was proven end to end on this target."
+  },
+  "inputs": {
+    "game": {
+      "kind": "mojang-version",
+      "source": "mojang-meta",
+      "hashOrigin": "upstream",
+      "version": "26.2",
+      "javaMajor": 25,
+      "manifest": {
+        "path": "/v1/packages/987b91a95ae93b3bb78cc14d6e0bbd31bad08d59/26.2.json",
+        "sha1": "987b91a95ae93b3bb78cc14d6e0bbd31bad08d59"
+      },
+      "server": {
+        "source": "mojang-data",
+        "path": "/v1/objects/823e2250d24b3ddac457a60c92a6a941943fcd6a/server.jar",
+        "sha1": "823e2250d24b3ddac457a60c92a6a941943fcd6a",
+        "size": 60894273,
+        "installPath": "server.jar"
+      }
+    },
+    "loader": {
+      "kind": "fabric-launcher",
+      "source": "fabric-meta",
+      "hashOrigin": "self-recorded",
+      "gameVersion": "26.2",
+      "loaderVersion": "0.19.5",
+      "launcherVersion": "1.1.2",
+      "path": "/v2/versions/loader/26.2/0.19.5/1.1.2/server/jar",
+      "sha256": "f1d2bafd0b3b97630b0cdd8e890cd102db3dbe60877a38a5c813aa929e691127",
+      "installPath": "fabric-server-mc.26.2-loader.0.19.5-launcher.1.1.2.jar"
+    },
+    "fabricApi": {
+      "kind": "maven-artifact",
+      "source": "fabric-maven",
+      "hashOrigin": "self-recorded",
+      "group": "net.fabricmc.fabric-api",
+      "artifact": "fabric-api",
+      "version": "0.160.0+26.2",
+      "path": "/net/fabricmc/fabric-api/fabric-api/0.160.0+26.2/fabric-api-0.160.0+26.2.jar",
+      "sha256": "5f3dff88e1661166e222213302b25ace6c36dc3683804cbd4b5acf93138ea05e",
+      "installPath": "mods/fabric-api-0.160.0+26.2.jar"
+    }
+  },
+  "runtime": {
+    "java": 25,
+    "container": {
+      "kind": "container-image",
+      "image": "itzg/minecraft-server",
+      "tag": "2026.9.1-java25",
+      "digest": "sha256:e8640538dac5d54c2838d57fa9641e735ad0cf2b71fb0e8a68da3b542a315749",
+      "env": {
+        "TYPE": "FABRIC",
+        "VERSION": "26.2",
+        "FABRIC_LOADER_VERSION": "0.19.5",
+        "FABRIC_LAUNCHER_VERSION": "1.1.2",
+        "FABRIC_LAUNCHER": "fabric-server-mc.26.2-loader.0.19.5-launcher.1.1.2.jar"
+      }
+    }
+  },
+  "build": {
+    "system": "gradle",
+    "gradleProject": "fabric-26.2",
+    "javaRelease": 25,
+    "gradleJvm": 25,
+    "gradleVersion": "9.5.1",
+    "toolchain": {
+      "kind": "container-image",
+      "image": "eclipse-temurin",
+      "tag": "25-jdk",
+      "digest": "sha256:010ab2b79329b951bf052dbf515843ab345ae4e4f0ef72287d85c9fa54da275f"
+    },
+    "plugins": {
+      "fabric-loom": "1.17.20",
+      "shadow": "9.4.2"
+    },
+    "deps": {
+      "minecraft": {"coordinate": "com.mojang:minecraft:26.2", "sha256": null},
+      "fabric-loader": {"coordinate": "net.fabricmc:fabric-loader:0.19.5", "sha256": "93044e4dd46de5d8136701292f05e868da096d2c9fddb4793e4fdbcc63efc695"},
+      "fabric-api": {"coordinate": "net.fabricmc.fabric-api:fabric-api:0.160.0+26.2", "sha256": "5f3dff88e1661166e222213302b25ace6c36dc3683804cbd4b5acf93138ea05e"}
+    }
+  },
+  "components": [
+    {"role": "server-mod", "artifact": "takaro-minecraft-mod-fabric-26.2-{version}.jar", "installDir": "mods"}
+  ],
+  "verification": {"required": "protocol", "separate": []},
+  "preserve": [
+    "world*/",
+    "config/",
+    "server.properties",
+    "ops.json",
+    "whitelist.json",
+    "banned-*.json",
+    "usercache.json",
+    "eula.txt",
+    ".takaro/"
+  ],
+  "devServers": {"gameId": "minecraft-fabric"}
+}

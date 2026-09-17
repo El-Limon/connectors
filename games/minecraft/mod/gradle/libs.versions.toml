@@ -1,9 +1,8 @@
 [versions]
-minecraft-fabric = "26.2"
+# Game-coupled coordinates (Minecraft, Fabric loader, Fabric API) live in catalog/minecraft/
+# targets/*.json, not here: they change per target and only through a catalog PR.
 paper-api = "1.21.11-R0.1-SNAPSHOT"
 neoforge-version = "21.11.38-beta"
-fabric-loader = "0.19.5"
-fabric-api = "0.160.0+26.2"
 
 java-websocket = "1.6.0"
 gson = "2.14.0"

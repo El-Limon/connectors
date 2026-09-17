@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Portable launcher: runs takaro-maint from a frozen, managed Python 3.12 environment.
+# Works from any working directory; resolution never depends on the caller's cwd.
+set -euo pipefail
+
+MAINT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv 0.12.x required (https://docs.astral.sh/uv/)" >&2
+    exit 2
+fi
+
+exec env UV_PYTHON_PREFERENCE=only-managed uv run --frozen --project "$MAINT_DIR" takaro-maint "$@"

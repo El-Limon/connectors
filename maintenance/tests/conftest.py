@@ -1,0 +1,216 @@
+"""Shared fixtures.
+
+Every test drives the real command through ``cli.main`` (or a subprocess), so what is
+asserted is observable behaviour — exit codes and the JSON on stdout — not helper shapes.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import sys
+import zipfile
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from takaro_maint import paths  # noqa: E402
+from takaro_maint.cli import main  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_environment(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may touch the developer's cache, repo root or credentials."""
+    monkeypatch.setenv("TAKARO_MAINT_CACHE", str(tmp_path_factory.mktemp("cache")))
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    paths.set_repo_root(None)
+    yield
+    paths.set_repo_root(None)
+
+
+@pytest.fixture
+def repo_root() -> Path:
+    return REPO_ROOT
+
+
+@pytest.fixture
+def run(capsys: pytest.CaptureFixture[str]) -> Any:
+    """Run the command and return ``(exit_code, stdout_json_or_text, stderr)``."""
+
+    def _run(*argv: str, repo: Path | None = None) -> tuple[int, Any, str]:
+        args = list(argv)
+        if repo is not None:
+            args = ["--repo-root", str(repo), *args]
+        code = main(args)
+        captured = capsys.readouterr()
+        try:
+            payload: Any = json.loads(captured.out)
+        except json.JSONDecodeError:
+            payload = captured.out
+        return code, payload, captured.err
+
+    return _run
+
+
+@pytest.fixture
+def catalog_copy(tmp_path: Path) -> Path:
+    """A writable copy of the whole repository catalog, plus the files validation reads."""
+    root = tmp_path / "repo"
+    (root / "catalog").mkdir(parents=True)
+    shutil.copytree(REPO_ROOT / "catalog", root / "catalog", dirs_exist_ok=True)
+    mod = root / "games" / "minecraft" / "mod"
+    (mod / "gradle").mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "games/minecraft/mod/gradle/libs.versions.toml", mod / "gradle")
+    for target_file in (root / "catalog" / "minecraft" / "targets").glob("*.json"):
+        project = json.loads(target_file.read_text())["build"]["gradleProject"]
+        (mod / "targets" / project).mkdir(parents=True, exist_ok=True)
+        (mod / "targets" / project / "build.gradle.kts").write_text('plugins { id("takaro.fabric-target") }\n')
+    (root / "games" / "minecraft" / "README.md").write_text(
+        "# Minecraft\n\n<!-- takaro-maint:targets:begin -->\n<!-- takaro-maint:targets:end -->\n"
+    )
+    return root
+
+
+def read_target(root: Path, target_id: str = "fabric-26.2") -> dict[str, Any]:
+    return json.loads((root / "catalog/minecraft/targets" / f"{target_id}.json").read_text())
+
+
+def write_target(root: Path, record: dict[str, Any], target_id: str = "fabric-26.2") -> Path:
+    path = root / "catalog/minecraft/targets" / f"{target_id}.json"
+    path.write_text(json.dumps(record, indent=2) + "\n")
+    return path
+
+
+def point_at(root: Path, base_url: str) -> None:
+    """Rewrite every source in the copied game record to a fake upstream."""
+    game_file = root / "catalog/minecraft/game.json"
+    game = json.loads(game_file.read_text())
+    for source in game["sources"].values():
+        source["baseUrl"] = base_url
+    game_file.write_text(json.dumps(game, indent=2) + "\n")
+
+
+@pytest.fixture
+def fake_target_bytes(tmp_path: Path) -> dict[str, bytes]:
+    """Tiny stand-ins for the three downloads a Fabric install performs."""
+    return {
+        "server": (FIXTURES / "upstream/mojang/26.2/server.jar").read_bytes(),
+        "launcher": (FIXTURES / "upstream/fabric/26.2/launcher.jar").read_bytes(),
+        "fabric-api": (FIXTURES / "upstream/fabric/26.2/fabric-api-0.160.0+26.2.jar").read_bytes(),
+    }
+
+
+def sha1(payload: bytes) -> str:
+    return hashlib.sha1(payload).hexdigest()
+
+
+def sha256(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def make_jar(
+    path: Path,
+    *,
+    target: str,
+    fingerprint: str,
+    revision: str,
+    version: str = "0.1.1",
+    source_revision: str = "deadbeef",
+    stamp: bool = True,
+    attributes: dict[str, str] | None = None,
+) -> Path:
+    """Build a jar that carries (or deliberately fails to carry) a target's identity."""
+    manifest_attributes = {
+        "Manifest-Version": "1.0",
+        "Takaro-Target": target,
+        "Takaro-Target-Fingerprint": fingerprint,
+        "Takaro-Connector-Version": version,
+        "Takaro-Source-Revision": source_revision,
+        "Takaro-Game-Version": revision,
+        "Takaro-Java-Release": "25",
+    }
+    manifest_attributes.update(attributes or {})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "META-INF/MANIFEST.MF",
+            "".join(f"{key}: {value}\n" for key, value in manifest_attributes.items()) + "\n",
+        )
+        if stamp:
+            archive.writestr(
+                "META-INF/takaro-target.json",
+                json.dumps(
+                    {
+                        "target": target,
+                        "fingerprint": fingerprint,
+                        "game": "minecraft",
+                        "platform": "fabric",
+                        "revision": revision,
+                        "connectorVersion": version,
+                        "sourceRevision": source_revision,
+                    }
+                ),
+            )
+        archive.writestr("io/takaro/minecraft/fabric/TakaroFabricMod.class", b"\xca\xfe\xba\xbe")
+    return path
+
+
+class Wired:
+    """A catalog copy whose every download points at an in-process fake upstream."""
+
+    def __init__(self, root: Path, upstream: Any) -> None:
+        self.root = root
+        self.upstream = upstream
+
+    def target(self, target_id: str = "fabric-26.2") -> dict[str, Any]:
+        return read_target(self.root, target_id)
+
+    def save(self, record: dict[str, Any], target_id: str = "fabric-26.2") -> None:
+        write_target(self.root, record, target_id)
+
+
+@pytest.fixture
+def wired(catalog_copy: Path) -> Any:
+    """Serve tiny stand-ins for the three real downloads and re-pin the catalog to them."""
+    from fake_upstream import FakeUpstream
+
+    with FakeUpstream() as upstream:
+        record = read_target(catalog_copy)
+        server_bytes = (FIXTURES / "upstream/mojang/26.2/server.jar").read_bytes()
+        launcher_bytes = (FIXTURES / "upstream/fabric/26.2/launcher.jar").read_bytes()
+        api_bytes = (FIXTURES / "upstream/fabric/26.2/fabric-api-0.160.0+26.2.jar").read_bytes()
+        loader_bytes = (FIXTURES / "upstream/fabric/26.2/fabric-loader-0.19.5.jar").read_bytes()
+
+        manifest = json.loads((FIXTURES / "upstream/mojang/26.2/26.2.json").read_text())
+        manifest["downloads"]["server"] = {
+            "sha1": sha1(server_bytes),
+            "size": len(server_bytes),
+            "url": upstream.base_url + record["inputs"]["game"]["server"]["path"],
+        }
+        manifest_bytes = json.dumps(manifest).encode("utf-8")
+
+        game = record["inputs"]["game"]
+        game["manifest"]["path"] = f"/v1/packages/{sha1(manifest_bytes)}/26.2.json"
+        game["manifest"]["sha1"] = sha1(manifest_bytes)
+        game["server"]["sha1"] = sha1(server_bytes)
+        game["server"]["size"] = len(server_bytes)
+        record["inputs"]["loader"]["sha256"] = sha256(launcher_bytes)
+        record["inputs"]["fabricApi"]["sha256"] = sha256(api_bytes)
+        record["build"]["deps"]["fabric-api"]["sha256"] = sha256(api_bytes)
+        record["build"]["deps"]["fabric-loader"]["sha256"] = sha256(loader_bytes)
+        write_target(catalog_copy, record)
+        point_at(catalog_copy, upstream.base_url)
+
+        upstream.add(game["manifest"]["path"], manifest_bytes)
+        upstream.add(game["server"]["path"], server_bytes)
+        upstream.add(record["inputs"]["loader"]["path"], launcher_bytes)
+        upstream.add(record["inputs"]["fabricApi"]["path"], api_bytes)
+        upstream.add("/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar", loader_bytes)
+        yield Wired(catalog_copy, upstream)

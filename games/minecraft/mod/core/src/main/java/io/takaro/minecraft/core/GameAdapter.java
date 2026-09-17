@@ -1,6 +1,7 @@
 package io.takaro.minecraft.core;
 
 import io.takaro.minecraft.core.model.*;
+import io.takaro.minecraft.core.target.RuntimeIdentity;
 
 import java.util.List;
 
@@ -34,4 +35,10 @@ public interface GameAdapter {
 
     // Event wiring
     void setEventEmitter(EventEmitter emitter);
+
+    /**
+     * What this server actually is, when the platform can tell us.
+     * Platforms that cannot are left unchecked by the target guard rather than guessed at.
+     */
+    default RuntimeIdentity getRuntimeIdentity() { return null; }
 }

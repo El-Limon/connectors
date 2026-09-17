@@ -3,6 +3,8 @@ package io.takaro.minecraft.fabric;
 import io.takaro.minecraft.core.EventEmitter;
 import io.takaro.minecraft.core.GameAdapter;
 import io.takaro.minecraft.core.model.*;
+import io.takaro.minecraft.core.target.RuntimeIdentity;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
@@ -32,6 +34,23 @@ public class FabricGameAdapter implements GameAdapter {
 
     public EventEmitter getEventEmitter() {
         return eventEmitter;
+    }
+
+    /** What Fabric itself says it loaded — the guard compares this with the jar's stamp. */
+    @Override
+    public RuntimeIdentity getRuntimeIdentity() {
+        return new RuntimeIdentity(
+                modVersion("minecraft"),
+                "fabric",
+                modVersion("fabricloader"),
+                Runtime.version().feature());
+    }
+
+    private String modVersion(String modId) {
+        return FabricLoader.getInstance()
+                .getModContainer(modId)
+                .map(container -> container.getMetadata().getVersion().getFriendlyString())
+                .orElse("");
     }
 
     @Override

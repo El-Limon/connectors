@@ -18,6 +18,16 @@ plugins {
 rootProject.name = "takaro-minecraft"
 
 include("core")
+// legacy single-target modules, migrated to targets/ by the Paper/NeoForge issue
 include("paper")
 include("neoforge")
-include("fabric")
+
+// Every directory under targets/ that carries a build file is a catalog target.
+// Adding a target is adding its JSON record and its one-line build file, nothing here.
+file("targets").listFiles()
+    ?.filter { File(it, "build.gradle.kts").exists() }
+    ?.sortedBy { it.name }
+    ?.forEach {
+        include(it.name)
+        project(":${it.name}").projectDir = it
+    }
