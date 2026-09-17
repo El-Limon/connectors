@@ -138,13 +138,15 @@ jobs:
           java-version: 25
           cache: gradle
 
-      - run: bash "${{ inputs.legacy_build }}" "${{ inputs.version }}" dist
+      - run: bash "${{ inputs.legacy_build }}" "${{ inputs.version }}" "$PWD/dist"
 
+      # A legacy script that is still listed must still produce something. Silently
+      # uploading nothing is how a release loses a platform's jar without anyone noticing.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-${{ inputs.connector }}-legacy
           path: dist/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   publish:
     needs: [build, legacy]
