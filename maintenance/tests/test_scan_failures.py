@@ -14,6 +14,7 @@ import pytest
 
 import test_scan_support as support
 from takaro_maint.github import GitHub
+from takaro_maint.tracker import dashboard
 
 
 def test_an_unreachable_manifest_exits_four_with_the_checkpoint_retained(
@@ -116,3 +117,33 @@ def test_a_game_without_watch_sources_exits_two(run: Any, catalog_copy: Path, mo
         assert code == 2, stderr
         assert "watch block" in str(payload["error"])
         assert harness.fake.requests == []
+
+
+def test_a_dashboard_that_appeared_during_the_run_is_not_duplicated(
+    run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's index can lag, and a second dashboard would split the state in two.
+
+    This reproduces what a live publish hit: a dashboard created moments earlier that
+    neither the search nor the issue listing reported yet. The scan re-checks immediately
+    before creating one, so the run stops and is rerun instead of forking the state.
+    """
+    real_listing = GitHub.issues_list
+    calls = {"count": 0}
+
+    def lagging(client: GitHub, state: str = "all", labels: str | None = None) -> Any:
+        calls["count"] += 1
+        return [] if calls["count"] == 1 else real_listing(client, state=state, labels=labels)
+
+    monkeypatch.setattr(GitHub, "issues_search", lambda _client, _query: [])
+    monkeypatch.setattr(GitHub, "issues_list", lagging)
+
+    with support.rig(catalog_copy, monkeypatch) as harness:
+        board = support.golden_dashboard()
+        harness.seed_issue(dashboard.render(board), title=dashboard.TITLE, labels=["connector-maintenance"])
+
+        code, payload, stderr = harness.scan(run, "--bootstrap", "--publish")
+
+        assert code == 9, stderr
+        assert "appeared during the scan" in str(payload["error"])
+        assert len([issue for issue in harness.fake.issues if issue["title"] == dashboard.TITLE]) == 1

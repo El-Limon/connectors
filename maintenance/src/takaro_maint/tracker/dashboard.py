@@ -228,6 +228,15 @@ def save(client: GitHub, board: Dashboard) -> tuple[int, bool]:
     cap(board)
     body = render(board)
     if board.issue is None:
+        # The lookup that said "there is no dashboard" may have read a stale index: GitHub
+        # is read-after-write eventually consistent for both the issue search and the issue
+        # listing, and a dashboard created seconds earlier can be invisible to the next
+        # run. Re-check once with a fresh, uncached lookup, because creating a second
+        # dashboard would split the state in two. A dashboard that has appeared since is a
+        # rerun, not a duplicate.
+        appeared = issues.find(client, identity.DASHBOARD_MARKER, issues.LookupCache())
+        if appeared is not None:
+            raise TrackerError(f"dashboard #{appeared['number']} appeared during the scan; rerun")
         created = client.issue_create(TITLE, body, [identity.LABEL])
         board.issue = int(created["number"])
         board.raw_body = body

@@ -64,6 +64,14 @@ that pushing the marker off the first line makes the issue unrecognisable and th
 scan files a fresh one — which is why the sentence under the marker in every filed issue
 says to leave that line alone.
 
+GitHub is read-after-write eventually consistent for both the search and the issue
+listing, so a run started seconds after another one can fail to see what that run filed.
+The scan therefore re-checks with a fresh, uncached lookup immediately before it would
+create the dashboard, and stops with exit 9 ("appeared during the scan; rerun") rather than
+splitting the state across two dashboards. A support issue in that same window is found by
+the next run through its marker, so it is at worst filed late, never filed twice by a
+retry of the same run.
+
 A closed issue is never edited and never reopened. Closed as completed means the work
 happened; closed as not planned means it was declined; either way the revision is recorded
 as seen and the scan moves on. (Reopening on new evidence belongs to the lifecycle work in
