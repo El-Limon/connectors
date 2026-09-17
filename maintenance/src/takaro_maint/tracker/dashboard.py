@@ -28,7 +28,8 @@ SCHEMA = "takaro-maint-dashboard/1"
 INTRO = (
     "State for `takaro-maint scan`. Everything between the dashboard markers is rewritten by the "
     "command (compare-and-swap: a concurrent edit makes the run stop rather than overwrite); edit "
-    "anything else freely. Closing this issue makes the next scan start from nothing."
+    "anything else freely. Closing this issue resets nothing: the next scan still finds it "
+    "by its marker, closed or not, and rewrites it in place."
 )
 
 #: GitHub refuses a body over 65536 characters, so the writer stays well inside that.

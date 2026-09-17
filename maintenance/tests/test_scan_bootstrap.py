@@ -96,6 +96,41 @@ def test_publish_without_bootstrap_on_an_uninitialised_source_exits_two(
         assert harness.fake.issues == []
 
 
+def test_a_blocked_publish_writes_nothing_even_when_another_source_has_work(
+    run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stop is decided before the first issue is filed, not after the loop.
+
+    One initialised source with a brand new release, one source that has never been
+    initialised: the run has to refuse as a whole, because a half-published run whose
+    checkpoint was never written is the worst of both outcomes.
+    """
+    with support.rig(catalog_copy, monkeypatch) as harness:
+        code, _, stderr = harness.scan(run, "--bootstrap", "--publish")
+        assert code == 0, stderr
+        issues_before = len(harness.fake.issues)
+        writes_before = harness.fake.writes
+        seen_before = sorted(harness.checkpoint_ids())
+
+        second = support.add_second_watch_source(catalog_copy, harness.upstream)
+        support.add_release(harness.upstream, "26.4", release_time="2026-12-01T10:00:00+00:00")
+        support.mirror_manifest(harness.upstream)
+
+        code, payload, stderr = harness.scan(run, "--publish")
+
+        assert code == 2, stderr
+        assert "nothing was written" in stderr
+        assert harness.fake.writes == writes_before
+        assert len(harness.fake.issues) == issues_before
+        assert sorted(harness.checkpoint_ids()) == seen_before
+        assert "26.4" not in seen_before
+        assert payload["sources"][second]["status"] == "uninitialized"
+        # The report still says what is out there — it just carries out none of it.
+        assert [entry["rev"] for entry in payload["observations"]] == ["26.4"]
+        assert payload["applied"] == []
+        assert [entry["action"] for entry in payload["plan"]] == ["bootstrap-required", "create-issue"]
+
+
 def test_bootstrap_twice_is_idempotent(run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     with support.rig(catalog_copy, monkeypatch) as harness:
         first_code, _, _ = harness.scan(run, "--bootstrap", "--publish")

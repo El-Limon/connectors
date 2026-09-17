@@ -3,10 +3,12 @@
 `takaro-maint scan` reads the sources the catalog watches, works out which revisions have
 never been seen before, and reconciles each one into exactly one GitHub issue that says
 what was published, which targets it affects, and what to do next. It is a one-shot
-command: it reads no CI variables, depends on no working directory, keeps nothing on disk,
-and writes nothing at all unless `--publish` is passed. Everything it knows between runs
-lives in one dashboard issue, so a fresh runner with an empty home directory resumes
-exactly where the last run stopped.
+command: it reads no CI variables, depends on no working directory, keeps no state of its
+own on disk, and writes nothing to the tracker unless `--publish` is passed. (The one
+thing any run does leave behind is the shared download cache: `enrich()` stores each
+verified upstream document there, in either mode, and a run with an empty cache directory
+simply refills it.) Everything it knows between runs lives in one dashboard issue, so a
+fresh runner with an empty home directory resumes exactly where the last run stopped.
 
 An observation is a statement of fact, nothing more. The scan never edits a catalog
 record, never adds or promotes a target, and never claims a framework is ready.
@@ -129,7 +131,10 @@ saves space without ever re-filing history.
 
 A source with no checkpoint is *uninitialised*. In read-only mode that is reported and the
 run still exits 0; with `--publish` it is a usage error, because guessing what to file on a
-first run is how a tracker gets flooded.
+first run is how a tracker gets flooded. That decision is taken before anything is filed:
+the other sources are still scanned and still reported (a source that failed upstream
+still makes the run exit 4), but the whole run stays read-only, so "nothing was written"
+means exactly that.
 
 `--bootstrap` initialises it deliberately:
 

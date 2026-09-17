@@ -2,9 +2,10 @@
 
 One pass: read every watched source, work out which revisions have never been seen, and
 reconcile each one into exactly one GitHub issue. Read-only is the default and writes
-nothing at all; ``--publish`` is the only way to change the tracker. Nothing is kept on
-disk — the checkpoints and the work identities live in the dashboard issue, so a fresh
-runner with an empty home directory resumes exactly where the last run stopped.
+nothing at all; ``--publish`` is the only way to change the tracker. No state is kept on
+disk — the checkpoints and the work identities live in the dashboard issue (the shared
+download cache is the only thing a run leaves behind), so a fresh runner with an empty
+home directory resumes exactly where the last run stopped.
 """
 
 from __future__ import annotations
@@ -187,6 +188,7 @@ def _observe_one(
     before: Checkpoint | None,
     *,
     args: Any,
+    publish: bool,
     client: github.GitHub,
     cache: issues.LookupCache,
     now: str,
@@ -247,10 +249,10 @@ def _observe_one(
         report["observations"].append(document)
         entry["observations"] = int(entry["observations"]) + 1
 
-        outcome = issues.reconcile(client, enriched, targets, publish=args.publish, cache=cache)
+        outcome = issues.reconcile(client, enriched, targets, publish=publish, cache=cache)
         intent, done = _entry_for(outcome, enriched, targets)
         plan.append(intent)
-        if args.publish:
+        if publish:
             applied.append(done)
         output.info(f"{source.key}: {enriched.rev} -> {outcome.action}")
         if outcome.issue_number is not None:
@@ -294,6 +296,7 @@ def _scan(args: Any) -> int:
     failed: list[str] = []
     blocked = False
     try:
+        pending: list[tuple[WatchedSource, Checkpoint | None, dict[str, Any]]] = []
         for source in watched:
             before = board.checkpoint(source.key)
             entry: dict[str, Any] = {
@@ -312,6 +315,24 @@ def _scan(args: Any) -> int:
                 output.info(f"{source.key}: no checkpoint yet; run with --bootstrap first")
                 uninitialized.append(source.key)
                 continue
+            pending.append((source, before, entry))
+
+        # Decided before anything is observed or filed: an uninitialised source stops the
+        # whole publishing run, and "nothing was written" has to be literally true. Doing
+        # this after the loop would file the other sources' issues first and then abandon
+        # the run without recording them in the dashboard.
+        blocked = bool(uninitialized) and bool(args.publish)
+        if blocked:
+            # Nothing at all is written: guessing what to file on a first run is how a
+            # tracker gets flooded, so an uninitialised source stops the whole run. The
+            # remaining sources are still scanned — read-only, so the report still says
+            # what is out there and which source failed — but no issue and no checkpoint
+            # is written, which is why the decision is taken here and not after the loop.
+            names = ", ".join(uninitialized)
+            output.error(f"{names}: no checkpoint yet; run with --bootstrap first (nothing was written)")
+        publish = bool(args.publish) and not blocked
+
+        for source, before, entry in pending:
             if before is not None and args.bootstrap:
                 output.info(f"{source.key}: already initialised; scanning normally")
 
@@ -327,6 +348,7 @@ def _scan(args: Any) -> int:
                     mapping,
                     before,
                     args=args,
+                    publish=publish,
                     client=client,
                     cache=cache,
                     now=now,
@@ -352,14 +374,8 @@ def _scan(args: Any) -> int:
             entry["checkpoint"]["after"] = outcome.checkpoint.summary() if outcome.checkpoint else None
 
         failed = sorted(key for key, outcome in outcomes.items() if outcome.status == "failed")
-        blocked = bool(uninitialized) and bool(args.publish)
-        if blocked:
-            # Nothing at all is written: guessing what to file on a first run is how a
-            # tracker gets flooded, so an uninitialised source stops the whole run.
-            names = ", ".join(uninitialized)
-            output.error(f"{names}: no checkpoint yet; run with --bootstrap first (nothing was written)")
 
-        if args.publish and not blocked:
+        if publish:
             for key, outcome in outcomes.items():
                 board.apply_source(
                     key,
@@ -388,7 +404,7 @@ def _scan(args: Any) -> int:
                 after = board.checkpoint(key)
                 if outcome.checkpoint is not None and after is not None:
                     report["sources"][key]["checkpoint"]["after"] = after.summary()
-        elif board.issue is not None:
+        elif board.issue is not None and not blocked:
             report["plan"].append({"action": "update-dashboard", "issue": board.issue})
     except TrackerError as exc:
         report["error"] = exc.message
