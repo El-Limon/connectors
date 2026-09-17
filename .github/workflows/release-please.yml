@@ -39,6 +39,9 @@ jobs:
       enshrouded_released: ${{ steps.rp.outputs['games/enshrouded--release_created'] }}
       enshrouded_tag: ${{ steps.rp.outputs['games/enshrouded--tag_name'] }}
       enshrouded_version: ${{ steps.rp.outputs['games/enshrouded--version'] }}
+      vein_released: ${{ steps.rp.outputs['games/vein--release_created'] }}
+      vein_tag: ${{ steps.rp.outputs['games/vein--tag_name'] }}
+      vein_version: ${{ steps.rp.outputs['games/vein--version'] }}
     steps:
       # Author Release PRs as takaro-ci-bot[bot] instead of GITHUB_TOKEN. PRs/commits made
       # with GITHUB_TOKEN don't fire downstream events, so the required `conventional-title`
@@ -166,3 +169,15 @@ jobs:
     with:
       version: ${{ needs.release-please.outputs.dragonwilds_version }}
       tag: ${{ needs.release-please.outputs.dragonwilds_tag }}
+
+  release-vein:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.vein_released == 'true' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/vein.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.release-please.outputs.vein_version }}
+      tag: ${{ needs.release-please.outputs.vein_tag }}
