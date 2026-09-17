@@ -292,6 +292,7 @@ def _scan(args: Any) -> int:
     outcomes: dict[str, SourceOutcome] = {}
     uninitialized: list[str] = []
     failed: list[str] = []
+    blocked = False
     try:
         for source in watched:
             before = board.checkpoint(source.key)
@@ -351,13 +352,14 @@ def _scan(args: Any) -> int:
             entry["checkpoint"]["after"] = outcome.checkpoint.summary() if outcome.checkpoint else None
 
         failed = sorted(key for key, outcome in outcomes.items() if outcome.status == "failed")
-        if uninitialized and args.publish:
+        blocked = bool(uninitialized) and bool(args.publish)
+        if blocked:
+            # Nothing at all is written: guessing what to file on a first run is how a
+            # tracker gets flooded, so an uninitialised source stops the whole run.
             names = ", ".join(uninitialized)
-            report["error"] = f"{names}: no checkpoint yet; run with --bootstrap first (nothing was written)"
-            output.error(report["error"])
-            return _emit(report, code=exit_codes.USAGE, out=args.out)
+            output.error(f"{names}: no checkpoint yet; run with --bootstrap first (nothing was written)")
 
-        if args.publish:
+        if args.publish and not blocked:
             for key, outcome in outcomes.items():
                 board.apply_source(
                     key,
@@ -393,7 +395,18 @@ def _scan(args: Any) -> int:
         output.error(exc.message)
         return _emit(report, code=exit_codes.TRACKER, out=args.out)
 
+    # A failed source outranks an uninitialised one: the run has to be repeated either
+    # way, and "something upstream is broken" is the more urgent of the two to report.
+    reasons = []
     if failed:
-        report["error"] = "these sources failed: " + ", ".join(failed)
-        return _emit(report, code=exit_codes.UPSTREAM, out=args.out)
+        reasons.append("these sources failed: " + ", ".join(failed))
+    if blocked:
+        reasons.append("these sources need --bootstrap first: " + ", ".join(uninitialized))
+    if reasons:
+        report["error"] = "; ".join(reasons)
+        return _emit(
+            report,
+            code=exit_codes.UPSTREAM if failed else exit_codes.USAGE,
+            out=args.out,
+        )
     return _emit(report, code=exit_codes.OK, out=args.out)

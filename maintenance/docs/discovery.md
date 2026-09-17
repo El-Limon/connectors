@@ -35,8 +35,9 @@ stdout is one JSON document (`{"schemaVersion": 1, "op": "scan", …}`), diagnos
 stderr, and any environment value that looks like a credential is replaced with
 `<redacted>` in everything the command writes.
 
-The label the scan puts on the issues it files must already exist in the repository. The
-scan never creates labels.
+The label the scan puts on the issues it files must already exist in the repository: the
+scan never creates labels. It also has to stay on them, because the fallback listing that
+guarantees no duplicates is filtered by that label.
 
 ## Identity: markers, not titles
 
@@ -89,7 +90,9 @@ Between these two markers the body belongs to the command and is rewritten on ev
 
 Everything else — the sentence above it, the title, your notes, anything you append — is
 preserved byte for byte. If you delete the block entirely, the next run appends one fresh
-copy and never a second. A `<!-- takaro-maint:state=… -->` line inside the block is carried
+copy and never a second. If you delete only the closing marker, everything from the
+opening marker to the end of the body is treated as the generated block and replaced, so
+delete both or neither. A `<!-- takaro-maint:state=… -->` line inside the block is carried
 over rather than reset, so a lifecycle state written by a later command survives a rescan.
 
 The block holds the observation (revision, release time, the source links, the upstream

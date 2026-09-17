@@ -132,3 +132,15 @@ def test_the_title_names_the_game_and_the_revision() -> None:
     assert issues.title_for(support.golden_observation(), "Minecraft") == (
         "Minecraft 26.3: new stable release needs a target"
     )
+
+
+def test_deleting_only_the_end_marker_replaces_the_rest_of_the_body() -> None:
+    """Documented, not discovered: half a block is treated as a whole one."""
+    block = issues.render_owned_block(support.golden_observation(), support.golden_targets())
+    half = issues.render_body(MARKER, block).replace(issues.OWNED_END, "")
+
+    rewritten = issues.render_body(MARKER, block, half)
+
+    assert rewritten.count(issues.OWNED_BEGIN) == 1
+    assert rewritten.count(issues.OWNED_END) == 1
+    assert rewritten.startswith(identity.render_marker(MARKER))

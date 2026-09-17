@@ -23,7 +23,7 @@ def _channels(watch: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """
     channels: dict[str, dict[str, Any]] = {}
     for key, channel in (watch.get("channels") or {}).items():
-        if not isinstance(channel, dict) or channel.get("enabled", True) is False:
+        if not isinstance(channel, dict) or not channel.get("enabled", True):
             continue
         types = {str(item) for item in channel.get("types") or []}
         if not types:

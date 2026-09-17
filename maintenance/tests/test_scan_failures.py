@@ -147,3 +147,24 @@ def test_a_dashboard_that_appeared_during_the_run_is_not_duplicated(
         assert code == 9, stderr
         assert "appeared during the scan" in str(payload["error"])
         assert len([issue for issue in harness.fake.issues if issue["title"] == dashboard.TITLE]) == 1
+
+
+def test_a_failed_source_outranks_one_that_needs_bootstrapping(
+    run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both conditions are reported; the exit code names the more urgent one."""
+    with support.rig(catalog_copy, monkeypatch) as harness:
+        second = support.add_second_watch_source(catalog_copy, harness.upstream)
+        code, _, stderr = harness.scan(run, "--bootstrap", "--publish", "--source", "mojang-meta")
+        assert code == 0, stderr  # only the first source is initialised
+        harness.upstream.status_overrides[support.MANIFEST_PATH] = 503
+        writes_before = harness.fake.writes
+
+        code, payload, stderr = harness.scan(run, "--publish")
+
+        assert code == 4, stderr
+        assert "these sources failed" in str(payload["error"])
+        assert "--bootstrap first" in str(payload["error"])
+        assert payload["sources"][support.SOURCE_KEY]["status"] == "failed"
+        assert payload["sources"][second]["status"] == "uninitialized"
+        assert harness.fake.writes == writes_before  # blocked runs write nothing
