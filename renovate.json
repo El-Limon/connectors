@@ -13,16 +13,9 @@
   "lockFileMaintenance": { "enabled": true },
   "packageRules": [
     {
-      "description": "Unresolvable Minecraft game artifact — managed by hand",
-      "matchDepNames": ["com.mojang:minecraft"],
-      "enabled": false
-    },
-    {
-      "description": "Game-version-coupled platform deps: one grouped, human-merged PR",
+      "description": "Game-coupled coordinates live in catalog/, not in Gradle files: Minecraft, the Fabric loader and the Fabric API are pinned per target and change only through a catalog PR. Renovate keeps the tool pins below.",
       "matchDepNames": [
         "io.papermc.paper:paper-api",
-        "net.fabricmc:fabric-loader",
-        "net.fabricmc.fabric-api:fabric-api",
         "net.neoforged:neoforge",
         "net.neoforged.moddev",
         "net.fabricmc.fabric-loom"

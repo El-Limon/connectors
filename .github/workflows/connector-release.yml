@@ -1,0 +1,216 @@
+name: Connector Release
+
+# Build and publish one connector's artifacts, one job per catalog target.
+# Callers keep their own concurrency group; nothing is set here.
+on:
+  workflow_call:
+    inputs:
+      connector:
+        description: Catalog game id, e.g. minecraft
+        required: true
+        type: string
+      version:
+        description: Version to stamp into the artifacts
+        required: true
+        type: string
+      tag:
+        description: Release tag to publish to (empty when nothing is published)
+        required: false
+        default: ''
+        type: string
+      publish:
+        description: stable | rolling | pr | none
+        required: true
+        type: string
+      pr_number:
+        description: Pull request number, for pr builds
+        required: false
+        default: ''
+        type: string
+      legacy_build:
+        description: Optional script that builds the not-yet-migrated modules
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+
+      - run: uv python install
+      - run: uv sync --frozen --project maintenance
+
+      - name: Resolve the build matrix from the catalog
+        id: targets
+        run: |
+          maintenance/bin/takaro-maint targets list \
+            --game "${{ inputs.connector }}" \
+            --status candidate,maintained \
+            --format gha >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.plan.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+
+      - run: uv python install
+      - run: uv sync --frozen --project maintenance
+
+      - name: Resolve the target
+        id: target
+        run: |
+          maintenance/bin/takaro-maint targets resolve \
+            --game "${{ inputs.connector }}" \
+            --target "${{ matrix.target.id }}" \
+            --format gha >> "$GITHUB_OUTPUT"
+
+      # Keyed on the fingerprint: a different target, or the same target with a changed
+      # input, never reuses another target's downloads or Gradle cache.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/takaro-maint
+            ~/.cache/takaro-maint/gradle
+          key: ${{ inputs.connector }}-${{ steps.target.outputs.fp16 }}
+
+      - name: Install the pinned inputs
+        run: |
+          maintenance/bin/takaro-maint install \
+            --game "${{ inputs.connector }}" \
+            --target "${{ matrix.target.id }}" \
+            --dest "$RUNNER_TEMP/game"
+
+      - name: Build
+        run: |
+          maintenance/bin/takaro-maint build \
+            --game "${{ inputs.connector }}" \
+            --target "${{ matrix.target.id }}" \
+            --version "${{ inputs.version }}" \
+            --out dist \
+            --toolchain container
+
+      - name: The artifacts carry this target's identity
+        run: |
+          maintenance/bin/takaro-maint artifact validate \
+            --game "${{ inputs.connector }}" \
+            --target "${{ matrix.target.id }}" \
+            dist/*.jar
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ inputs.connector }}-${{ matrix.target.id }}
+          path: dist/
+
+  # Modules that have not moved to the catalog yet keep their old build path.
+  legacy:
+    if: inputs.legacy_build != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Java 25
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: gradle
+
+      - run: bash "${{ inputs.legacy_build }}" "${{ inputs.version }}" dist
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ inputs.connector }}-legacy
+          path: dist/
+          if-no-files-found: ignore
+
+  publish:
+    needs: [build, legacy]
+    if: >-
+      always()
+      && needs.build.result == 'success'
+      && (needs.legacy.result == 'success' || needs.legacy.result == 'skipped')
+      && inputs.publish != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      # All release/comment operations act as takaro-ci-bot[bot] (not github-actions[bot]).
+      # Skipped on fork PRs, which can't access the App secrets and don't publish builds.
+      - name: Generate token
+        id: app-token
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.TAKARO_CI_APP_ID }}
+          private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-${{ inputs.connector }}-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish stable release assets
+        if: ${{ inputs.publish == 'stable' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: scripts/publish-release.sh upload "${{ inputs.tag }}" dist/*.jar
+
+      - name: Publish rolling dev build
+        if: ${{ inputs.publish == 'rolling' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          scripts/publish-release.sh rolling "${{ inputs.connector }}-dev" \
+            "${{ inputs.connector }} Connector — latest dev build" \
+            "Rolling development build (\`${{ inputs.version }}\`), updated on every push to main. Not for production." \
+            dist/*.jar
+
+      # Fork PRs get a read-only token, so they can't publish a release or comment;
+      # they build for validation only (no downloadable artifact — accepted limitation).
+      - name: Publish PR build
+        if: ${{ inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          scripts/publish-release.sh rolling "${{ inputs.tag }}" \
+            "${{ inputs.connector }} Connector — build for PR #${{ inputs.pr_number }}" \
+            "Disposable build (\`${{ inputs.version }}\`) for PR #${{ inputs.pr_number }}. Replaced on every push, deleted when the PR closes. Not for production." \
+            dist/*.jar
+
+      - name: Comment PR build
+        if: ${{ inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          scripts/comment-pr-build.sh "${{ inputs.connector }}" \
+            "${{ inputs.pr_number }}" \
+            "${{ inputs.tag }}" \
+            "${{ inputs.version }}" \
+            dist/*.jar
