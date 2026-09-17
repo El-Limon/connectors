@@ -64,6 +64,11 @@ void Hooks::MarkHooked(const std::string& name, bool hooked) {
     g_records[name].hooked = hooked;
 }
 
+std::atomic<uint64_t>* Hooks::FiredCounter(const std::string& name) {
+    Guard g(g_lock);
+    return &g_records[name].fired;
+}
+
 void Hooks::MarkFired(const std::string& name) {
     Guard g(g_lock);
     g_records[name].fired++;

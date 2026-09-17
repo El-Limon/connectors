@@ -250,6 +250,13 @@ restart.
 
 ### Known issues
 
+- **The plugin costs about 0.2 percentage points of the server's CPU.** Measured on the dev rig over
+  three 10-minute windows (no plugin / plugin / plugin after tuning), same world, same conditions:
+  the game thread went from 10.26 % CPU without the plugin to 10.46 % with it, and its own work
+  inside one server tick averages ~3 µs — roughly **0.01 % of the 33 ms the server has per tick**,
+  with a worst observed tick of 2.4 ms (0.07 % of a second's worth of frames). This is with one
+  player online; a busy server with many players has not been measured, so treat those numbers as
+  the floor, not a guarantee. `GET /debug/perf` reports the live figures on your own server.
 - **`LD_PRELOAD` must be set on the game binary only.** SteamCMD is a 32-bit program and fails
   immediately if it inherits a 64-bit preload, so never set it for the whole container, user or
   service — only on the line that starts `VeinServer-Linux-Test`.

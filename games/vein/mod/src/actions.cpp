@@ -17,6 +17,7 @@
 
 #include "events.h"
 #include "gamethread.h"
+#include "perf.h"
 #include "reflect.h"
 #include "resolve.h"
 #include "state.h"
@@ -268,6 +269,7 @@ Actions::Result OnGameThread(const char* what, std::function<JobOut()> fn, uint3
     bool ran = false;
     bool ok = GameThread::Run(
         [&] {
+            Perf::Scope sc(what);
             try {
                 out = fn();
             } catch (const std::exception& e) {
@@ -487,13 +489,92 @@ std::string FirstSeen(const std::string& gameId) {
     return now;
 }
 
-std::string PlayerJson(const PlayerInfo& p) {
-    return "{\"gameId\":" + JsonStr(p.gameId) + ",\"name\":" + JsonStr(p.name) + ",\"steamId\":" + JsonStr(p.gameId) +
-           ",\"platformId\":" + JsonStr("steam:" + p.gameId) + ",\"ping\":" + std::to_string(p.ping) +
-           ",\"spawned\":" + (p.spawned ? "true" : "false") + ",\"pawn\":" +
-           JsonStr(p.pawn ? Reflect::ClassName(p.pawn) : "") + ",\"characterId\":" +
-           (p.characterId.empty() ? "null" : JsonStr(p.characterId)) + ",\"online\":true,\"connectedAt\":" +
-           JsonStr(FirstSeen(p.gameId)) + "}";
+// -------------------------------------------------------------------------------------------
+// LANE L9: the player snapshot (plugin/docs/gamethread-policy.md).
+//
+// /players, /players/{id} and /players/{id}/location used to enter the game thread on EVERY request
+// and build their JSON there. Takaro polls positions every 30 s, so that freshness was never worth
+// a game-thread entry per call. The game thread now only copies raw fields into POD rows; the JSON
+// is built on the HTTP thread from a cache that is at most TAKARO_SNAPSHOT_TTL_MS old, and the
+// refresh is LAZY - no request, no game-thread entry at all.
+struct PlayerRow {
+    std::string gameId, name, characterId, pawnClass;
+    int ping = 0;
+    bool spawned = false, hasPawn = false, hasLoc = false;
+    double loc[3] = {0, 0, 0}, rot[3] = {0, 0, 0};
+};
+
+Mutex g_snapLock;
+std::vector<PlayerRow> g_snapRows;
+uint64_t g_snapAtMs = 0;
+std::atomic<uint64_t> g_snapRefreshes{0}, g_snapServedFromCache{0};
+
+uint64_t SnapshotTtlMs() {
+    static uint64_t cached = 0;
+    if (!cached) {
+        long v = strtol(ConfigValue("TAKARO_SNAPSHOT_TTL_MS", "snapshotTtlMs", "500").c_str(), nullptr, 10);
+        if (v < 0) v = 0;
+        if (v > 30000) v = 30000;
+        cached = (uint64_t)(v ? v : 1);
+    }
+    return cached;
+}
+
+bool ActorLocation(void* actor, double loc[3], double rot[3]);
+
+// Runs on the game thread. Pointer reads only - no JSON, no allocation beyond the strings the
+// engine hands us.
+void BuildPlayerSnapshotOnGameThread() {
+    std::vector<PlayerRow> rows;
+    for (auto& p : ReadPlayers()) {
+        PlayerRow r;
+        r.gameId = p.gameId;
+        r.name = p.name;
+        r.characterId = p.characterId;
+        r.ping = p.ping;
+        r.spawned = p.spawned;
+        r.hasPawn = p.pawn != nullptr;
+        if (p.pawn) {
+            r.pawnClass = Reflect::ClassName(p.pawn);
+            r.hasLoc = ActorLocation(p.pawn, r.loc, r.rot);
+        }
+        rows.push_back(r);
+    }
+    Guard g(g_snapLock);
+    g_snapRows.swap(rows);
+    g_snapAtMs = NowMs();
+}
+
+// Returns false only when the game thread is unreachable AND there is no usable cache.
+bool PlayerRows(std::vector<PlayerRow>& out, uint64_t& ageMs) {
+    uint64_t now = NowMs();
+    {
+        Guard g(g_snapLock);
+        if (g_snapAtMs && now - g_snapAtMs <= SnapshotTtlMs()) {
+            out = g_snapRows;
+            ageMs = now - g_snapAtMs;
+            g_snapServedFromCache++;
+            return true;
+        }
+    }
+    g_snapRefreshes++;
+    bool ran = GameThread::Run([] { Perf::Scope sc("snapshot.players"); BuildPlayerSnapshotOnGameThread(); }, 5000);
+    Guard g(g_snapLock);
+    if (!ran && !g_snapAtMs) return false;
+    out = g_snapRows;
+    ageMs = NowMs() - g_snapAtMs;
+    return true;
+}
+
+std::string PlayerRowJson(const PlayerRow& r);
+
+std::string PlayerRowJson(const PlayerRow& r) {
+    return "{\"gameId\":" + JsonStr(r.gameId) + ",\"name\":" + JsonStr(r.name) + ",\"steamId\":" +
+           JsonStr(r.gameId) + ",\"platformId\":" + JsonStr("steam:" + r.gameId) + ",\"ping\":" +
+           std::to_string(r.ping) + ",\"spawned\":" + (r.spawned ? "true" : "false") + ",\"pawn\":" +
+           JsonStr(r.pawnClass) + ",\"characterId\":" +
+           (r.characterId.empty() ? "null" : JsonStr(r.characterId)) + ",\"online\":true,\"connectedAt\":" +
+           JsonStr(FirstSeen(r.gameId)) + "}";
 }
 
 bool FindPlayerById(const std::string& id, PlayerInfo& out) {
@@ -1900,7 +1981,7 @@ void Actions::Housekeep() {
     }
     if (GameThread::TickCount() == 0) return;
     bool built = false;
-    GameThread::Run([&] { built = BuildItems(); }, 5000);
+    GameThread::Run([&] { Perf::Scope sc("catalogue.items"); built = BuildItems(); }, 5000);
     if (built) {
         Guard g(g_itemLock);
         SetCap("listItems", "ok",
@@ -1920,37 +2001,44 @@ void Actions::Housekeep() {
 // ================================================================================================
 // read-only handlers
 
+// LANE L9: all three read endpoints are answered from the snapshot. The JSON is assembled on the
+// HTTP thread; the game thread is entered only when the snapshot has aged out.
+const PlayerRow* FindRow(const std::vector<PlayerRow>& rows, const std::string& id) {
+    std::string needle = NormalizeGameId(id);
+    for (auto& r : rows)
+        if (r.gameId == needle || Lower(r.name) == Lower(id)) return &r;
+    return nullptr;
+}
+
 Actions::Result Actions::Players() {
-    return OnGameThread("GET /players", []() -> JobOut {
-        std::string o = "[";
-        bool first = true;
-        for (auto& p : ReadPlayers()) {
-            if (!first) o += ",";
-            first = false;
-            o += PlayerJson(p);
-        }
-        return {200, o + "]"};
-    });
+    std::vector<PlayerRow> rows;
+    uint64_t age = 0;
+    if (!PlayerRows(rows, age)) return Fail(503, "game thread unavailable");
+    std::string o = "[";
+    for (size_t i = 0; i < rows.size(); i++) o += (i ? "," : "") + PlayerRowJson(rows[i]);
+    return {200, o + "]"};
 }
 
 Actions::Result Actions::Player(const std::string& gameId) {
-    return OnGameThread("GET /players/{id}", [gameId]() -> JobOut {
-        PlayerInfo p;
-        if (!FindPlayerById(gameId, p)) return {404, ErrJson("player not online")};
-        return {200, PlayerJson(p)};
-    });
+    std::vector<PlayerRow> rows;
+    uint64_t age = 0;
+    if (!PlayerRows(rows, age)) return Fail(503, "game thread unavailable");
+    const PlayerRow* r = FindRow(rows, gameId);
+    if (!r) return Fail(404, "player not online");
+    return {200, PlayerRowJson(*r)};
 }
 
 Actions::Result Actions::PlayerLocation(const std::string& gameId) {
-    return OnGameThread("GET /players/{id}/location", [gameId]() -> JobOut {
-        PlayerInfo p;
-        if (!FindPlayerById(gameId, p)) return {404, ErrJson("player not online")};
-        if (!p.pawn) return {503, ErrJson("player has no pawn yet")};
-        double loc[3] = {0, 0, 0}, rot[3] = {0, 0, 0};
-        if (!ActorLocation(p.pawn, loc, rot)) return {503, ErrJson("pawn has no readable root component")};
-        return {200, "{\"x\":" + JsonNum(loc[0]) + ",\"y\":" + JsonNum(loc[1]) + ",\"z\":" + JsonNum(loc[2]) +
-                         ",\"yaw\":" + JsonNum(rot[1]) + ",\"pitch\":" + JsonNum(rot[0]) + "}"};
-    });
+    std::vector<PlayerRow> rows;
+    uint64_t age = 0;
+    if (!PlayerRows(rows, age)) return Fail(503, "game thread unavailable");
+    const PlayerRow* r = FindRow(rows, gameId);
+    if (!r) return Fail(404, "player not online");
+    if (!r->hasPawn) return Fail(503, "player has no pawn yet");
+    if (!r->hasLoc) return Fail(503, "pawn has no readable root component");
+    return {200, "{\"x\":" + JsonNum(r->loc[0]) + ",\"y\":" + JsonNum(r->loc[1]) + ",\"z\":" +
+                     JsonNum(r->loc[2]) + ",\"yaw\":" + JsonNum(r->rot[1]) + ",\"pitch\":" +
+                     JsonNum(r->rot[0]) + ",\"ageMs\":" + std::to_string(age) + "}"};
 }
 
 Actions::Result Actions::PlayerInventory(const std::string& gameId) {
@@ -2091,8 +2179,24 @@ Actions::Result Actions::Items(const std::string& search) {
     return {200, o + "]"};
 }
 
+// LANE L9: /entities is a CATALOGUE - the set of AI classes this build can spawn - not live state.
+// Building it walks every UClass in the object array, which is far too heavy to redo per request.
+// It is built once, cached, and only rebuilt when the cache has aged out (streaming can introduce a
+// new Blueprint class), which keeps a Takaro poll off the game thread entirely.
+Mutex g_entityCacheLock;
+std::string g_entityCache;
+uint64_t g_entityCacheAtMs = 0;
+const uint64_t kEntityCacheMs = 300000;  // 5 min
+
 Actions::Result Actions::Entities() {
-    return OnGameThread("GET /entities", []() -> JobOut {
+    {
+        Guard g(g_entityCacheLock);
+        if (g_entityCacheAtMs && NowMs() - g_entityCacheAtMs < kEntityCacheMs) {
+            Perf::RecordSweep("catalogue.entities.cacheHit", 0);
+            return {200, g_entityCache};
+        }
+    }
+    Actions::Result r = OnGameThread("GET /entities", []() -> JobOut {
         void* classCls = Reflect::StaticClass("UClass::StaticClass");
         if (!classCls) classCls = Reflect::FindObjectByPath("/Script/CoreUObject", "Class");
         if (!classCls) return {503, ErrJson("UClass class not found")};
@@ -2162,6 +2266,12 @@ Actions::Result Actions::Entities() {
         }
         return {200, o + "]"};
     });
+    if (r.status == 200) {
+        Guard g(g_entityCacheLock);
+        g_entityCache = r.body;
+        g_entityCacheAtMs = NowMs();
+    }
+    return r;
 }
 
 Actions::Result Actions::Locations() {

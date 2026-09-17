@@ -1,6 +1,7 @@
 #include "gamethread.h"
 
 #include "hooks.h"
+#include "perf.h"
 #include "state.h"
 #include "resolve.h"
 
@@ -36,11 +37,33 @@ std::atomic<uint64_t> g_maxDrainMs{0};
 bool g_installed = false;
 std::string g_how = "not installed";
 
+// LANE L9: per-tick budget for the job queue. Jobs that do not fit wait for the next tick; one job
+// always runs so a single slow job can never starve the queue. TAKARO_TICK_BUDGET_US overrides.
+uint64_t TickBudgetNs() {
+    static uint64_t cached = 0;
+    if (!cached) {
+        std::string v = ConfigValue("TAKARO_TICK_BUDGET_US", "tickBudgetUs", "500");
+        long us = strtol(v.c_str(), nullptr, 10);
+        if (us < 50) us = 50;
+        if (us > 33000) us = 33000;
+        cached = (uint64_t)us * 1000ull;
+    }
+    return cached;
+}
+
 void OnTick() {
+    uint64_t t0 = Perf::NowNs();
+    size_t jobsRan = 0;
+    bool budgetHit = false;
     uint64_t now = NowMs();
-    long tid = (long)syscall(SYS_gettid);
-    long prev = g_tickTid.exchange(tid);
-    if (prev && prev != tid) g_tickChanges++;
+    // gettid() is a real syscall; the game thread never changes identity mid-run, so it is sampled
+    // once and then only every 256th tick as a cheap sanity check (L9).
+    long tid = g_tickTid.load();
+    if (!tid || (g_ticks.load() & 0xff) == 0) {
+        tid = (long)syscall(SYS_gettid);
+        long prev = g_tickTid.exchange(tid);
+        if (prev && prev != tid) g_tickChanges++;
+    }
     if (!g_ticks++) {
         g_firstTickMs = now;
         PluginLog("gamethread: first tick on thread %ld", tid);
@@ -48,7 +71,9 @@ void OnTick() {
     }
     g_lastTickMs = now;
 
+    const uint64_t budget = TickBudgetNs();
     for (size_t n = 0; n < GameThread::kJobsPerTick; n++) {
+        if (n && Perf::NowNs() - t0 >= budget) { budgetHit = true; break; }
         std::shared_ptr<Job> job;
         {
             Guard g(g_q);
@@ -69,12 +94,14 @@ void OnTick() {
         uint64_t took = NowMs() - t0;
         if (took > g_maxDrainMs) g_maxDrainMs = took;
         g_jobsRun++;
+        jobsRan++;
         {
             Guard g(g_q);
             job->done = true;
             pthread_cond_broadcast(&g_cv);
         }
     }
+    Perf::RecordTick(Perf::NowNs() - t0, jobsRan, budgetHit);
 }
 
 using FnTick = void (*)(void* self, float dt, bool idle);
@@ -84,18 +111,19 @@ using FnTick = void (*)(void* self, float dt, bool idle);
 struct TickHook {
     const char* symbol;
     FnTick orig;
+    std::atomic<uint64_t>* fired;  // L9: resolved once at install; no lock on the tick path
 };
 TickHook g_tick[] = {
-    {"UVeinGameEngine::Tick", nullptr},
-    {"UGameEngine::Tick", nullptr},
-    {"UEngine::Tick", nullptr},
+    {"UVeinGameEngine::Tick", nullptr, nullptr},
+    {"UGameEngine::Tick", nullptr, nullptr},
+    {"UEngine::Tick", nullptr, nullptr},
 };
 const size_t kTickCount = sizeof(g_tick) / sizeof(g_tick[0]);
 
 template <size_t I>
 void TickDetour(void* self, float dt, bool idle) {
     if (g_tick[I].orig) g_tick[I].orig(self, dt, idle);
-    Hooks::MarkFired(g_tick[I].symbol);
+    if (g_tick[I].fired) g_tick[I].fired->fetch_add(1, std::memory_order_relaxed);
     try { OnTick(); } catch (...) {}
 }
 void* const kDetours[kTickCount] = {(void*)&TickDetour<0>, (void*)&TickDetour<1>, (void*)&TickDetour<2>};
@@ -189,6 +217,7 @@ bool InstallOne(size_t idx) {
         g_tick[idx].orig = nullptr;
         return false;
     }
+    g_tick[idx].fired = Hooks::FiredCounter(symName);
     PluginLog("gamethread: %s hooked in %zu vtable(s) at slot %zu via %s (%s)", symName, n, slot, via.c_str(),
               tables.c_str());
     g_how += std::string(g_how.empty() ? "" : "; ") + symName + " x" + std::to_string(n) + " slot " +
@@ -221,6 +250,7 @@ uint64_t GameThread::TickCount() { return g_ticks.load(); }
 
 bool GameThread::Run(std::function<void()> fn, uint32_t timeoutMs) {
     if (!g_installed) return false;
+    Perf::RecordEntry();
     auto job = std::make_shared<Job>();
     job->fn = std::move(fn);
     {
@@ -278,5 +308,6 @@ std::string GameThread::StatsJson() {
            ",\"jobsRun\":" + std::to_string(g_jobsRun.load()) +
            ",\"jobsTimedOut\":" + std::to_string(g_jobsTimedOut.load()) +
            ",\"jobsQueued\":" + std::to_string(queued) +
-           ",\"maxJobMs\":" + std::to_string(g_maxDrainMs.load()) + "}";
+           ",\"maxJobMs\":" + std::to_string(g_maxDrainMs.load()) +
+           ",\"tickBudgetUs\":" + std::to_string(TickBudgetNs() / 1000) + "}";
 }

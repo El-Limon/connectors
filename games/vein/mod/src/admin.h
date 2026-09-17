@@ -31,6 +31,9 @@ void Init();
 // finds the live AVeinGameSession, reads the admin array by reflection and grants anything missing.
 // Idempotent: a pass with nothing to do costs one property read.
 void Housekeep();
+// LANE L9: a grant pass only matters when somebody connects. The events lane raises this edge.
+void NoteJoin();
+bool ConsumeJoinEdge();
 
 // {configured, applied, sessionArrayNum, ...} for /health.diagnostics.admins. Served from a cached
 // snapshot, so it is safe on an HTTP thread and never blocks on the pump.

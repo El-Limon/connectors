@@ -31,9 +31,11 @@
 #include "events.h"
 
 #include "actions.h"
+#include "admin.h"
 #include "actions_util.h"
 #include "events_parse.h"
 #include "gamethread.h"
+#include "perf.h"
 #include "hooks.h"
 #include "reflect.h"
 #include "resolve.h"
@@ -54,6 +56,12 @@
 using namespace UE;
 
 namespace {
+
+// LANE L9: "something changed" - a player joined or left, or a class we care about was first seen.
+// Housekeeping sweeps run on this edge plus a slow safety cadence, instead of unconditionally every
+// 2 s. New AI of an already-seen Blueprint share that class's vtable, which the sweep has already
+// hooked, so a spawn is not a reason to sweep; a NEW class is, and that only happens on streaming.
+std::atomic<bool> g_worldDirty{true};
 
 // =================================================================================================
 // diagnostics
@@ -443,6 +451,8 @@ bool AlreadyAnnounced(const std::string& gameId) {
 }
 
 void EmitJoin(const Ident& id) {
+    g_worldDirty = true;
+    Admin::NoteJoin();  // L9: the admin grant pass runs on this edge, not on a 2 s timer
     ClearLeaveMarker(id.gameId);
     {
         Guard g(g_connLock);
@@ -454,6 +464,7 @@ void EmitJoin(const Ident& id) {
 }
 
 void EmitLeave(const Ident& id) {
+    g_worldDirty = true;
     {
         Guard g(g_connLock);
         g_announced.erase(id.gameId);
@@ -830,6 +841,8 @@ size_t g_chatCandidates = 0, g_deathCandidates = 0, g_killCandidates = 0;
 // The FName the chat hook actually saw fire, for /health.
 Mutex g_liveNameLock;
 std::string g_chatFn, g_deathFn, g_killFn;
+std::atomic<bool> g_liveNameSeen[4] = {};  // L9: one flag per Kind, so the hot path takes no lock
+
 
 void NoteLiveFn(Kind k, const std::string& n) {
     Guard g(g_liveNameLock);
@@ -1350,36 +1363,124 @@ void HandleDeathDispatch(void* self, void* func, void* params, const char* via) 
     g_deathsIgnored++;
 }
 
+// LANE L9 (performance): this detour sits on the engine's own RPC path, so its cost is paid by the
+// server on every replicated call of every hooked object. Three things were measured and removed:
+//
+//  1. the linear scan over up to 256 hooked vtables -> an open-addressed pointer table;
+//  2. the FName read + candidate loop on EVERY call -> a UFunction* -> Kind cache. UFunction objects
+//     are permanent, so the second call for a given function is a single pointer probe. Misses are
+//     cached too, which is the overwhelming case (a server RPC we do not care about);
+//  3. MemReadable()'s mutex + /proc/self/maps rescan -> a lock-free snapshot (see resolve.cpp).
+//
+// The filter still never stringifies an FName: a cache miss compares raw FName values exactly as
+// before, and the cache is keyed on the pointer the engine itself just dispatched.
+const size_t kPeSlots = 1024;  // power of two; open addressing, never resized
+struct PeSlot {
+    std::atomic<void*> vtable{nullptr};
+    void* orig = nullptr;
+};
+PeSlot g_peSlots[kPeSlots];
+
+inline size_t PtrHash(void* p) {
+    uint64_t v = (uint64_t)(uintptr_t)p;
+    v ^= v >> 33; v *= 0xff51afd7ed558ccdull; v ^= v >> 33;
+    return (size_t)v & (kPeSlots - 1);
+}
+
+void PeRemember(void* vt, void* orig) {
+    size_t i = PtrHash(vt);
+    for (size_t n = 0; n < 32; n++, i = (i + 1) & (kPeSlots - 1)) {
+        void* cur = g_peSlots[i].vtable.load(std::memory_order_acquire);
+        if (cur == vt) return;
+        if (!cur) {
+            g_peSlots[i].orig = orig;
+            g_peSlots[i].vtable.store(vt, std::memory_order_release);
+            return;
+        }
+    }
+}
+
+inline void* PeLookup(void* vt) {
+    size_t i = PtrHash(vt);
+    for (size_t n = 0; n < 32; n++, i = (i + 1) & (kPeSlots - 1)) {
+        void* cur = g_peSlots[i].vtable.load(std::memory_order_acquire);
+        if (!cur) return nullptr;
+        if (cur == vt) return g_peSlots[i].orig;
+    }
+    return nullptr;
+}
+
+// UFunction* -> decision cache. `kind` is the Kind we already decided for this function; a cached
+// kNone means "we looked at this function once and it is not ours".
+const size_t kFnSlots = 2048;
+struct FnSlot {
+    std::atomic<void*> func{nullptr};
+    uint8_t kind = 0;
+    int16_t candidate = -1;
+};
+FnSlot g_fnSlots[kFnSlots];
+
+inline size_t FnHash(void* p) {
+    uint64_t v = (uint64_t)(uintptr_t)p;
+    v ^= v >> 29; v *= 0xbf58476d1ce4e5b9ull; v ^= v >> 32;
+    return (size_t)v & (kFnSlots - 1);
+}
+
 void DetourProcessEvent(void* self, void* func, void* params) {
+    uint64_t tFilter0 = Perf::NowNs();
     FnProcessEvent orig = nullptr;
-    if (self && MemReadable(self, 8)) {
-        void* vt = *(void**)self;
-        size_t n = g_peCount.load();
-        for (size_t i = 0; i < n && i < 256; i++)
-            if (g_pe[i].vtable == vt) { orig = (FnProcessEvent)g_pe[i].orig; break; }
+    if (self) {
+        void* vt = *(void**)self;  // the engine just dispatched through this vtable: it is live
+        orig = (FnProcessEvent)PeLookup(vt);
     }
     if (!orig) orig = g_processEvent;
 
     // Read what we need *before* the call: RPC parameter buffers do not survive it.
     Kind what = kNone;
     FnCandidate* hit = nullptr;
+    bool cacheHit = false;
     try {
         if (g_fnNamesReady && func) {
-            FName fn;
-            if (ObjNameRaw(func, fn)) {
-                for (size_t i = 0; i < kCandidateCount; i++) {
-                    if (g_candidates[i].fname.Comparison == 0) continue;
-                    if (!(g_candidates[i].fname == fn)) continue;
-                    hit = &g_candidates[i];
-                    what = g_candidates[i].kind;
+            size_t si = FnHash(func);
+            FnSlot* free_ = nullptr;
+            for (size_t n = 0; n < 16; n++, si = (si + 1) & (kFnSlots - 1)) {
+                void* cur = g_fnSlots[si].func.load(std::memory_order_acquire);
+                if (cur == func) {
+                    cacheHit = true;
+                    what = (Kind)g_fnSlots[si].kind;
+                    if (g_fnSlots[si].candidate >= 0) hit = &g_candidates[g_fnSlots[si].candidate];
                     break;
+                }
+                if (!cur) { free_ = &g_fnSlots[si]; break; }
+            }
+            if (!cacheHit) {
+                FName fn;
+                int16_t which = -1;
+                if (ObjNameRaw(func, fn)) {
+                    for (size_t i = 0; i < kCandidateCount; i++) {
+                        if (g_candidates[i].fname.Comparison == 0) continue;
+                        if (!(g_candidates[i].fname == fn)) continue;
+                        hit = &g_candidates[i];
+                        what = g_candidates[i].kind;
+                        which = (int16_t)i;
+                        break;
+                    }
+                    if (free_) {  // remember the decision - including "not ours"
+                        free_->kind = (uint8_t)what;
+                        free_->candidate = which;
+                        free_->func.store(func, std::memory_order_release);
+                    }
                 }
             }
         }
         if (hit) {
             hit->seen++;
-            NoteLiveFn(what, hit->name);
+            // The live-name registry only needs the FIRST hit per kind; the atomic flag keeps the
+            // mutex off the hot path for every hit after that.
+            if (!g_liveNameSeen[what & 3].exchange(true)) NoteLiveFn(what, hit->name);
         }
+        Perf::RecordFilter(Perf::NowNs() - tFilter0, hit != nullptr, cacheHit);
+        uint64_t tHandler0 = what != kNone ? Perf::NowNs() : 0;
         if (what == kChat) {
             g_chat.fired++;
             HandleChat(self, func, params);
@@ -1389,6 +1490,7 @@ void DetourProcessEvent(void* self, void* func, void* params) {
             DumpParamsOnce(func, "death event");
             HandleDeathDispatch(self, func, params, hit ? hit->name : "death");
         }
+        if (tHandler0) Perf::RecordHandler(Perf::NowNs() - tHandler0);
     } catch (...) {
         PluginLog("events: ProcessEvent handler threw (kind=%d)", (int)what);
     }
@@ -1419,6 +1521,7 @@ bool HookObjectProcessEvent(const std::string& name, void* obj) {
     g_pe[idx].vtable = vt;
     g_pe[idx].orig = orig;
     g_peCount.store(idx + 1);
+    PeRemember(vt, orig);  // L9: the O(1) table the detour actually reads
     Guard g(g_vtLock);
     g_hookedVts.insert(vt);
     PluginLog("events: ProcessEvent hooked on %s (vtable %p, orig %p)", name.c_str(), vt, orig);
@@ -1477,8 +1580,32 @@ size_t HookHealthComponentOf(void* actor, const char* label) {
     return HookObjectProcessEvent(label, c) ? 1 : 0;
 }
 
-void SweepProcessEventTargets() {
-    for (auto& t : g_targets) {
+// LANE L9: GetObjectsOfClass walks the whole GUObjectArray, so a full pass over all ten targets
+// cost ~1.5 ms of game thread every 2 s. The pass is now RESUMABLE: it starts where the last one
+// stopped and gives up its slot as soon as `budgetUs` is spent, so no single game-thread entry
+// holds the pump for more than roughly one class's worth of work. Coverage is unchanged - the next
+// cycle picks up the remaining targets - and nothing is missed, because a hook is keyed on the
+// class VTABLE: every later instance of an already-swept class is already hooked.
+size_t g_sweepCursor = 0;
+std::atomic<uint64_t> g_sweepPasses{0}, g_sweepTargetsDone{0}, g_sweepYields{0};
+// A budgeted sweep may yield before it has seen every target. `g_sweepPending` keeps housekeeping
+// sweeping on consecutive cycles until one FULL pass is done, so a join can never wait for the 15 s
+// safety cadence to get its controller/chat vtable hooked.
+std::atomic<bool> g_sweepPending{true};
+
+void SweepProcessEventTargets(uint64_t budgetUs = 0) {
+    const size_t n = sizeof(g_targets) / sizeof(g_targets[0]);
+    uint64_t t0 = Perf::NowNs();
+    for (size_t k = 0; k < n; k++) {
+        if (budgetUs && k && Perf::NowNs() - t0 >= budgetUs * 1000ull) {
+            g_sweepYields++;
+            g_sweepPending = true;  // finish the pass on the next cycle
+            return;
+        }
+        auto& t = g_targets[g_sweepCursor];
+        g_sweepCursor = (g_sweepCursor + 1) % n;
+        if (g_sweepCursor == 0) g_sweepPasses++;
+        g_sweepTargetsDone++;
         if (!t.resolved) {
             t.resolved = FindByName(t.cls);
             if (!t.resolved) continue;
@@ -1491,6 +1618,7 @@ void SweepProcessEventTargets() {
             if (t.kind == kKill || t.kind == kDeath) t.hooked += HookHealthComponentOf(o, t.label);
         }
     }
+    g_sweepPending = false;  // every target was visited in this call
 }
 
 // =================================================================================================
@@ -2349,6 +2477,48 @@ void Events::Init() {
     PluginLog("events: init done (UObject work deferred to the game thread)");
 }
 
+namespace {
+
+// LANE L9: housekeeping cadence. Every one of these used to be "every 2 s, unconditionally".
+const uint64_t kSweepIntervalMs = 15000;   // safety net; a join/leave sweeps immediately
+const uint64_t kHealthIntervalMs = 5000;   // death fallback, only while somebody is connected
+const uint64_t kReapIntervalMs = 5000;
+const uint64_t kSweepBudgetUs = 1000;      // one game-thread entry never sweeps for longer
+
+size_t PendingJoins() {
+    Guard g(g_connLock);
+    size_t n = 0;
+    for (auto& c : g_conns)
+        if (!c.announced && !c.left) n++;
+    return n;
+}
+
+size_t AnnouncedConnections() {
+    Guard g(g_connLock);
+    size_t n = 0;
+    for (auto& c : g_conns)
+        if (c.announced && !c.left) n++;
+    return n;
+}
+
+// The connector-facing capability names (the ones L1's stub registered, and the ones the sidecar
+// reads) mirror the internal ones, detail included - a degrade has to carry its reason on both
+// names or /health would show a bare "degraded" with no explanation.
+void MirrorCapabilities() {
+    auto& st = PluginState::Get();
+    struct { const char* from; const char* to; SourceStat* stat; } kMirror[] = {
+        {"joinLeaveEvents", "playerConnected", &g_join}, {"joinLeaveEvents", "playerDisconnected", &g_leave},
+        {"chatEvents", "chatMessage", &g_chat},          {"deathEvents", "playerDeath", &g_death},
+        {"killEvents", "entityKilled", &g_kill},         {"logEvents", "log", &g_log},
+    };
+    for (auto& m : kMirror) {
+        std::string status = st.Capability(m.from);
+        st.SetCapability(m.to, status, status == "ok" ? std::string() : NoteOf(*m.stat));
+    }
+}
+
+}  // namespace
+
 void Events::Housekeep() {
     try {
         PollLog();
@@ -2356,20 +2526,55 @@ void Events::Housekeep() {
     } catch (...) {
     }
     if (!Reflect::Validated()) return;  // never touch UObjects before the layout is confirmed
+
+    // LANE L9 - the game-thread policy (plugin/docs/gamethread-policy.md). Housekeeping used to
+    // enter the game thread unconditionally every 2 s and run every phase. Now each phase decides
+    // for itself, and when no phase wants to run we do not enter the game thread at all: an idle
+    // server with nobody online costs zero game-thread entries from this path.
+    const uint64_t now = NowMs();
+    const bool dirty = g_worldDirty.exchange(false);
+    if (dirty) g_sweepPending = true;
+    static uint64_t lastSweep = 0, lastHealth = 0, lastReap = 0;
+    const bool wantBoot = !g_bootDone;
+    // A sweep only finds work when a class vtable is new, which happens on a join or on level
+    // streaming - hence the dirty edge plus a 15 s safety cadence, instead of every 2 s.
+    const bool wantSweep = wantBoot || dirty || g_sweepPending.load() || now - lastSweep >= kSweepIntervalMs;
+    // The live game mode retry is a GetObjectsOfClass walk of its own. It was the single most
+    // expensive thing left on the game thread once the sweep was rate-limited (1.2 ms every 2 s, on
+    // a rig where it never binds because the exported-vtable sweep already did the job), so it gets
+    // the same cadence as the sweep: immediately on a join, else every 15 s.
+    static uint64_t lastGameMode = 0;
+    const bool wantGameMode = !g_liveModeHooked.load() &&
+                              (wantBoot || dirty || now - lastGameMode >= kSweepIntervalMs);
+    if (wantGameMode) lastGameMode = now;
+    const bool wantJoins = PendingJoins() > 0;
+    const bool wantReap = AnnouncedConnections() > 0 && now - lastReap >= kReapIntervalMs;
+    // The health-edge poll is the *fallback* death detector, and it only means anything while
+    // somebody is connected.
+    const bool wantHealth = AnnouncedConnections() > 0 && now - lastHealth >= kHealthIntervalMs;
+    if (!(wantBoot || wantSweep || wantGameMode || wantJoins || wantReap || wantHealth)) {
+        Phase("idle");
+        if (g_bootDone) { try { RefreshCapabilities(); } catch (...) {} }
+        MirrorCapabilities();
+        return;
+    }
+    if (wantSweep) lastSweep = now;  // the pending flag, not this stamp, carries a partial pass on
+    if (wantHealth) lastHealth = now;
+    if (wantReap) lastReap = now;
     GameThread::Run(
-        [] {
+        [&] {
             try {
-                if (!g_bootDone) { Phase("boot"); GameThreadInit(); }
-                Phase("sweep");
-                SweepProcessEventTargets();
-                Phase("gamemode");
-                HookLiveGameMode();
-                Phase("joins");
-                ResolvePendingJoins();
-                Phase("reap");
-                ReapGoneConnections();
-                Phase("health");
-                PollHealthEdges();
+                Perf::Scope total("housekeep");
+                if (wantBoot) { Phase("boot"); Perf::Scope sc("housekeep.boot"); GameThreadInit(); }
+                if (wantSweep) {
+                    Phase("sweep");
+                    Perf::Scope sc("housekeep.sweep");
+                    SweepProcessEventTargets(kSweepBudgetUs);
+                }
+                if (wantGameMode) { Phase("gamemode"); Perf::Scope sc("housekeep.gamemode"); HookLiveGameMode(); }
+                if (wantJoins) { Phase("joins"); Perf::Scope sc("housekeep.joins"); ResolvePendingJoins(); }
+                if (wantReap) { Phase("reap"); Perf::Scope sc("housekeep.reap"); ReapGoneConnections(); }
+                if (wantHealth) { Phase("health"); Perf::Scope sc("housekeep.health"); PollHealthEdges(); }
                 Phase("idle");
             } catch (...) {
                 PluginLog("events: housekeeping job threw");
@@ -2382,19 +2587,7 @@ void Events::Housekeep() {
         } catch (...) {
         }
     }
-    // The connector-facing capability names (the ones L1's stub registered, and the ones the sidecar
-    // reads) mirror the internal ones, detail included - a degrade has to carry its reason on both
-    // names or /health would show a bare "degraded" with no explanation.
-    auto& st = PluginState::Get();
-    struct { const char* from; const char* to; SourceStat* stat; } kMirror[] = {
-        {"joinLeaveEvents", "playerConnected", &g_join}, {"joinLeaveEvents", "playerDisconnected", &g_leave},
-        {"chatEvents", "chatMessage", &g_chat},          {"deathEvents", "playerDeath", &g_death},
-        {"killEvents", "entityKilled", &g_kill},         {"logEvents", "log", &g_log},
-    };
-    for (auto& m : kMirror) {
-        std::string status = st.Capability(m.from);
-        st.SetCapability(m.to, status, status == "ok" ? std::string() : NoteOf(*m.stat));
-    }
+    MirrorCapabilities();
 }
 
 bool Events::BanEnforcementLive() {

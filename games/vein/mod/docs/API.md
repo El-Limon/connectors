@@ -55,6 +55,8 @@ when `context/games/vein/evidence/` says so.
 | `TAKARO_PLUGIN_DATA_DIR` | — | `<exe dir>/takaro` | `plugin.log`, `symcache.json`, `plugin.json` |
 | `TAKARO_ADMIN_STEAMIDS` | `adminSteamIds` | — | comma/semicolon/whitespace-separated SteamID64s that the plugin grants in-game admin (see **Admin grants** below). `steam:<id>` is accepted; anything that is not a SteamID64 is dropped and listed in `/health.diagnostics.admins.rejected` |
 | `TAKARO_SUPERADMIN_STEAMIDS` | `superAdminSteamIds` | — | parsed and reported, but **never applied**: this build ships no super-admin setter. See **Admin grants** |
+| `TAKARO_TICK_BUDGET_US` | `tickBudgetUs` | `500` | *(lane L9)* how many microseconds of one engine tick the queued-job pump may use. Leftover jobs wait for the next tick; one job always runs, so a slow job cannot starve the queue. Clamped to 50…33000 |
+| `TAKARO_SNAPSHOT_TTL_MS` | `snapshotTtlMs` | `500` | *(lane L9)* how long the player snapshot (`/players`, `/players/{id}`, `/players/{id}/location`) may be served from cache before the game thread is entered again. The refresh is lazy: with no requests there are no entries. Clamped to 1…30000 |
 
 Logs go to `<data dir>/plugin.log`. Every line is passed through the redactor, which masks
 `WorldPassword`, `AdminPassword`, `ServerPassword`, `Password=` and `*Token` values in ini,
@@ -296,6 +298,7 @@ restart. `400` on a missing or malformed `gameId`, `501` when there is no live s
 |---|---|
 | `GET /debug/gamethread` | `{"ranOnThreadId":47,"httpThreadId":123,"latencyMs":31,"stats":{...}}`. Runs a no-op job on the game thread. `503` if the pump never ticked. |
 | `GET /debug/symbols` | the ELF facts, the symcache block and the full resolved table. |
+| `GET /debug/perf[?reset=1]` | *(lane L9)* the game-thread performance counters — the same object as `/health.diagnostics.perf`. `reset=1` answers with the current window and then starts a fresh one. See **Performance counters** below. |
 | `GET /debug/object?path=/Script/Pkg.Name` or `?ptr=0x...` | the object's UPROPERTY tree up the class chain: `{name, type, offset, value}` per property, values decoded for primitives, `FString`, `FName` and object pointers. When the object is itself a `UClass`/`UScriptStruct` the properties it *declares* are listed under `declaredProperties`. `ptr` is refused unless it is inside a readable mapping. |
 | `POST /debug/set-admin` | grants/revokes in-game admin — see **Admin grants** above. |
 | `GET /debug/inventories?gameId=<id>` | *(lane L3f)* which container the plugin answers `getPlayerInventory` from, and which ones exist: `{gameId,name,characterId,controller,controllerPawn,playerStatePawn,pawnsAgree,spawned,chosen,chosenEntries,chosenRejectedBecause,legacySweep:[{component,owner,ownerIsCurrentPawn,entries,acceptedNow}]}`. `pawnsAgree:false` is the stale-pawn condition; `legacySweep` is what the pre-L3f resolution would have picked, in the order it picked it. |
@@ -309,6 +312,38 @@ GET /debug/structs?name=ChatMessageData
  "properties":[{"name":"SenderData","type":"StructProperty","offset":0},
                {"name":"MessageBody","type":"StrProperty","offset":120}]}
 ```
+
+## Performance counters (lane L9)
+
+`GET /debug/perf` and `/health.diagnostics.perf` return the same object. It exists because the
+plugin runs on the server's game thread, and that claim ("it costs almost nothing") has to be
+measurable rather than asserted. The policy it enforces is
+`context/games/vein/source/plugin/docs/gamethread-policy.md`.
+
+```
+{"windowMs":600000,
+ "tick":{"samples":1000,"count":36000,"avgUs":3.1,"p50Us":2.1,"p99Us":12.4,"maxUs":5358.2,
+         "ringMaxUs":41.2,"hz":60.0,"budgetHits":0},
+ "jobs":{"count":120,"perSecond":0.2},
+ "gameThreadEntries":{"count":120,"perSecond":0.2},
+ "processEventFilter":{"calls":36000,"callsPerSecond":60.0,"avgNs":180.0,"maxNs":41280,
+                       "hits":0,"hitsPerSecond":0,"cacheHits":35980,"totalMsInWindow":6.5},
+ "eventHandlers":{"calls":0,"avgUs":0,"maxUs":0},
+ "sweeps":{"housekeep.sweep":{"calls":40,"perSecond":0.07,"avgUs":900.0,"maxUs":2391.8,"totalMs":36.0}, ...}}
+```
+
+| field | meaning |
+|---|---|
+| `tick.avgUs` / `p50Us` / `p99Us` / `maxUs` | wall time **our** Tick detour spends after the engine's own Tick returns. `p50`/`p99` are over the last 1000 ticks (`samples`); `maxUs` is since the last reset and includes the boot-time work. |
+| `tick.ringMaxUs` | the maximum inside the 1000-tick window — the number to compare against the ~33 ms frame. |
+| `tick.budgetHits` | ticks that stopped draining jobs because `TAKARO_TICK_BUDGET_US` was spent. |
+| `jobs` / `gameThreadEntries` | jobs drained, and jobs *enqueued* from off-thread work. `gameThreadEntries.perSecond` is the number the game-thread policy is about: with nobody online and nobody polling it should be near zero. |
+| `processEventFilter` | our `ProcessEvent` detour's decision cost: `avgNs` is per engine RPC through a hooked vtable, `cacheHits` is how often the `UFunction*` decision cache answered without reading an `FName`, `hitsPerSecond` how often a call was actually one of ours. |
+| `eventHandlers` | time inside a handler we chose to run (chat / death dispatch), i.e. only on a real event. |
+| `sweeps` | every named piece of periodic or per-request game-thread work: `housekeep.*`, `admin.pass`, `catalogue.items`, `snapshot.players`, and one entry per HTTP endpoint that entered the game thread. `*.cacheHit` entries count reads that were served **without** entering it. |
+
+Measured before/after numbers for this build are in
+`context/games/vein/evidence/2026-09-17-l9-performance.md`.
 
 ## Actions (lane L3, corrected by lane L3e) — every mutating endpoint verifies its own effect
 

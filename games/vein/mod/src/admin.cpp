@@ -3,11 +3,13 @@
 
 #include "actions_util.h"
 #include "gamethread.h"
+#include "perf.h"
 #include "reflect.h"
 #include "resolve.h"
 #include "state.h"
 
 #include <cstring>
+#include <atomic>
 #include <set>
 
 using UE::FName;
@@ -15,6 +17,9 @@ using UE::FString;
 using UE::TArray;
 
 namespace {
+
+const uint64_t kPassIntervalMs = 60000;  // L9: safety cadence; a join triggers a pass immediately
+std::atomic<bool> g_joinEdge{true};      // true at boot so the first pass still runs
 
 using FnProcessEvent = void (*)(void* obj, void* func, void* params);
 using FnMalloc = void* (*)(size_t, uint32_t);
@@ -397,8 +402,21 @@ void Admin::Housekeep() {
         if (g_configured.empty()) return;
     }
     if (GameThread::TickCount() == 0) return;
-    GameThread::Run([&] { Pass("", true, false, nullptr, nullptr); }, 5000);
+    // LANE L9 (game-thread policy): a grant pass reads and writes the live game session through
+    // ProcessEvent, so it belongs on the game thread - but it only has anything to do when a player
+    // connects (a grant is re-applied on rejoin). It now runs on that edge, with a 60 s safety pass
+    // instead of the old unconditional entry every 2 s.
+    static uint64_t lastPass = 0;
+    uint64_t now = NowMs();
+    bool joined = Admin::ConsumeJoinEdge();
+    if (!joined && lastPass && now - lastPass < kPassIntervalMs) return;
+    lastPass = now;
+    GameThread::Run([&] { Perf::Scope sc("admin.pass"); Pass("", true, false, nullptr, nullptr); }, 5000);
 }
+
+// Set from the events lane when a player is announced: the only moment a grant pass can matter.
+void Admin::NoteJoin() { g_joinEdge.store(true); }
+bool Admin::ConsumeJoinEdge() { return g_joinEdge.exchange(false); }
 
 std::string Admin::DiagnosticsJson() {
     Guard g(g_lock);

@@ -4,6 +4,7 @@
 #include "admin.h"
 #include "events.h"
 #include "gamethread.h"
+#include "perf.h"
 #include "hooks.h"
 #include "reflect.h"
 #include "state.h"
@@ -212,6 +213,7 @@ Response Health() {
                     ",\"symCache\":" + Resolve::CacheJson() +
                     ",\"diagnostics\":{\"resolve\":" + Resolve::StatsJson() + ",\"selfChecks\":" + selfChecks +
                     ",\"reflect\":" + Reflect::LayoutJson() + ",\"gameThread\":" + GameThread::StatsJson() +
+                    ",\"perf\":" + Perf::Json() +
                     ",\"http\":" + Http::StatsJson() +
                     ",\"eventSources\":" + Events::DiagnosticsJson() +
                     ",\"events\":{\"buffered\":" + std::to_string(st.Buffered()) +
@@ -318,6 +320,13 @@ Response Route(const Request& r) {
         }
         if (!GET) return Err(405, "method not allowed");
         if (p.size() == 2 && p[1] == "gamethread") return DebugGameThread();
+        if (p.size() == 2 && p[1] == "perf") {
+            // ?reset=1 zeroes the counters *after* answering, so a caller gets the window it asked
+            // for and the next window starts clean.
+            std::string body = Perf::Json();
+            if (QueryParam(r.query, "reset") == "1") Perf::Reset();
+            return {200, body};
+        }
         if (p.size() == 2 && p[1] == "symbols") return DebugSymbols();
         if (p.size() == 2 && p[1] == "nearby") {
             std::string rad = QueryParam(r.query, "radius");
