@@ -41,14 +41,34 @@ describe('event mapping', () => {
     expect(mapPluginEvent({ type: 'player-death', data: { player, killerEntity: 'BP_Zombie_Base' } })?.data).toMatchObject({
       msg: 'Tester was killed by BP_Zombie_Base',
     });
-    expect(mapPluginEvent({ type: 'player-death', data: { player } })?.data).not.toHaveProperty('msg');
+    // L2c: a death with no killer at all is no longer silent - it says so.
+    expect(mapPluginEvent({ type: 'player-death', data: { player } })?.data).toMatchObject({ msg: 'Tester died' });
+  });
+  it('player-death with no attacker is environmental, not a suicide (L2c)', () => {
+    // VEIN hands the victim's own pawn/controller to the death event for a fall or drowning; the
+    // plugin now omits `attacker` entirely and says what killed him in `cause`.
+    const env = mapPluginEvent({ type: 'player-death', data: { player, cause: 'environment' } })?.data;
+    expect(env).not.toHaveProperty('attacker');
+    expect(env).toMatchObject({ msg: 'Tester died (environment)' });
+    const fall = mapPluginEvent({ type: 'player-death', data: { player, cause: 'DeathCause:2' } })?.data;
+    expect(fall).toMatchObject({ msg: 'Tester died (DeathCause:2)' });
+    // An AI killer still reads as one, and by its display name.
+    expect(mapPluginEvent({ type: 'player-death', data: { player, killerEntity: 'Zombie' } })?.data).toMatchObject({
+      msg: 'Tester was killed by Zombie',
+    });
   });
   it('entity-killed', () => {
     expect(mapPluginEvent({ type: 'entity-killed', data: { player, entity: 'BP_Zombie_Base', weapon: 'Item_Weapon_Pistol' } })).toEqual({
       type: 'entity-killed',
       data: { player: takaroPlayer, entity: 'BP_Zombie_Base', weapon: 'Item_Weapon_Pistol' },
     });
-    expect(mapPluginEvent({ type: 'entity-killed', data: { player, entity: { code: 'BP_Deer' } } })?.data).toMatchObject({ entity: 'BP_Deer', weapon: '' });
+    // Lane L2c: the plugin omits `weapon` when it cannot name one (a bite, the debug kill), but
+    // Takaro's EventEntityKilled rejects the event unless the field is a string - measured, see
+    // mapping.ts - so the unknown case goes on the wire as '' rather than being dropped.
+    expect(mapPluginEvent({ type: 'entity-killed', data: { player, entity: { code: 'BP_Deer' } } })?.data).toMatchObject({
+      entity: 'BP_Deer',
+      weapon: '',
+    });
   });
   it('log', () => {
     expect(mapPluginEvent({ type: 'log', data: { msg: 'line' } })).toEqual({ type: 'log', data: { msg: 'line' } });

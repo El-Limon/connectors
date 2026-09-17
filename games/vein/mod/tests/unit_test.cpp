@@ -833,6 +833,33 @@ static void TestGiveVerification() {
 }
 
 // ---- lane L3f / finding F19: never answer from a stale or foreign container -------------------
+
+// ---- lane L2c: the entity-killed `weapon` field --------------------------------------------------
+// The bug this pins down (Takaro 2026-09-17): every entity-killed carried the class name of the
+// death event's DamageCauser, so a wolf that a zombie ate arrived as `weapon: "BP_Zombie_C"` and a
+// real melee kill as `weapon: "MeleeEquippedItem"`. Neither is a weapon.
+static void TestKillWeaponName() {
+    using ActionsUtil::KillWeaponName;
+    // The real case: the causer is the swung AMeleeEquippedItem and its UItem resolved to a name.
+    EQ(KillWeaponName("MeleeEquippedItem", "Baseball Bat"), std::string("Baseball Bat"));
+    EQ(KillWeaponName("BP_Rifle_Equipped_C", "Hunting Rifle"), std::string("Hunting Rifle"));
+    // A weapon-ish actor whose item could not be resolved still says what hit, humanised.
+    EQ(KillWeaponName("MeleeEquippedItem", ""), std::string("Melee Equipped"));  // HumaniseCode drops the "Item" suffix
+    EQ(KillWeaponName("BP_Bullet_C", ""), std::string("Bullet"));
+    EQ(KillWeaponName("BP_ThrowableRock_C", ""), std::string("Throwable Rock"));
+    // A PAWN is never a weapon - these are the two shapes that produced the wrong records.
+    EQ(KillWeaponName("BP_Zombie_C", ""), std::string(""));          // a zombie's bite
+    EQ(KillWeaponName("BP_Wolf_C", ""), std::string(""));            // a wolf's bite
+    EQ(KillWeaponName("BP_VeinPlayerCharacter_C", ""), std::string(""));  // POST /debug/kill-nearest
+    EQ(KillWeaponName("AVeinZombieCharacter", ""), std::string(""));
+    // ...not even when something tried to hand it an item name for a pawn: a bite is not a weapon.
+    EQ(KillWeaponName("BP_Zombie_C", "Baseball Bat"), std::string(""));
+    // Nothing at all -> nothing reported; the caller omits the field.
+    EQ(KillWeaponName("", ""), std::string(""));
+    EQ(KillWeaponName("BP_Door_C", ""), std::string(""));
+    EQ(KillWeaponName("APainCausingVolume", ""), std::string(""));
+}
+
 static std::string SplitStr(const std::vector<int>& v) {
     std::string o;
     for (size_t i = 0; i < v.size(); i++) o += (i ? "," : "") + std::to_string(v[i]);
@@ -1047,6 +1074,7 @@ int main() {
     TestStackSplit();
     TestPlayerInventoryClassGuard();
     TestCharacterIdFormatting();
+    TestKillWeaponName();
     printf("%s: %d checks, %d failed\n", g_failed ? "FAILED" : "PASSED", g_ran, g_failed);
     return g_failed ? 1 : 0;
 }

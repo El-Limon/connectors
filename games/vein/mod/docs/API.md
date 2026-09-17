@@ -129,9 +129,9 @@ that runs game code. *(Not proven yet.)*
 - `since > latestSeq` means the server restarted; reset to `0`.
 - `truncated: true` means events between `since` and the oldest buffered event were dropped.
 - Types: `player-connected`, `player-disconnected`, `chat-message`, `player-death`, `entity-killed`,
-  `log`. All are wired (lane L2). `entity-killed` carries the AI's Blueprint class as
-  `entity`/`entityCode`/`entityClass`, the spawned actor's instance name as `entityInstance`, and
-  `attribution` naming how the killer was determined. Only `entity`, `weapon` and `player` are
+  `log`. All are wired (lane L2). `entity-killed` carries the victim's display name as `entity`,
+  its Blueprint class as `entityCode`/`entityClass`, the spawned actor's instance name as
+  `entityInstance`, and `attribution` naming how the killer was determined. Only `entity`, `weapon` and `player` are
   forwarded to Takaro; the rest is plugin-side evidence, because Takaro's `EventEntityKilled` schema
   does not carry it.
 
@@ -150,7 +150,7 @@ carry only the persona.
 {"type":"player-disconnected","data":{"player":{…}}}
 {"type":"chat-message","data":{"msg":"hello","channel":"local","chatSegment":"Local","player":{…},"source":"processevent"}}
 {"type":"player-death","data":{"player":{…},"position":{"x":0,"y":0,"z":0},"attacker":{…}?,"killerEntity":"BP_Zombie_Male_C"?,"cause":"DeathCause:3"?,"source":"NetMulticast_OnDeath"}}
-{"type":"entity-killed","data":{"entity":"BP_Zombie_Male_C","entityInstance":"BP_Zombie_Male_C_2147482301","entityCode":"BP_Zombie_Male_C","entityClass":"BP_Zombie_Male_C","weapon":"","position":{…}?,"source":"NetMulticast_OnDeath","attribution":"the death event's instigator controller","player":{…}?}}
+{"type":"entity-killed","data":{"entity":"Zombie","entityInstance":"BP_Zombie_C_2147462244","entityCode":"BP_Zombie_C","entityClass":"BP_Zombie_C","weapon":"Baseball Bat"?,"position":{…}?,"source":"NetMulticast_OnDeath","attribution":"the death event's instigator controller","player":{…}}}
 {"type":"log","data":{"msg":"[2026.09.17-07.10.00:001][123]LogNet: Login request: ?Password=<redacted>?Name=Limon??ID=<your-steamid64>?Ticket=<redacted>"}}
 ```
 
@@ -165,18 +165,44 @@ carry only the persona.
   `LogVeinChat:` line); the same message seen by both is emitted once (8 s dedupe). Messages the
   plugin injected through `POST /message` are never re-emitted.
 - **`player-death`** — `position` is omitted when neither the death event nor the pawn gave one.
-  `attacker` only appears for a *player* killer; a creature or the environment goes into
-  `killerEntity` as a class name. `cause` is VEIN's own `DeathCause`/`DeathReason` when the property
+  `attacker` only appears for a *player* killer **other than the victim**; a creature goes into
+  `killerEntity` under its display name (`Zombie`, `Wolf`), the same name `GET /entities` uses.
+  **Lane L2c**: VEIN passes the victim's own pawn as `DamageCauser` and his own controller as
+  `DamageInstigator` for a fall, drowning or the cold, and the plugin used to copy that into
+  `attacker` — every environmental death arrived in Takaro as a death by the dead player's own hand
+  and scored as PvP. A candidate that is the victim is now skipped: such a death carries no
+  `attacker` and no `killerEntity`, and `cause` says what is known instead (VEIN's own
+  `DeathCause`/`DeathReason`, else the humanised damage-type class, else `environment`); the
+  sidecar renders it as `msg: "<name> died (<cause>)"`. A genuinely self-inflicted death is
+  indistinguishable from a fall on this build — the wire carries the same three pointers — so it,
+  too, reports as environmental. `cause` is VEIN's own `DeathCause`/`DeathReason` when the property
   is readable. `source` is the UFunction that fired, or `health-edge` for the fallback that watches
   `Dead`/`Health` per cycle. Dedupe: 3 s per `gameId`.
 - **`entity-killed`** — VEIN routes *every* death through one event, so the dying actor's class is
-  what makes this an entity kill rather than a player death. `attribution` names the route that
-  produced the killer (the death event's instigator controller, its damage causer, a property on the
-  AI, the AI's current target, "the only player on the server", or `unattributed`) — nothing is
-  presented as more certain than it is. `weapon` is the damage-causing actor's class when the event
-  carries one and empty otherwise; only `entity`, `weapon` and `player` reach Takaro, the rest is
-  plugin-side evidence. Deaths of doors, built actors and item instances share the same game event
-  and are counted (`nonPlayerDeathsIgnored`) and dropped rather than reported as kills.
+  what makes this an entity kill rather than a player death. **Lane L2c** settled the three fields:
+  - `entity` is the **victim** — the actor that owns the health component that fired the death
+    event — named exactly as `GET /entities` names it: the animal's `UsableName` (`Wolf`, `Boar`)
+    and otherwise the humanised class name (`BP_Zombie_C` → `Zombie`). The raw class stays in
+    `entityCode`/`entityClass` and the spawned actor in `entityInstance`.
+  - `player` is the **killer**, resolved only from the death event's own `DamageInstigator` /
+    `DamageCauser` or an instigator property on the victim. When none of those names a player the
+    event is **not emitted at all** (Takaro's `entity-killed` is a player's kill) and the death is
+    counted in `/health.diagnostics.eventSources.aiKillsWithoutPlayer`.
+  - `weapon` is the **killer's weapon**: the display name of the `UItem` behind the `AEquippedItem`
+    the death event names as `DamageCauser` (`Baseball Bat`), else the humanised class of a
+    weapon-ish causer (a projectile, a bullet). When the causer names no weapon it is `"debug"`
+    (this actor was killed by `POST /debug/kill-nearest` — nothing was swung) or `"unknown"`. It is
+    never a pawn class and never the victim's. It is deliberately never `"unarmed"`: a punch and an
+    unnamed weapon are identical on the wire on this build, so that would be a claim, not a reading.
+    The field is always present because Takaro's `EventEntityKilled` **requires** it — measured
+    2026-09-17, an event without it fails validation (`property weapon … isString`) and is discarded
+    whole.
+
+  `attribution` remains a diagnostic field naming the route that produced the killer (the death
+  event's instigator controller, its damage causer, or an instigator property on the AI). Only
+  `entity`, `weapon` and `player` reach Takaro, the rest is plugin-side evidence. Deaths of doors,
+  built actors and item instances share the same game event and are counted
+  (`nonPlayerDeathsIgnored`) and dropped rather than reported as kills.
 - **`log`** — lines are redacted before they leave the process: the join URL carries the join
   password **and** a Steam auth session ticket in cleartext
   (`LogNet: Login request: ?Password=…?Name=…??ID=…?Ticket=…`), so `Password`, `Ticket`,

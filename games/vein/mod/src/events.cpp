@@ -9,8 +9,10 @@
 //                        with the `LogVeinChat:` log line as a second source (deduped)
 //   player-death         ProcessEvent on the character death event + a Health/Dead edge per cycle,
 //                        deduped 3 s, with attacker / killerEntity attribution
-//   entity-killed        ProcessEvent on the AI death path, killer from the damage instigator, the
-//                        AI's CurrentTarget or the only-player fallback; `attribution` says which
+//   entity-killed        ProcessEvent on the AI death path; the killer is the damage event's own
+//                        instigator/causer ONLY (lane L2c removed the sensed-target and
+//                        only-player-online guesses), the entity is the victim named as
+//                        GET /entities names it, and the weapon is the killer's equipped item
 //   log                  rotation-aware tail of Vein/Saved/Logs/Vein.log, redacted
 //
 // Rules obeyed here (the Dragonwilds discipline, and the reason that plugin never faulted again):
@@ -29,6 +31,7 @@
 #include "events.h"
 
 #include "actions.h"
+#include "actions_util.h"
 #include "events_parse.h"
 #include "gamethread.h"
 #include "hooks.h"
@@ -1074,6 +1077,23 @@ std::string CauseOf(void* actor) {
     return "";
 }
 
+// The display name of an AI actor, exactly as GET /entities prints it: the cached catalogue name,
+// else AVeinAnimalCharacter::UsableName (the only readable creature name on this build - zombies
+// have none), else the HUMANISED class name (`BP_Zombie_C` -> "Zombie"). Lane L2c: the old last
+// resort was the RAW class name, which made entity-killed disagree with the catalogue it is
+// supposed to reference. Whatever is read is cached per class so the two always agree.
+std::string EntityDisplayName(void* actor) {
+    std::string cls = SafeClassName(actor);
+    if (cls.empty()) return "";
+    std::string name = ::state::EntityName(cls);
+    if (name.empty()) name = ReadFTextAt(actor, PropOffOf(actor, "UsableName"));
+    if (!name.empty()) {
+        ::state::NoteEntityName(cls, name);
+        return name;
+    }
+    return ActionsUtil::HumaniseCode(cls);
+}
+
 // UHealthComponent::NetMulticast_OnDeath and AVeinBaseCharacter::OnDeath share one signature:
 //   (float Damage, UDamageType const* DamageType, FVector HitLocation, FName BoneName,
 //    FPointDamageEvent, FRadialDamageEvent, AActor* DamageCauser, AController* InstigatorController,
@@ -1123,12 +1143,31 @@ DeathParams ReadDeathParams(void* func, void* params) {
     return out;
 }
 
-// The controller/actor that dealt the damage -> a player Ident, else a readable class name.
-void AttributeFrom(const DeathParams& dp, void* fallbackActor, std::string& attackerJson,
-                   std::string& killerEntity, Ident* killerOut) {
-    void* candidates[3] = {dp.instigator, dp.causer, fallbackActor ? InstigatorOf(fallbackActor) : nullptr};
+
+// The controller/actor that dealt the damage -> a player Ident, else a readable creature name.
+//
+// LANE L2c / L8 finding: VEIN passes the VICTIM'S OWN PAWN as `DamageCauser` and his own controller
+// as `DamageInstigator` for a death with no killer - a fall, drowning, the cold. The game's own log
+// says so in as many words: "Player Limon (765…875) was killed by Limon (765…875) with
+// BP_VeinPlayerCharacter_C_2147469505". The old code copied that faithfully and every environmental
+// death arrived in Takaro with `attacker` = the dead player, which reads as a suicide and, worse,
+// scores as a player-vs-player kill. A candidate that IS the victim is therefore skipped: an
+// environmental death has no attacker at all, and saying nothing is the only honest answer this
+// event can give. (A genuine self-inflicted death is indistinguishable from a fall on this build -
+// the wire carries exactly the same three pointers - so it, too, is reported as environmental.)
+void AttributeFrom(const DeathParams& dp, void* victimActor, const Ident& victim,
+                   std::string& attackerJson, std::string& killerEntity, Ident* killerOut) {
+    void* candidates[3] = {dp.instigator, dp.causer, victimActor ? InstigatorOf(victimActor) : nullptr};
+    auto isVictim = [&](void* c) {
+        if (c == victimActor) return true;
+        void* st = PlayerStateOf(c);
+        Ident who;
+        if (st && IdentFromPlayerState(st, who) && who.valid() && victim.valid())
+            return who.gameId == victim.gameId;
+        return false;
+    };
     for (void* c : candidates) {
-        if (!ValidObject(c)) continue;
+        if (!ValidObject(c) || isVictim(c)) continue;
         Ident attacker;
         void* st = PlayerStateOf(c);
         if (st && IdentFromPlayerState(st, attacker) && attacker.valid()) {
@@ -1138,8 +1177,10 @@ void AttributeFrom(const DeathParams& dp, void* fallbackActor, std::string& atta
         }
     }
     for (void* c : candidates) {
-        if (!ValidObject(c)) continue;
-        killerEntity = SafeClassName(c);
+        if (!ValidObject(c) || isVictim(c)) continue;
+        // A creature killer is named the way the catalogue names it ("Zombie", "Wolf"), not by its
+        // Blueprint class - the same rule entity-killed now follows, so the two events agree.
+        killerEntity = IsAnyAi(c) ? EntityDisplayName(c) : SafeClassName(c);
         if (!killerEntity.empty()) return;
     }
 }
@@ -1154,8 +1195,16 @@ void HandlePlayerDeath(void* actor, const DeathParams& dp, const char* via) {
     bool havePos = dp.havePos;
     if (!havePos) havePos = ActorLocation(actor, x, y, z);
     std::string attackerJson, killerEntity;
-    AttributeFrom(dp, actor, attackerJson, killerEntity, nullptr);
-    EmitDeath(victim, havePos, x, y, z, attackerJson, killerEntity, CauseOf(actor), via);
+    AttributeFrom(dp, actor, victim, attackerJson, killerEntity, nullptr);
+    // LANE L2c: when nothing and nobody killed him, `cause` is what is left to say. VEIN's own
+    // DeathCause/DeathReason first, then the damage type the event carried (humanised, e.g.
+    // "Vein Damage Type Fall"), and "environment" when the build exposes neither.
+    std::string cause = CauseOf(actor);
+    if (cause.empty() && attackerJson.empty() && killerEntity.empty()) {
+        if (ValidObject(dp.damageType)) cause = ActionsUtil::HumaniseCode(SafeClassName(dp.damageType));
+        if (cause.empty()) cause = "environment";
+    }
+    EmitDeath(victim, havePos, x, y, z, attackerJson, killerEntity, cause, via);
     {
         Guard g(g_healthLock);
         g_liveness[victim.gameId] = Live::Dead;
@@ -1188,33 +1237,12 @@ Ident KillerOf(void* actor, const DeathParams& dp, std::string& how) {
         }
         id = Ident();
     }
-    // 3. what the AI was chasing. DWARF says there is no `CurrentTarget` actor pointer anywhere:
-    //    the zombie has `TObjectPtr<USceneComponent> TargetComponent` (what GetSenseTargetComponent
-    //    returns) and the AI controller has `TWeakObjectPtr<AActor> LastTargetActor`. The component
-    //    is used, because it is a plain object pointer whose owner is the target actor; the weak
-    //    pointer is deliberately NOT read - it is {ObjectIndex, SerialNumber}, not an address, and
-    //    dereferencing it as one would be exactly the kind of bug that takes a rig down.
-    int32_t tgtOff = PropOffOf(actor, "TargetComponent");
-    void* tgtComp = nullptr;
-    if (tgtOff >= 0 && ReadAt(actor, tgtOff, tgtComp) && ValidObject(tgtComp)) {
-        void* st = PlayerStateOf(OwnerOf(tgtComp));
-        if (st && IdentFromPlayerState(st, id) && id.valid()) {
-            how = "the AI's sensed target";
-            return id;
-        }
-        id = Ident();
-    }
-    // Exactly one player online -> it was them.
-    {
-        Guard g(g_connLock);
-        std::vector<Ident> online;
-        for (auto& c : g_conns)
-            if (c.announced && !c.left && c.id.valid()) online.push_back(c.id);
-        if (online.size() == 1) {
-            how = "the only player on the server";
-            return online[0];
-        }
-    }
+    // Routes 3 and 4 are GONE (lane L2c). They were "what the AI was chasing" (the sensed-target
+    // component) and "there is exactly one player online, so it was them". Both are guesses, and
+    // the second one is what made every wolf a zombie ate on 2026-09-17 arrive in Takaro as a kill
+    // by Tester - 12 fabricated kills against 3 real ones in five minutes, with the game's own
+    // kill log ("Player <name> killed non-player character ...") naming only the 3. An AI killed by
+    // another AI is not a Takaro `entity-killed` at all, so the caller drops it instead.
     how = "unattributed";
     return Ident();
 }
@@ -1222,6 +1250,12 @@ Ident KillerOf(void* actor, const DeathParams& dp, std::string& how) {
 std::atomic<bool> g_aiDumped{false};
 // Deaths of non-player, non-AI actors (doors, item instances, built actors share the same event).
 std::atomic<uint64_t> g_deathsIgnored{0};
+// Lane L2c: AI deaths with no player behind them (a zombie eating a wolf). Not Takaro events.
+std::atomic<uint64_t> g_killsUnattributed{0};
+// Lane L2c: the victim of the most recent POST /debug/kill-nearest, so the death hook can report
+// `weapon: "debug"` for it. Nothing was swung, and the endpoint hands the player's own pawn to the
+// engine as DamageCauser, which is indistinguishable on the wire from a punch.
+std::atomic<void*> g_debugKillVictim{nullptr};
 
 void HandleAiDeath(void* actor, const DeathParams& dp, const char* via) {
     if (!IsAnyAi(actor)) return;
@@ -1232,28 +1266,48 @@ void HandleAiDeath(void* actor, const DeathParams& dp, const char* via) {
                   Reflect::DumpObject(actor, 256).c_str());
 
     std::string cls = SafeClassName(actor);
-    std::string entity = ::state::EntityName(cls);
-    // The only readable creature name on this build is AVeinAnimalCharacter::UsableName, an FText.
-    // Zombies have none, so their Blueprint class name is the name - which is what the kill feed
-    // shows anyway. Whatever is found is cached per class so GET /entities agrees with this event.
-    if (entity.empty()) entity = ReadFTextAt(actor, PropOffOf(actor, "UsableName"));
-    if (!entity.empty()) ::state::NoteEntityName(cls, entity);
-    if (entity.empty()) entity = cls;
+    std::string entity = EntityDisplayName(actor);
 
     std::string how;
     Ident killer = KillerOf(actor, dp, how);
+    // Lane L2c: Takaro's `entity-killed` is "a PLAYER killed this entity" - it is what the kill
+    // leaderboard counts. An AI eaten by another AI has no player behind it, and inventing one is
+    // worse than reporting nothing, so it is counted here and dropped.
+    if (!killer.valid()) {
+        g_killsUnattributed++;
+        if (DebugEnabled())
+            PluginLog("events: %s died with no player behind it (causer %s) - not a Takaro kill",
+                      SafeClassName(actor).c_str(), SafeClassName(dp.causer).c_str());
+        return;
+    }
     double x = dp.x, y = dp.y, z = dp.z;
     bool havePos = dp.havePos;
     if (!havePos) havePos = ActorLocation(actor, x, y, z);
-    std::string weapon = ValidObject(dp.causer) ? SafeClassName(dp.causer) : std::string();
+    // Lane L2c: `weapon` is the KILLER'S WEAPON, never the causing actor's class and never the
+    // victim's. The death event's DamageCauser is an actor: an AEquippedItem for a swing or a shot
+    // (-> the item's display name, "Baseball Bat"), the killer's own pawn for the debug kill and
+    // for a bite (-> no weapon at all). The killer's CURRENT loadout is deliberately not consulted
+    // as a fallback: what he happens to hold now is not evidence of what dealt this damage. When
+    // the causer names no weapon the field is simply OMITTED.
+    std::string weapon;
+    if (ValidObject(dp.causer))
+        weapon = ActionsUtil::KillWeaponName(SafeClassName(dp.causer), Actions::EquippedItemName(dp.causer));
+    // Takaro's `EventEntityKilled` REQUIRES `weapon` to be a string and drops the whole event when
+    // it is absent (measured 2026-09-17: "property weapon has failed the following constraints:
+    // isString"), so the unknown cases get a word instead of silence - never a pawn or victim class.
+    //   "debug"   - POST /debug/kill-nearest killed this actor; nothing was swung.
+    //   "unknown" - a real hit whose causer names no item. Deliberately NOT "unarmed": a punch and
+    //               an unnamed weapon look identical on this build, and "unarmed" would be a claim.
+    if (weapon.empty()) weapon = (g_debugKillVictim.exchange(nullptr) == actor) ? "debug" : "unknown";
 
     // The actor instance name (BP_Zombie_Male_C_2147482301) is evidence, not identity - it makes a
     // kill traceable back to one spawned actor in plugin.log and /events.
     std::string instance = SafeObjName(actor);
     std::string o = "{\"entity\":" + JsonStr(entity) + ",\"entityInstance\":" + JsonStr(instance) +
                     ",\"entityCode\":" + JsonStr(cls) +
-                    ",\"entityClass\":" + JsonStr(cls) + ",\"weapon\":" + JsonStr(weapon) +
+                    ",\"entityClass\":" + JsonStr(cls) +
                     ",\"source\":" + JsonStr(via) + ",\"attribution\":" + JsonStr(how);
+    o += ",\"weapon\":" + JsonStr(weapon);
     if (havePos) o += ",\"position\":{\"x\":" + JsonNum(x) + ",\"y\":" + JsonNum(y) + ",\"z\":" + JsonNum(z) + "}";
     if (killer.valid()) o += ",\"player\":" + PlayerJson(killer);
     o += "}";
@@ -1507,8 +1561,10 @@ void PollHealthEdges() {
             bool havePos = ActorLocation(pawn, x, y, z);
             std::string attackerJson, killerEntity;
             DeathParams none;
-            AttributeFrom(none, pawn, attackerJson, killerEntity, nullptr);
-            EmitDeath(c.second, havePos, x, y, z, attackerJson, killerEntity, CauseOf(pawn), "health-edge");
+            AttributeFrom(none, pawn, c.second, attackerJson, killerEntity, nullptr);
+            std::string cause = CauseOf(pawn);
+            if (cause.empty() && attackerJson.empty() && killerEntity.empty()) cause = "environment";
+            EmitDeath(c.second, havePos, x, y, z, attackerJson, killerEntity, cause, "health-edge");
         }
     }
 }
@@ -2153,6 +2209,7 @@ std::string KillNearestOnGameThread(const std::string& wantId, double radius, in
         return h > 0.0;
     };
 
+    g_debugKillVictim.store(victim);
     if (ApplyPointDamageByReflection(victim, damage, ctrl, pawn, dx, dy, dz, err)) {
         mech = "UGameplayStatics::ApplyPointDamage";
         dead = !stillAlive();
@@ -2367,6 +2424,7 @@ std::string Events::DiagnosticsJson() {
     o += "],\"processEventVTables\":" + std::to_string(g_peCount.load());
     o += ",\"trackedConnections\":" + std::to_string(conns);
     o += ",\"nonPlayerDeathsIgnored\":" + std::to_string(g_deathsIgnored.load());
+    o += ",\"aiKillsWithoutPlayer\":" + std::to_string(g_killsUnattributed.load());
     o += ",\"identity\":{\"steamIdVTable\":" + std::string(g_steamIdVptr ? "true" : "false") +
          ",\"steamIdToString\":" + std::string(g_steamIdToString ? "true" : "false") + "}";
     o += ",\"logPath\":" + JsonStr(g_logPath) + ",\"logDropped\":" + std::to_string(g_logDropped.load()) +

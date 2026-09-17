@@ -1075,6 +1075,44 @@ std::vector<NamedLocation> ReadLocations() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// lane L2c: what the killer was holding
+//
+// The death event hands us an `AActor* DamageCauser`. For a melee swing that actor is the
+// `AMeleeEquippedItem` the character has in hand, and DWARF says every `AEquippedItem` carries the
+// item it represents as a plain member:
+//
+//   AEquippedItem::ItemInstance : FVirtualItemInstance @ 0x2d8   (the same struct the inventory
+//                                                                 reader already parses)
+// (AVeinCharacter also holds an FEquippedItemAttachment @ 0xa20 for what the character has in hand
+// right now; it is deliberately NOT used - the current loadout is not evidence about a past hit.)
+//
+// So the weapon's *display* name is the same lookup GET /items answers with: the soft class path
+// -> the item code -> the catalogue name. Offsets are all resolved by FindPropertyByName; the
+// DWARF above only says which names to ask for. This runs on the game thread (the death hook
+// already does) and returns "" rather than guessing.
+
+// The UItem display name behind an FVirtualItemInstance at `base`.
+std::string ItemNameFromInstance(const char* base) {
+    if (!base) return "";
+    VirtualItemLayout lay = ReadVirtualItemLayout();
+    if (!lay.ok()) return "";
+    if (!MemReadable(base + lay.item, 16)) return "";
+    std::string code = ActionsUtil::ItemCodeFromSoftPath(SoftClassName(base + lay.item));
+    if (code.empty()) return "";
+    std::string name = CatalogueName(code);
+    return name.empty() ? ActionsUtil::HumaniseCode(code) : name;
+}
+
+std::string EquippedItemNameImpl(void* actor) {
+    if (!actor || !MemReadable(actor, 0x40)) return "";
+    void* base = VeinClass("AEquippedItem::StaticClass", "EquippedItem");
+    if (base && !Reflect::IsA(actor, base)) return "";
+    int32_t off = Off(actor, "ItemInstance");
+    if (off < 0) return "";
+    return ItemNameFromInstance((const char*)actor + off);
+}
+
+// ---------------------------------------------------------------------------------------------
 // bans: VEIN's own list
 //
 // AVeinGameStateBase carries a replicated TArray<FBan> with BanID(FString id, FString reason) /
@@ -1728,6 +1766,10 @@ std::string BodyString(const JsonValue& body, const char* key) {
 }
 
 }  // namespace
+
+// Lane L2c. Thin wrappers: the work is in the anonymous namespace above, next to the item
+// catalogue and the FVirtualItemInstance layout it reuses.
+std::string Actions::EquippedItemName(void* actor) { return EquippedItemNameImpl(actor); }
 
 // ================================================================================================
 // lifecycle

@@ -181,15 +181,31 @@ function mapPluginEventBody(event: { type: string; data: unknown; ts?: unknown }
       if (d.position) out.position = mapPosition(d.position);
       // Takaro's EventPlayerDeath only has a player `attacker`; a creature/NPC killer goes into the base `msg` field.
       const killerEntity = str(d.killerEntity) ?? str(asRecord(d.killer).code);
+      const who = (out.player as TakaroPlayer).name;
       if (!out.attacker && killerEntity) {
-        const who = (out.player as TakaroPlayer).name;
         out.msg = `${who} was killed by ${killerEntity}`;
+      } else if (!out.attacker && !killerEntity) {
+        // Lane L2c: nobody killed him. The plugin used to name the victim as his own `attacker`
+        // (VEIN passes the victim's own pawn as DamageCauser for a fall or drowning), which read as
+        // a suicide and scored as PvP. Now the death simply has no attacker, and `cause` - VEIN's
+        // own DeathCause, the damage type, or "environment" - is what Takaro is told instead.
+        const cause = str(d.cause);
+        out.msg = cause ? `${who} died (${cause})` : `${who} died`;
       }
       return { type: event.type, data: out };
     }
     case 'entity-killed': {
       const out = withPlayer();
       out.entity = str(d.entity) ?? str(asRecord(d.entity).code) ?? 'unknown';
+      // Lane L2c: the plugin now always sends a `weapon` string - the item's display name, else
+      // "debug" (POST /debug/kill-nearest) or "unknown" - instead of the causing actor's class,
+      // which is what produced `weapon: "BP_Zombie_C"`. The `?? ''` below is a safety net for an
+      // older plugin build, because Takaro, measured on 2026-09-17, REQUIRES the field:
+      //   "An instance of EventEntityKilled has failed the validation:
+      //    - property weapon has failed the following constraints: isString"
+      // and drops the whole event when it is absent. So the unknown case becomes the empty string
+      // here - the one value that says "not known" without naming something that did not kill
+      // anything. The plugin's own /events keeps the field absent, which is the honest record.
       out.weapon = str(d.weapon) ?? '';
       return { type: event.type, data: out };
     }

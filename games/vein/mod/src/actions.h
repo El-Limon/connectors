@@ -45,6 +45,12 @@ Result Shutdown();
 // (lane L2's join resolver already is); a no-op when the player is not online.
 bool KickBanned(const std::string& gameId);
 
+// Lane L2c: the display name of the UItem an `AEquippedItem` actor represents ("Baseball Bat"),
+// or "" when `actor` is not an equipped item / carries no resolvable item. Reads UObjects by
+// reflection, so it must be called ON THE GAME THREAD; entity-killed uses it to name the weapon
+// the killer swung instead of printing the DamageCauser actor's class.
+std::string EquippedItemName(void* actor);
+
 // Debug only (TAKARO_PLUGIN_DEBUG=1): kills the nearest AI character to a player through the game's
 // own damage pipeline, with that player as the instigator. It exists so that entity-killed can be
 // proven without a human swinging a sword.

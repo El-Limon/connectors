@@ -138,6 +138,22 @@ std::string JsonStrArray(const std::vector<std::string>& v);
 // answer for the player.
 bool IsPlayerInventoryClass(const std::string& className);
 
+
+// ---- lane L2c: the `weapon` field of entity-killed -------------------------------------------
+// The death event's `DamageCauser` is an ACTOR, not an item: for a melee kill it is the swung
+// `AMeleeEquippedItem`, for a bite it is the zombie or the wolf itself, and for the debug kill it
+// is the player's own pawn. The old code put that actor's class name in `weapon`, which is how a
+// wolf eaten by a zombie was reported as "killed with BP_Zombie_C".
+//
+// `itemName` is the display name of the UItem the causer carries, resolved by reflection from
+// `AEquippedItem::ItemInstance` (empty when the causer carries none). The rule:
+//   * an item was found      -> its display name ("Baseball Bat");
+//   * no item, but the class names a weapon-ish actor (an equipped item, a projectile, a bullet,
+//     an arrow, a thrown object) -> the humanised class name, so a hit still says what hit;
+//   * anything else (a pawn, an animal, a vehicle, the world, nothing at all) -> "", and the
+//     caller OMITS `weapon` rather than inventing one.
+std::string KillWeaponName(const std::string& causerClass, const std::string& itemName);
+
 // UE's `FGuid::ToString(EGuidFormats::Digits)`: the four words as 32 upper-case hex digits, which
 // is exactly the form VEIN's own `127.0.0.1:8080/status` prints for `characterId` and the form the
 // `selected character <id>` log line carries. An all-zero GUID means "no character" and returns "".

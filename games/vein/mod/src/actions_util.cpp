@@ -307,3 +307,25 @@ std::vector<int> ActionsUtil::StackSplit(int amount, int maxStack) {
     }
     return out;
 }
+
+// ---- lane L2c: the `weapon` field of entity-killed ---------------------------------------------
+
+std::string ActionsUtil::KillWeaponName(const std::string& causerClass, const std::string& itemName) {
+    std::string lower;
+    lower.reserve(causerClass.size());
+    for (char c : causerClass) lower += (char)tolower((unsigned char)c);
+    // A pawn is never a weapon, whatever else is known about it: BP_VeinPlayerCharacter_C is the
+    // debug kill's causer, BP_Zombie_C and BP_Wolf_C are bites. This test comes FIRST so that a
+    // stray item name can never turn a bite into a swing.
+    static const char* kNotWeapon[] = {"character", "zombie", "animal", "pawn",
+                                       "vehicle",   "volume", "controller"};
+    for (const char* n : kNotWeapon)
+        if (lower.find(n) != std::string::npos) return "";
+    if (!itemName.empty()) return itemName;
+    if (causerClass.empty()) return "";
+    static const char* kWeapon[] = {"equippeditem", "weapon", "projectile", "bullet",
+                                    "arrow",        "blade",  "throwable",  "explosive"};
+    for (const char* n : kWeapon)
+        if (lower.find(n) != std::string::npos) return HumaniseCode(causerClass);
+    return "";
+}
