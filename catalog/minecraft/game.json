@@ -5,7 +5,16 @@
   "connector": "minecraft",
   "platforms": ["fabric", "paper", "neoforge"],
   "sources": {
-    "mojang-meta": {"provider": "mojang", "baseUrl": "https://piston-meta.mojang.com"},
+    "mojang-meta": {
+      "provider": "mojang",
+      "baseUrl": "https://piston-meta.mojang.com",
+      "watch": {
+        "kind": "game",
+        "component": "minecraft",
+        "manifestPath": "/mc/game/version_manifest_v2.json",
+        "channels": {"release": {"branch": "release", "types": ["release"]}}
+      }
+    },
     "mojang-data": {"provider": "mojang", "baseUrl": "https://piston-data.mojang.com"},
     "fabric-meta": {"provider": "fabric", "baseUrl": "https://meta.fabricmc.net"},
     "fabric-maven": {"provider": "fabric", "baseUrl": "https://maven.fabricmc.net"}
