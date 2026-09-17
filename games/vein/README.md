@@ -18,6 +18,7 @@ From the latest `vein-vX.Y.Z` release on <https://github.com/gettakaro/connector
 
 - **`takaro-vein-plugin.tar.gz`** — the game-server plugin (`libtakaro-vein.so`)
 - **`takaro-vein-sidecar.tar.gz`** — the sidecar that talks to Takaro
+- **`SHA256SUMS`** — verify with `sha256sum -c SHA256SUMS`
 
 Not the "Source code" links, not `vein-dev`, not `pr-<number>-vein`.
 
@@ -26,19 +27,20 @@ Not the "Source code" links, not `vein-dev`, not `pr-<number>-vein`.
 Stop the game server, then unpack both archives:
 
 ```bash
-mkdir -p data/vein-plugin data/vein-sidecar
+mkdir -p data/vein data/vein-plugin data/vein-sidecar
 tar -xzf takaro-vein-plugin.tar.gz && cp TakaroVein/libtakaro-vein.so data/vein-plugin/
-tar -xzf takaro-vein-sidecar.tar.gz && mv TakaroVeinSidecar ./sidecar
+tar -xzf takaro-vein-sidecar.tar.gz && mv TakaroVeinSidecar sidecar
+mv sidecar/docker-compose.example.yml sidecar/.env.example .
 ```
 
 ```
 <your compose dir>/
-    docker-compose.example.yml
-    .env
-    sidecar/                  <- TakaroVeinSidecar renamed
-    data/vein/                (game data)
+    docker-compose.example.yml    <- from the sidecar archive
+    .env.example                  <- from the sidecar archive
+    sidecar/                      <- TakaroVeinSidecar renamed (dist/, Dockerfile, package.json)
+    data/vein/                    (game data)
     data/vein-plugin/libtakaro-vein.so
-    data/vein-sidecar/        (sidecar state)
+    data/vein-sidecar/            (the sidecar's /data volume)
 ```
 
 Keep the `.so` **outside the Steam/game tree**: a SteamCMD `validate` deletes files it does not know.
@@ -48,8 +50,10 @@ Keep the `.so` **outside the Steam/game tree**: a SteamCMD `validate` deletes fi
 Put `LD_PRELOAD` on the game binary's launch line:
 
 ```bash
-LD_PRELOAD=/opt/takaro/libtakaro-vein.so TAKARO_PLUGIN_TOKEN=<shared secret> ./Vein/Binaries/Linux/VeinServer-Linux-Test -Port=7777 -QueryPort=27015 -log
+LD_PRELOAD=/opt/takaro/libtakaro-vein.so ./Vein/Binaries/Linux/VeinServer-Linux-Test -Port=7777 -QueryPort=27015 -log
 ```
+
+The game process also needs `TAKARO_PLUGIN_TOKEN` in its environment (the example compose passes it).
 
 Never set `LD_PRELOAD` globally for the container, user or service — 32-bit steamcmd fails if it inherits it.
 
@@ -62,17 +66,20 @@ Never set `LD_PRELOAD` globally for the container, user or service — 32-bit st
 | `TAKARO_PLUGIN_TOKEN` | Shared secret for game server and sidecar, e.g. `openssl rand -hex 32`. Required. |
 | `TAKARO_REGISTRATION_TOKEN` | Your Takaro registration token. Required. |
 | `TAKARO_IDENTITY_TOKEN` | A name for this server in Takaro, e.g. `my-vein-server`. Required. |
+| `TAKARO_PLUGIN_URL` | Where the sidecar reaches the plugin. `http://127.0.0.1:18890`. Required. |
+| `VEIN_LOG_FILE` | Path to the server log, e.g. `.../Vein/Saved/Logs/Vein.log`. Required. |
+| `TAKARO_CURSOR_FILE` | `/data/event-cursor.json`, on a volume that survives restarts (`./data/vein-sidecar`). Keeps the event cursor; without it events replay after a restart. |
 | `TAKARO_ADMIN_STEAMIDS` | Comma-separated SteamID64s to grant in-game admin. |
-| `VEIN_LOG_FILE` | Path to the server log, e.g. `.../Vein/Saved/Logs/Vein.log`. |
 | `TAKARO_PLUGIN_DEBUG` | Optional: `1` for verbose plugin logging. |
 
 The sidecar must reach the plugin on loopback, so run it in the game server's network namespace or on its host.
 
-Docker users: `docker-compose.example.yml` in this folder shows the whole shape.
+Docker: `docker compose -f docker-compose.example.yml --env-file .env up -d --build`.
+Node.js 22: `cd sidecar && npm ci --omit=dev && node dist/index.js`.
 
 ### 6. Check that it worked
 
-In the plugin log (`<serverdir>/takaro/plugin.log`):
+In the plugin log (`<serverdir>/Vein/Binaries/Linux/takaro/plugin.log`):
 
 ```
 takaro vein plugin <version> starting (pid ..., bootId ...)
@@ -85,6 +92,9 @@ In the sidecar log:
 Identified with Takaro (gameServerId=...)
 ```
 
+`curl http://127.0.0.1:18891/health` reports `"ok": true` and `"takaroIdentified": true`, plus the
+plugin version and the state of every capability.
+
 And the server shows **online** in Takaro. If it stays offline, re-check the registration token.
 
 ### 7. Upgrading
@@ -94,10 +104,8 @@ Your `.env`, the world and `data/vein-sidecar/` survive; confirm the new version
 
 ## What works, what doesn't
 
-Verified end to end on 2026-09-17 against game build 25035268 (v0.024h8), plugin 0.1.0, with a real client.
-✅ = works, ⚠️ = works with a caveat, ❌ = does not work / is not supported.
-
-<!-- REGENERATE FROM capabilities.json AT L7b -->
+Verified end to end on 2026-09-17 against game build 25035268 (v0.024h8) with a real client, on the
+connector release. ✅ = works, ⚠️ = works with a caveat, ❌ = does not work / is not supported.
 
 | What | | Notes |
 |---|---|---|
@@ -150,8 +158,6 @@ Verified end to end on 2026-09-17 against game build 25035268 (v0.024h8), plugin
 | Survives a network drop to Takaro | ✅ | The WebSocket reconnects by itself and re-identifies. |
 | Timed bans expire on their own | ✅ | Lifted at expiry, including across a restart. |
 | Keeps running after a game update breaks a feature | ✅ | The broken feature reports `degraded`; everything else keeps working. |
-
-<!-- END REGENERATE -->
 
 ### Known issues
 
