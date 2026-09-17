@@ -1,0 +1,54 @@
+# Takaro Dragonwilds connector — example deployment (SKELETON).
+# Adapt to your own dedicated-server image; the only hard requirements are marked REQUIRED.
+# Copy .env.example to .env first.
+
+services:
+  dragonwilds:
+    # REQUIRED: an image whose entrypoint starts the server binary with LD_PRELOAD applied
+    # to the GAME PROCESS ONLY. SteamCMD is 32-bit and must never see the preload.
+    image: dragonwilds-dedicated-server:latest
+    container_name: dragonwilds
+    restart: unless-stopped
+    stop_grace_period: 60s
+    ports:
+      - "${DRAGONWILDS_PORT:-7777}:7777/udp"
+    environment:
+      OWNER_ID: "${DRAGONWILDS_OWNER_ID:?set the owner EOS ProductUserId}"
+      SERVER_NAME: "${DRAGONWILDS_SERVER_NAME:-Dragonwilds}"
+      DEFAULT_WORLD_NAME: "${DRAGONWILDS_WORLD_NAME:-World}"
+      WORLD_PASSWORD: "${DRAGONWILDS_WORLD_PASSWORD:-}"
+      ADMIN_PASSWORD: "${DRAGONWILDS_ADMIN_PASSWORD:?}"
+      ENABLE_AUTO_UPDATE: "false"          # client and server are version-locked
+      # REQUIRED: the plugin, and the shared secret it serves its HTTP API with
+      TAKARO_PLUGIN_SO: /opt/takaro/libtakaro-dragonwilds.so
+      TAKARO_PLUGIN_TOKEN: "${TAKARO_PLUGIN_TOKEN:?}"
+      TAKARO_PLUGIN_PORT: "${TAKARO_PLUGIN_PORT:-18890}"
+    volumes:
+      - ./data/dragonwilds:/game
+      # REQUIRED: read-only, and OUTSIDE the Steam tree - SteamCMD `validate` deletes unknown files
+      - ./data/dragonwilds-plugin/libtakaro-dragonwilds.so:/opt/takaro/libtakaro-dragonwilds.so:ro
+
+  dragonwilds-takaro:
+    # REQUIRED: same network namespace, so the plugin API stays loopback-only
+    network_mode: service:dragonwilds
+    build: ./sidecar
+    container_name: dragonwilds-takaro
+    restart: unless-stopped
+    depends_on:
+      - dragonwilds
+    environment:
+      TAKARO_WS_URL: "${TAKARO_WS_URL:-wss://connect.takaro.io/}"
+      TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:?}"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_TOKEN:-dragonwilds}"
+      TAKARO_SERVER_NAME: "${TAKARO_SERVER_NAME:-Dragonwilds}"
+      TAKARO_PLUGIN_URL: "${TAKARO_PLUGIN_URL:-http://127.0.0.1:18890}"
+      TAKARO_PLUGIN_TOKEN: "${TAKARO_PLUGIN_TOKEN:?}"
+      TAKARO_CURSOR_FILE: /data/event-cursor.json
+      TAKARO_ONLINE_FILE: /data/online.json
+      DRAGONWILDS_LOG_FILE: /game/RSDragonwilds/Saved/Logs/RSDragonwilds.log
+      SIDECAR_HEALTH_PORT: "18891"
+      SIDECAR_EXIT_AFTER_UNREACHABLE_MS: "180000"
+      DEBUG: "${DEBUG:-0}"
+    volumes:
+      - ./data/dragonwilds:/game:ro
+      - ./data/dragonwilds-sidecar:/data

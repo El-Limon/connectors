@@ -1,0 +1,6 @@
+# Toolchain for libtakaro-dragonwilds.so. debian:bookworm matches the game image's glibc.
+FROM debian:bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates make python3 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

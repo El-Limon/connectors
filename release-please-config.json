@@ -63,6 +63,14 @@
         { "type": "generic", "path": "mod/src/common.h" }
       ]
     },
+    "games/dragonwilds": {
+      "release-type": "simple",
+      "component": "dragonwilds",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        { "type": "generic", "path": "mod/src/common.h" }
+      ]
+    },
     "games/terraria": {
       "release-type": "simple",
       "component": "terraria",
