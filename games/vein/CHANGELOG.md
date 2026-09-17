@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/gettakaro/connectors/compare/vein-v0.1.0...vein-v0.2.0) (2026-09-17)
+
+
+### Features
+
+* **vein:** VEIN connector (LD_PRELOAD plugin + sidecar) ([#182](https://github.com/gettakaro/connectors/issues/182)) ([da272a2](https://github.com/gettakaro/connectors/commit/da272a2d58223eb36af84ccefa645eae72fd32e4))
+
 ## 0.1.0 (2026-09-17)
 
 ### Features
