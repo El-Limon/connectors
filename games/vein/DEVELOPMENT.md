@@ -14,6 +14,9 @@ mod/       C++17, builds libtakaro-vein.so (LD_PRELOAD into the dedicated server
   tools/     symprobe.py, sigderive.py, dwarfoffsets.py — offline binary inspection
   build.sh, Dockerfile.build, Makefile
 sidecar/   Node 22 + TypeScript, speaks the Takaro Generic Connector Protocol
+  Dockerfile      runtime image for the release tarball (expects a prebuilt dist/)
+  Dockerfile.dev  builds from src/ — what the dev rig and `build: ./sidecar` in a
+                  source checkout use
 scripts/   build-release.sh, render-readme-table.mjs
 docker-compose.example.yml, .env.example, version.txt, CHANGELOG.md
 ```

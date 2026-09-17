@@ -4,8 +4,9 @@
 //
 //   node scripts/render-readme-table.mjs <capabilities.json> [--write <README.md>]
 //
-// Without --write the table is printed to stdout. With --write the block between the
-// REGENERATE markers in the README is replaced in place.
+// Without --write the table is printed to stdout. With --write the markdown table inside
+// the README's "## What works, what doesn't" section (everything up to the next "###"
+// heading) is replaced in place - the README carries no generator markers.
 //
 // The row set is fixed (49 rows, identical to the Dragonwilds connector README) so the
 // two connectors stay comparable. Only the symbol comes from capabilities.json; the note
@@ -20,8 +21,7 @@ const OK = '✅';      // white heavy check mark
 const CAVEAT = '⚠️'; // warning sign
 const NO = '❌';      // cross mark
 
-const START = '<!-- REGENERATE FROM capabilities.json AT L7b -->';
-const END = '<!-- END REGENERATE -->';
+const HEADING = "## What works, what doesn't";
 
 /** @type {Array<{label:string, keys?:string[], fixed?:string, note:string, notes?:Record<string,string>}>} */
 const ROWS = [
@@ -219,10 +219,16 @@ if (writeIdx === -1) {
   const readmePath = args[writeIdx + 1];
   if (!readmePath) { console.error('--write needs a README path'); process.exit(2); }
   const readme = readFileSync(readmePath, 'utf8');
-  const a = readme.indexOf(START);
-  const b = readme.indexOf(END);
-  if (a === -1 || b === -1) { console.error(`markers ${START} / ${END} not found in ${readmePath}`); process.exit(1); }
-  const out = readme.slice(0, a + START.length) + '\n\n' + table + '\n\n' + readme.slice(b);
-  writeFileSync(readmePath, out);
+  const lines = readme.split('\n');
+  const start = lines.findIndex((l) => l.trim() === HEADING);
+  if (start === -1) { console.error(`heading "${HEADING}" not found in ${readmePath}`); process.exit(1); }
+  let end = lines.findIndex((l, i) => i > start && l.startsWith('### '));
+  if (end === -1) end = lines.length;
+  const first = lines.findIndex((l, i) => i > start && i < end && l.startsWith('|'));
+  if (first === -1) { console.error(`no table in the "${HEADING}" section of ${readmePath}`); process.exit(1); }
+  let last = first;
+  while (last + 1 < end && lines[last + 1].startsWith('|')) last += 1;
+  lines.splice(first, last - first + 1, table);
+  writeFileSync(readmePath, lines.join('\n'));
   console.error(`rewrote ${ROWS.length} rows in ${readmePath}`);
 }

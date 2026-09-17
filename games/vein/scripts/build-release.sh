@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the Takaro VEIN release artifacts into <out-dir>:
 #   takaro-vein-plugin.tar.gz    - libtakaro-vein.so + install notes
-#   takaro-vein-sidecar.tar.gz   - compiled sidecar (dist/, package.json, Dockerfile, ...)
+#   takaro-vein-sidecar.tar.gz   - compiled sidecar (dist/, package.json, runtime Dockerfile,
+#                                  .env.example, docker-compose.example.yml, ...)
 #   SHA256SUMS                   - checksums of both archives
 #
 # Usage: build-release.sh [version] [out-dir]
@@ -48,7 +49,8 @@ Install:
 4. Set TAKARO_PLUGIN_TOKEN on the game server process to a long random shared secret
    and give the sidecar the same value. Without a token every request is rejected
    with 401.
-5. Start the server and confirm <serverdir>/takaro/plugin.log contains
+5. Start the server and confirm
+   <serverdir>/Vein/Binaries/Linux/takaro/plugin.log contains
    "takaro vein plugin ${VERSION} starting".
 
 You also need takaro-vein-sidecar.tar.gz - the plugin alone does not talk to Takaro.
@@ -69,7 +71,9 @@ echo "==> building the sidecar v${VERSION}"
 SPKG="$STAGE/TakaroVeinSidecar"
 mkdir -p "$SPKG"
 cp -R "$ROOT/sidecar/dist" "$ROOT/sidecar/package.json" "$ROOT/sidecar/package-lock.json" \
-      "$ROOT/sidecar/Dockerfile" "$ROOT/sidecar/.dockerignore" "$ROOT/sidecar/.env.example" "$SPKG/"
+      "$ROOT/sidecar/Dockerfile" "$ROOT/sidecar/.dockerignore" "$SPKG/"
+# Everything the README tells an operator to copy must be inside the archive.
+cp "$ROOT/.env.example" "$ROOT/docker-compose.example.yml" "$SPKG/"
 rm -rf "$SPKG/dist/__tests__" "$SPKG/dist/testing"
 
 cat > "$SPKG/README.release.txt" <<TXT
@@ -80,9 +84,11 @@ The sidecar is the part that talks to Takaro. It reads the plugin's loopback API
 namespace (compose: network_mode: "service:vein") or run on the same host.
 
 Option A - Docker (what docker-compose.example.yml does):
-1. Unpack this folder next to docker-compose.example.yml and rename it to "sidecar"
-   so the compose service's "build: ./sidecar" finds it.
-2. docker compose -f docker-compose.example.yml --env-file .env up -d --build
+1. Move docker-compose.example.yml and .env.example out of this folder into the
+   directory above it, then rename this folder to "sidecar" so the compose
+   service's "build: ./sidecar" finds it.
+2. cp .env.example .env and fill in the tokens.
+3. docker compose -f docker-compose.example.yml --env-file .env up -d --build
 
 Option B - plain Node.js 22 on the host:
 1. npm ci --omit=dev
@@ -90,8 +96,11 @@ Option B - plain Node.js 22 on the host:
    TAKARO_PLUGIN_TOKEN and VEIN_LOG_FILE (see .env.example).
 3. node dist/index.js
 
+Mount a persistent volume at /data (the example compose uses ./data/vein-sidecar).
+It holds the event cursor; without it events are replayed after every restart.
+
 Verify: the sidecar log prints "Identified with Takaro (gameServerId=...)", the server
-shows as online in Takaro, and curl http://127.0.0.1:18891/health returns status "ok".
+shows as online in Takaro, and curl http://127.0.0.1:18891/health reports "ok": true.
 
 Never commit or share live registration tokens or plugin tokens.
 TXT
