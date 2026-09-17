@@ -36,11 +36,17 @@ export interface PendingEvent {
   type: GameEventType;
   data: unknown;
   seq?: number;
+  /** Sink send id, set once the event has been written to the socket but not yet proven delivered (F20). */
+  sendId?: number;
 }
 
 export interface TakaroSink {
   send(message: WsMessage): boolean;
   sendGameEvent(type: GameEventType, data: unknown): boolean;
+  /** Id of the last gameEvent written; present only on sinks that can PROVE delivery (see onConfirmed). */
+  lastSendId?(): number;
+  /** Registers a callback fired when every gameEvent up to `sendId` is proven to have reached Takaro. */
+  onConfirmed?(cb: (sendId: number) => void): void;
 }
 
 export interface BridgeOptions {
@@ -156,10 +162,19 @@ export class Bridge {
   private reconcilePending = true;
   /** gameEvents produced while Takaro was unreachable, oldest first; flushed in order after the next identify (F10). */
   private readonly pendingEvents: PendingEvent[] = [];
+  /**
+   * gameEvents written to the socket but not yet PROVEN delivered (F20), oldest first. The persisted cursor never
+   * advances past this window, and on a disconnect the whole window goes back to the front of `pendingEvents`.
+   */
+  private readonly unconfirmedEvents: PendingEvent[] = [];
+  /** True when the sink can prove delivery; without it we fall back to the old "ws.send() succeeded" rule. */
+  private readonly confirms: boolean;
   private droppedEvents = 0;
 
   constructor(private readonly options: BridgeOptions) {
     this.adapter = new VeinAdapter(options.plugin, options.adapter ?? {});
+    this.confirms = typeof options.takaro.lastSendId === 'function' && typeof options.takaro.onConfirmed === 'function';
+    if (this.confirms) options.takaro.onConfirmed?.((sendId) => this.confirmUpTo(sendId));
     for (const p of options.onlineStore?.load() ?? []) this.online.set(p.gameId, p);
     this.poller = new EventPoller({
       getEvents: (since) => options.plugin.getEvents(since),
@@ -170,7 +185,11 @@ export class Bridge {
         if (sent) this.noteConnectionEvent(type, payload);
         else this.queueEvent({ type, data: payload, seq });
         if (type !== 'log') logger.info(`Forwarded plugin ${type} (sent=${sent}): ${JSON.stringify(payload)}`);
-        return sent ? true : 'queued';
+        if (!sent) return 'queued';
+        if (!this.confirms) return true;
+        // Written, not yet proven delivered: hold the cursor until a heartbeat confirms it (F20).
+        this.trackUnconfirmed({ type, data: payload, seq });
+        return 'queued';
       },
       store: options.cursorStore,
       onRestart: () => {
@@ -191,8 +210,10 @@ export class Bridge {
       },
       onEvent: (event) => {
         logger.info(`Log tail ${event.type}: ${event.data.player.name} (${event.data.player.gameId})`);
-        if (options.takaro.sendGameEvent(event.type, event.data)) this.noteConnectionEvent(event.type, event.data);
-        else this.queueEvent({ type: event.type, data: event.data });
+        if (options.takaro.sendGameEvent(event.type, event.data)) {
+          this.noteConnectionEvent(event.type, event.data);
+          this.trackUnconfirmed({ type: event.type, data: event.data });
+        } else this.queueEvent({ type: event.type, data: event.data });
       },
       onError: (err) => logger.debug(`Log tail: ${err.message}`),
     });
@@ -301,6 +322,7 @@ export class Bridge {
         continue;
       }
       this.noteConnectionEvent('player-disconnected', { player });
+      this.trackUnconfirmed({ type: 'player-disconnected', data: { player } });
       gone.push(player);
     }
     return gone;
@@ -317,6 +339,52 @@ export class Bridge {
   /** Events waiting for Takaro to come back (oldest first). */
   pending(): PendingEvent[] {
     return this.pendingEvents.map((e) => ({ ...e }));
+  }
+
+  /** Events written to the socket but not yet proven delivered (oldest first). */
+  unconfirmed(): PendingEvent[] {
+    return this.unconfirmedEvents.map((e) => ({ ...e }));
+  }
+
+  /** Remembers an event that is on the wire but unproven; no-op on sinks that cannot confirm. */
+  private trackUnconfirmed(event: PendingEvent): void {
+    if (!this.confirms) {
+      if (event.seq !== undefined) this.poller.markDelivered(event.seq);
+      return;
+    }
+    this.unconfirmedEvents.push({ ...event, sendId: this.options.takaro.lastSendId?.() ?? 0 });
+  }
+
+  /** A heartbeat proved everything up to `sendId` arrived: release those events and advance the persisted cursor. */
+  private confirmUpTo(sendId: number): void {
+    let released = 0;
+    while (this.unconfirmedEvents.length && (this.unconfirmedEvents[0].sendId ?? 0) <= sendId) {
+      const event = this.unconfirmedEvents.shift();
+      released += 1;
+      if (event?.seq !== undefined) this.poller.markDelivered(event.seq);
+    }
+    if (released) logger.debug(`Takaro heartbeat confirmed ${released} game event(s) up to sendId ${sendId}; cursor ${this.poller.cursor()}`);
+  }
+
+  /**
+   * The socket died: everything written but unconfirmed may never have left the machine (F20), so it goes back to the
+   * FRONT of the pending queue, in order, to be re-sent after the next identify. Duplicates are possible but bounded by
+   * the heartbeat interval; Takaro tolerates them, silent loss is not tolerable.
+   */
+  private requeueUnconfirmed(): void {
+    if (!this.unconfirmedEvents.length) return;
+    const lost = this.unconfirmedEvents.splice(0, this.unconfirmedEvents.length).map(({ sendId, ...e }) => {
+      void sendId;
+      return e;
+    });
+    logger.warn(`Takaro connection died with ${lost.length} game event(s) unconfirmed; they will be re-sent after the next identify`);
+    this.pendingEvents.unshift(...lost);
+    while (this.pendingEvents.length > MAX_PENDING_EVENTS) {
+      const dropped = this.pendingEvents.shift();
+      this.droppedEvents += 1;
+      logger.error(`Pending event queue full (${MAX_PENDING_EVENTS}); dropping ${dropped?.type} seq=${dropped?.seq ?? '-'}`);
+      if (dropped?.seq !== undefined) this.poller.markDelivered(dropped.seq);
+    }
   }
 
   /** Number of pending events dropped because the queue was full (never silently zero in the logs). */
@@ -353,7 +421,7 @@ export class Bridge {
       this.pendingEvents.shift();
       flushed += 1;
       this.noteConnectionEvent(event.type, event.data);
-      if (event.seq !== undefined) this.poller.markDelivered(event.seq);
+      this.trackUnconfirmed({ type: event.type, data: event.data, seq: event.seq });
     }
     if (flushed) logger.info(`Flushed ${flushed} buffered game event(s); cursor now ${this.poller.cursor()}`);
     return flushed;
@@ -437,6 +505,7 @@ export class Bridge {
 
   stopEvents(): void {
     this.eventsActive = false;
+    this.requeueUnconfirmed();
     this.poller.stop();
     this.tailer.stop();
     this.tailActive = false;

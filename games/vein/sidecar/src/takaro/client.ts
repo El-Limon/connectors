@@ -14,16 +14,26 @@ import {
 export interface TakaroClientOptions {
   baseReconnectMs?: number;
   maxReconnectMs?: number;
-  /** How often to ping Takaro while the socket is open (default 10s). */
+  /** How often to ping Takaro while the socket is open (default 5s). */
   pingIntervalMs?: number;
-  /** Terminate the socket when no frame/pong has arrived for this long (default 30s). */
+  /** Terminate the socket when no frame/pong has arrived for this long (default 20s). */
   idleTimeoutMs?: number;
+  /** Terminate the socket once this many of our pings are outstanding with no pong (default 2). */
+  maxMissedPongs?: number;
   /** Treat a send as undelivered when more than this many bytes are still buffered (default 1 MiB). */
   maxBufferedBytes?: number;
 }
 
 /**
- * Outbound WebSocket to Takaro. Emits: 'identified' (gameServerId|null), 'request' (WsMessage), 'disconnected'.
+ * Outbound WebSocket to Takaro. Emits: 'identified' (gameServerId|null), 'request' (WsMessage), 'disconnected',
+ * 'confirmed' (sendId) — every gameEvent up to and including that sendId is PROVEN to have reached Takaro's kernel.
+ *
+ * Why a pong and not "any inbound frame" (finding F20): during a `rig-outage` our egress is REJECTed, so `ws.send()`
+ * still succeeds into the local kernel buffers while nothing reaches the peer, and the peer may still be able to send
+ * US frames. An inbound `request`/`identifyResponse` therefore proves only that THEY are alive, never that our bytes
+ * arrived. A pong does: the peer only emits it after processing our ping frame, and TCP/WebSocket framing is ordered,
+ * so every byte we wrote before that ping was received first. Hence the confirmation anchor is "a pong for a ping that
+ * was sent AFTER the event".
  */
 export class TakaroWsClient extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -36,9 +46,17 @@ export class TakaroWsClient extends EventEmitter {
   private readonly maxReconnectMs: number;
   private readonly pingIntervalMs: number;
   private readonly idleTimeoutMs: number;
+  private readonly maxMissedPongs: number;
   private readonly maxBufferedBytes: number;
   private watchdogTimer: NodeJS.Timeout | null = null;
   private lastActivity = 0;
+  /** Monotonic id of the last gameEvent handed to the socket; the bridge keeps events until this id is confirmed. */
+  private sendId = 0;
+  /** Highest sendId proven delivered (a pong came back for a ping written after it). */
+  private confirmedId = 0;
+  private pingId = 0;
+  /** Pings written but not yet ponged, oldest first. `upTo` = the sendId a pong for this ping would confirm. */
+  private outstandingPings: { id: number; upTo: number }[] = [];
 
   constructor(
     private readonly url: string,
@@ -48,8 +66,9 @@ export class TakaroWsClient extends EventEmitter {
     super();
     this.baseReconnectMs = options.baseReconnectMs ?? 2000;
     this.maxReconnectMs = options.maxReconnectMs ?? 60000;
-    this.pingIntervalMs = options.pingIntervalMs ?? 10_000;
-    this.idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
+    this.pingIntervalMs = options.pingIntervalMs ?? 5_000;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 20_000;
+    this.maxMissedPongs = options.maxMissedPongs ?? 2;
     this.maxBufferedBytes = options.maxBufferedBytes ?? 1024 * 1024;
   }
 
@@ -63,6 +82,7 @@ export class TakaroWsClient extends EventEmitter {
     ws.on('open', () => {
       logger.info('Takaro WebSocket open, sending identify');
       this.lastActivity = Date.now();
+      this.outstandingPings = [];
       this.startWatchdog(ws);
       this.sendFrame(ws, createIdentify(this.identifyConfig));
     });
@@ -70,20 +90,50 @@ export class TakaroWsClient extends EventEmitter {
       this.lastActivity = Date.now();
       this.handleMessage(data.toString());
     });
-    ws.on('pong', () => {
+    ws.on('pong', (data) => {
       this.lastActivity = Date.now();
+      this.notePong(data?.toString?.() ?? '');
     });
     ws.on('error', (err) => logger.error(`Takaro WebSocket error: ${err.message}`));
     ws.on('close', (code, reason) => {
       if (this.ws !== ws) return;
       logger.warn(`Takaro WebSocket closed code=${code} reason=${reason.toString()}`);
       this.stopWatchdog();
+      this.outstandingPings = [];
       this.ws = null;
       this.isIdentified = false;
       this.gameServerId = null;
       this.emit('disconnected');
       this.scheduleReconnect();
     });
+  }
+
+  /** Id of the last gameEvent written to the socket (0 = none this process). */
+  lastSendId(): number {
+    return this.sendId;
+  }
+
+  /** Highest sendId proven to have reached Takaro. */
+  lastConfirmedId(): number {
+    return this.confirmedId;
+  }
+
+  /** Register a callback fired when delivery of everything up to `sendId` is proven. */
+  onConfirmed(cb: (sendId: number) => void): void {
+    this.on('confirmed', cb);
+  }
+
+  private notePong(payload: string): void {
+    if (!this.outstandingPings.length) return;
+    const idx = this.outstandingPings.findIndex((p) => String(p.id) === payload);
+    // A server that does not echo the ping payload still proves the oldest outstanding ping arrived: match FIFO, which
+    // confirms the SMALLEST upTo and is therefore never optimistic.
+    const hit = this.outstandingPings[idx >= 0 ? idx : 0];
+    this.outstandingPings = this.outstandingPings.slice((idx >= 0 ? idx : 0) + 1);
+    if (hit.upTo > this.confirmedId) {
+      this.confirmedId = hit.upTo;
+      this.emit('confirmed', this.confirmedId);
+    }
   }
 
   identified(): boolean {
@@ -143,13 +193,22 @@ export class TakaroWsClient extends EventEmitter {
     if (this.pingIntervalMs <= 0) return;
     this.watchdogTimer = setInterval(() => {
       if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+      if (this.outstandingPings.length >= this.maxMissedPongs) {
+        logger.warn(
+          `${this.outstandingPings.length} heartbeat ping(s) unanswered by Takaro; the socket is dead — terminating and reconnecting`,
+        );
+        ws.terminate();
+        return;
+      }
       if (Date.now() - this.lastActivity > this.idleTimeoutMs) {
         logger.warn(`No traffic from Takaro for ${Math.round(this.idleTimeoutMs / 1000)}s; terminating the socket and reconnecting`);
         ws.terminate();
         return;
       }
       try {
-        ws.ping();
+        this.pingId += 1;
+        this.outstandingPings.push({ id: this.pingId, upTo: this.sendId });
+        ws.ping(String(this.pingId));
       } catch (err) {
         logger.warn(`Takaro ping failed: ${(err as Error).message}`);
         ws.terminate();
@@ -171,8 +230,14 @@ export class TakaroWsClient extends EventEmitter {
     return this.send(createErrorResponse(requestId, error));
   }
 
+  /**
+   * Writes a gameEvent. `true` means only that the bytes were accepted by the local socket — NOT that Takaro got them
+   * (F20). The caller must keep the event until a 'confirmed' event covers `lastSendId()`.
+   */
   sendGameEvent(type: GameEventType, data: unknown): boolean {
-    return this.send(createGameEvent(type, data));
+    const ok = this.send(createGameEvent(type, data));
+    if (ok) this.sendId += 1;
+    return ok;
   }
 
   shutdown(): void {

@@ -57,6 +57,8 @@ async function main(): Promise<void> {
     eventCursor: bridge.poller.cursor(),
     eventScanCursor: bridge.poller.scanCursor(),
     pendingEvents: bridge.pending().length,
+    unconfirmedEvents: bridge.unconfirmed().length,
+    lastConfirmedSendId: takaro.lastConfirmedId(),
     droppedEvents: bridge.dropped(),
     pendingTimedBans: bridge.adapter.pendingBans().length,
     serverReady: bridge.tailer.serverReady(),
