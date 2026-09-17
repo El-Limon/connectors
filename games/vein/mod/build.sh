@@ -56,7 +56,7 @@ undef="$(nm -D --undefined-only dist/libtakaro-vein.so | awk '$1 == "U" { print 
           | grep -vE 'GLIBC|GCC|CXXABI' || true)"
 if [ -n "$undef" ]; then
   echo "  !! undefined strong symbols in dist/libtakaro-vein.so:" >&2
-  printf '     %s\n' $undef >&2
+  printf '%s\n' "$undef" | sed 's/^/     /' >&2
   echo "     LD_PRELOAD would crash-loop the server; refusing to ship this artefact." >&2
   rm -f dist/libtakaro-vein.so
   exit 1
