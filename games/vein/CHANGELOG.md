@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/gettakaro/connectors/compare/vein-v0.2.0...vein-v0.2.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **vein:** release packaging and install docs ([#185](https://github.com/gettakaro/connectors/issues/185)) ([eb85b8d](https://github.com/gettakaro/connectors/commit/eb85b8daf3a87341e1ed4da142579b8e7f8be5de))
+
 ## [0.2.0](https://github.com/gettakaro/connectors/compare/vein-v0.1.0...vein-v0.2.0) (2026-09-17)
 
 
