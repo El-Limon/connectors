@@ -188,6 +188,23 @@ def test_a_malformed_manifest_is_a_conflict(run: Any, wired: Any, installed: Pat
     assert code == 7
 
 
+def test_a_manifest_row_that_names_a_file_outside_the_directory_is_a_conflict(
+    run: Any, wired: Any, installed: Path, tmp_path: Path
+) -> None:
+    out = build_dir(run, wired, tmp_path)
+    manifest_path = out / "build-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    outside = tmp_path / "planted.jar"
+    outside.write_bytes(b"not ours")
+    manifest["artifacts"][0]["file"] = "../planted.jar"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    code, _, _ = deploy(run, wired, installed, out)
+
+    assert code == 7
+    assert not (installed / "mods/planted.jar").exists()
+
+
 def test_ledger_check_passes_after_a_deploy(run: Any, wired: Any, installed: Path, tmp_path: Path) -> None:
     out = build_dir(run, wired, tmp_path)
     deploy(run, wired, installed, out)

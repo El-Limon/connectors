@@ -13,6 +13,6 @@
     "path": {"type": "string", "pattern": "^/"},
     "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
     "size": {"type": "integer", "minimum": 1},
-    "installPath": {"type": "string", "minLength": 1}
+    "installPath": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$"}
   }
 }

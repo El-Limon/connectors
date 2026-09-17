@@ -30,7 +30,7 @@
         "path": {"type": "string", "pattern": "^/"},
         "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "size": {"type": "integer", "minimum": 1},
-        "installPath": {"type": "string", "minLength": 1}
+        "installPath": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$"}
       }
     }
   }

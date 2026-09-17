@@ -215,7 +215,28 @@ def test_the_level_is_the_highest_fully_passed_class() -> None:
     no_startup = [row if row["id"] != "startup" else {"id": "startup", "status": "fail"} for row in all_pass]
     assert level_for(no_startup) == "contract"
 
-    assert level_for([{"id": "build", "status": "fail"}]) == "build"
+    assert level_for([{"id": "build", "status": "fail"}]) == "none"
+
+
+def test_an_unobserved_class_is_not_reported_as_reached() -> None:
+    from takaro_maint.verify.report import level_for, outcome_for
+
+    # `verify --checks players`: one check ran, everything the level names did not.
+    partial = [
+        {"id": name, "status": "skip" if name != "players" else "pass"}
+        for name in ("build", "startup", "players", "console")
+    ]
+    assert level_for(partial) == "none"
+    assert outcome_for(partial) == "pass"
+
+
+def test_a_run_that_observed_nothing_is_not_a_pass() -> None:
+    from takaro_maint.verify.report import level_for, outcome_for
+
+    skipped = [{"id": name, "status": "skip"} for name in ("build", "startup", "console")]
+    assert level_for(skipped) == "none"
+    assert outcome_for(skipped) == "fail"
+    assert outcome_for([{"id": "build", "status": "pass"}, {"id": "startup", "status": "fail"}]) == "fail"
 
 
 # --------------------------------------------------------------------------- runner
@@ -585,6 +606,42 @@ def test_a_subset_of_checks_marks_the_rest_skipped(run: Any, wired: Any, tmp_pat
     assert statuses["build"] == "pass"
     assert statuses["console"] == "skip"
     assert report["level"] == "contract"
+
+
+def test_a_subset_that_skips_the_build_check_reports_no_level(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, repo_root: Path
+) -> None:
+    from jsonschema import Draft202012Validator
+
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+
+    code, _, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(out),
+        "--checks",
+        "startup",
+        "--run-id",
+        "t1",
+        "--startup-timeout",
+        "60",
+        repo=wired.root,
+    )
+
+    assert code == 0
+    report = json.loads((out / "fabric-26.2" / "report.json").read_text())
+    schema = json.loads((repo_root / "catalog/schema/v1/verify-report.schema.json").read_text())
+    assert list(Draft202012Validator(schema).iter_errors(report)) == []
+    statuses = {check["id"]: check["status"] for check in report["checks"]}
+    assert statuses["startup"] == "pass"
+    assert statuses["build"] == "skip"
+    # The artifact was never checked, so the report may not claim the build class.
+    assert report["level"] == "none"
 
 
 def test_an_unknown_check_exits_two(run: Any, wired: Any, tmp_path: Path) -> None:

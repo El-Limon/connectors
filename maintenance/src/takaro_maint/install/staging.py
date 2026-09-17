@@ -8,7 +8,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import output
+from .. import output, paths
 
 
 def is_protected(relative: str, preserve: list[str]) -> bool:
@@ -59,7 +59,8 @@ class StagedInstall:
             pass
 
     def path_for(self, install_path: str) -> Path:
-        staged = self.root / install_path
+        relative = paths.safe_relative(install_path, field="installPath")
+        staged = self.root / relative
         staged.parent.mkdir(parents=True, exist_ok=True)
         self._staged[install_path] = staged
         return staged
@@ -71,7 +72,9 @@ class StagedInstall:
             if is_protected(install_path, self.preserve):
                 output.info(f"keeping protected {install_path}")
                 continue
-            final = self.dest / install_path
+            # Checked again at the write: this is the line that puts bytes into the
+            # caller's directory, and an unchecked record value would escape it.
+            final = self.dest / paths.safe_relative(install_path, field="installPath")
             final.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged, final)
             placed.append(install_path)

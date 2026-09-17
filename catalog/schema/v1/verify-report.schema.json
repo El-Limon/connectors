@@ -84,7 +84,7 @@
       }
     },
     "takaro": {"enum": ["local", "hosted"]},
-    "level": {"enum": ["build", "contract", "startup", "protocol", "gameplay"]},
+    "level": {"enum": ["none", "build", "contract", "startup", "protocol", "gameplay"]},
     "checks": {
       "type": "array",
       "minItems": 1,

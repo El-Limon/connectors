@@ -250,3 +250,32 @@ def test_a_mojang_manifest_that_disagrees_with_the_record_exits_five(run: Any, w
 
     assert code == 5
     assert "manifest names server sha1" in payload["error"]
+
+
+def test_an_install_path_that_escapes_the_destination_is_refused(run: Any, wired: Any, tmp_path: Path) -> None:
+    dest = tmp_path / "server"
+    outside = tmp_path / "escaped.jar"
+    record = wired.target()
+    record["inputs"]["fabricApi"]["installPath"] = "../escaped.jar"
+    wired.save(record)
+
+    code, payload, _ = install(run, wired, dest)
+
+    assert code == 2
+    assert "relative path inside the install directory" in payload["error"]
+    assert not outside.exists()
+    assert tree(dest) == {}
+
+
+def test_an_absolute_install_path_is_refused(run: Any, wired: Any, tmp_path: Path) -> None:
+    dest = tmp_path / "server"
+    outside = tmp_path / "absolute.jar"
+    record = wired.target()
+    record["inputs"]["fabricApi"]["installPath"] = str(outside)
+    wired.save(record)
+
+    code, payload, _ = install(run, wired, dest)
+
+    assert code == 2
+    assert "relative path inside the install directory" in payload["error"]
+    assert not outside.exists()

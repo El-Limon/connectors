@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .. import net, output
+from .. import net, output, paths
 from ..exit_codes import OK, ConflictError
 from ..install.ledger import read_ledger, write_ledger
 from ..publish import read_manifest
@@ -56,14 +56,15 @@ def _deploy(args: Any) -> int:
         if len(rows) > 1:
             raise ConflictError(f"{manifest_path.name} has {len(rows)} '{role}' rows for target '{target.id}'")
         row = rows[0]
-        source = manifest_path.parent / row["file"]
+        file_name = paths.safe_relative(row["file"], field="build-manifest artifacts[].file")
+        source = manifest_path.parent / file_name
         if not source.is_file():
             raise ConflictError(f"{row['file']} is named by the manifest but missing next to it")
         actual = net.sha256_file(source)
         if actual != row["sha256"]:
             raise ConflictError(f"{row['file']} sha256 {actual} != manifest {row['sha256']}")
 
-        install_dir = dest / component["installDir"]
+        install_dir = dest / paths.safe_relative(component["installDir"], field="components[].installDir")
         install_dir.mkdir(parents=True, exist_ok=True)
         for existing in sorted(install_dir.iterdir()):
             if not existing.is_file() or existing.name == row["file"]:

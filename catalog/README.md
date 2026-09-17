@@ -46,7 +46,10 @@ Collapsing them is how a catalog starts claiming support it never earned.
 
 Every downloadable input declares a `kind`, the `source` it comes from (a key of
 `game.json.sources`), the `path` under that source's `baseUrl`, and a hash. `installPath` says
-where the file lands under the game directory; an input without one is build-only.
+where the file lands under the game directory; an input without one is build-only. An
+`installPath`, a component's `installDir` and a build manifest's `file` are relative paths built
+from `[A-Za-z0-9._+-]` segments: no leading `/`, no `..`, no backslash, so a record can never
+name a file outside the directory the command was pointed at.
 
 | Kind | For | Pinned by |
 |---|---|---|

@@ -35,7 +35,7 @@
           "role": {"type": "string", "minLength": 1},
           "target": {"type": "string", "minLength": 1},
           "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-          "file": {"type": "string", "minLength": 1},
+          "file": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"},
           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "size": {"type": "integer", "minimum": 1}
         }

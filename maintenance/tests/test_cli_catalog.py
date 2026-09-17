@@ -82,6 +82,30 @@ def test_an_input_must_match_its_kind_schema(run: Any, catalog_copy: Path) -> No
     assert "input-kind-schema" in failures(payload)
 
 
+def test_an_install_path_that_leaves_the_install_directory_is_rejected(run: Any, catalog_copy: Path) -> None:
+    record = read_target(catalog_copy)
+    record["inputs"]["fabricApi"]["installPath"] = "../../etc/cron.d/takaro"
+    write_target(catalog_copy, record)
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code == 2
+    assert "input-kind-schema" in failures(payload)
+
+
+def test_a_component_install_directory_that_leaves_the_install_directory_is_rejected(
+    run: Any, catalog_copy: Path
+) -> None:
+    record = read_target(catalog_copy)
+    record["components"][0]["installDir"] = "/etc/systemd/system"
+    write_target(catalog_copy, record)
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code == 2
+    assert "target-schema" in failures(payload)
+
+
 def test_a_maintained_target_may_not_carry_a_null_hash(run: Any, catalog_copy: Path) -> None:
     record = read_target(catalog_copy)
     record["inputs"]["fabricApi"]["sha256"] = None

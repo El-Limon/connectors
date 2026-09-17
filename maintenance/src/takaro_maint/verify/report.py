@@ -31,9 +31,13 @@ LEVEL_CHECKS: dict[str, tuple[str, ...]] = {
 
 
 def level_for(checks: list[dict[str, Any]]) -> str:
-    """The highest class whose checks all passed; never ``gameplay``."""
+    """The highest class whose checks all passed; ``none`` when not even ``build`` did.
+
+    A skipped or failed check never counts as a pass, so a partial run (``--checks players``)
+    reports the class it actually reached rather than the lowest class it never observed.
+    """
     status = {check["id"]: check["status"] for check in checks}
-    reached = "build"
+    reached = "none"
     for level in LEVELS:
         required = LEVEL_CHECKS[level]
         if required and all(status.get(check_id) == "pass" for check_id in required):
@@ -41,6 +45,18 @@ def level_for(checks: list[dict[str, Any]]) -> str:
         else:
             break
     return reached
+
+
+def outcome_for(checks: list[dict[str, Any]]) -> str:
+    """``pass`` only when a check was actually observed to pass and none failed.
+
+    Skips are not successes: a run in which every check was skipped proves nothing and
+    must not come back as a pass.
+    """
+    statuses = [check["status"] for check in checks]
+    if "fail" in statuses or "pass" not in statuses:
+        return "fail"
+    return "pass"
 
 
 def repo_identity(repo_root: Path) -> tuple[str, str, bool]:
@@ -124,7 +140,7 @@ def build_report(
         "takaro": takaro,
         "level": level_for(checks),
         "checks": checks,
-        "outcome": "pass" if all(c["status"] != "fail" for c in checks) else "fail",
+        "outcome": outcome_for(checks),
         "startedAt": started_at,
         "finishedAt": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "logs": [{"name": log.name, "sha256": net.sha256_file(log)} for log in logs if log.is_file()],
