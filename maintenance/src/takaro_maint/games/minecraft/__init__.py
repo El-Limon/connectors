@@ -2,28 +2,42 @@
 
 from __future__ import annotations
 
+import importlib
 import os
+import pkgutil
 import shlex
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from ... import output
 from ...exit_codes import BuildFailed, ConflictError
 from ..base import BuildResult, common_env
-from . import fabric
 
-_PLATFORMS = {"fabric": fabric}
+
+@lru_cache(maxsize=1)
+def platforms() -> dict[str, Any]:
+    """Every platform module in this package, discovered rather than listed.
+
+    A new platform registers by existing: drop ``neoforge.py`` next to ``fabric.py`` and it
+    is found here, with no edit to this file.
+    """
+    return {
+        module_info.name: importlib.import_module(f"{__name__}.{module_info.name}")
+        for module_info in pkgutil.iter_modules(__path__)
+        if not module_info.name.startswith("_")
+    }
 
 
 def _platform(resolved: dict[str, Any]) -> Any:
     platform = resolved["platform"]
-    if platform not in _PLATFORMS:
+    known = platforms()
+    if platform not in known:
         raise ConflictError(
-            f"the Minecraft adapter has no support for platform '{platform}' yet "
-            f"(known: {', '.join(sorted(_PLATFORMS))})"
+            f"the Minecraft adapter has no support for platform '{platform}' yet (known: {', '.join(sorted(known))})"
         )
-    return _PLATFORMS[platform]
+    return known[platform]
 
 
 class MinecraftAdapter:
@@ -104,7 +118,7 @@ class MinecraftAdapter:
         return {**_platform(resolved).runtime_env(resolved), **takaro}
 
     def parse_runtime_identity(self, log_line: str) -> dict[str, Any] | None:
-        for module in _PLATFORMS.values():
+        for module in platforms().values():
             parsed = module.parse_runtime_identity(log_line)
             if parsed is not None:
                 return parsed  # type: ignore[no-any-return]

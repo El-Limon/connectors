@@ -121,7 +121,18 @@ def _check_input_kinds(result: ValidationResult, target: Target) -> None:
         if not isinstance(kind, str):
             result.add("input-kind-schema", False, f"input '{name}' has no kind", file)
             continue
-        errors = schema.errors_for(f"inputs/{kind}.schema.json", spec)
+        schema_name = f"inputs/{kind}.schema.json"
+        if not schema.has_schema(schema_name):
+            # The target schema no longer lists the kinds, so this is the only gate on them:
+            # an unknown kind must fail here rather than pass unchecked.
+            result.add(
+                "input-kind-schema",
+                False,
+                f"input '{name}' has unknown kind '{kind}': no catalog/schema/v1/{schema_name}",
+                file,
+            )
+            continue
+        errors = schema.errors_for(schema_name, spec)
         result.add(
             "input-kind-schema",
             not errors,

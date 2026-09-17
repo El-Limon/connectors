@@ -27,13 +27,11 @@
     "inputs": {
       "type": "object",
       "minProperties": 1,
+      "description": "One entry per pinned download. The kind names the schema file under inputs/ that the validator dispatches on, so a new kind means a new file there and never an edit to this one.",
       "additionalProperties": {
-        "oneOf": [
-          {"$ref": "inputs/mojang-version.schema.json"},
-          {"$ref": "inputs/fabric-launcher.schema.json"},
-          {"$ref": "inputs/maven-artifact.schema.json"},
-          {"$ref": "inputs/http-file.schema.json"}
-        ]
+        "type": "object",
+        "required": ["kind"],
+        "properties": {"kind": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}}
       }
     },
     "runtime": {
