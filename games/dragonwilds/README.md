@@ -222,7 +222,7 @@ again on the game side.
 | Player left event | ✅ | Arrives on a clean quit, on a kick, and after a server crash by reconciliation. |
 | Player chat event | ✅ | Real player chat reaches Takaro; messages the connector itself sent are not echoed back. |
 | Player death event | ✅ | Reaches Takaro with the death message. |
-| Entity kill event | ⚠️ | Proven with the plugin's own test kill driven through the game's damage pipeline: the creature and the killing player arrive in Takaro. Killer attribution is best-effort and the weapon is not reported. |
+| Entity kill event | ✅ | Proven with real sword kills: the creature's readable name (e.g. Magpie, Giant Rat), the killing player and the weapon held (e.g. Adamant Sword) arrive in Takaro. With several players nearby, the killer is the one holding the weapon that dealt the blow; if that cannot be read, the nearest player is reported. |
 | Log events | ⚠️ | The connector forwards server log lines (with passwords redacted), but Takaro does not store log lines as events, so they cannot be searched or used in modules. |
 | Map info | ❌ | Not implemented by this connector. |
 | Map tiles | ❌ | Not supported by Takaro for this connector type. |
@@ -244,7 +244,7 @@ again on the game side.
 | Discord: join/leave notices | ✅ | Join and leave notices posted to Discord by the chat-bridge module. |
 | Discord: no echo of server messages | ✅ | The stock `chatBridge` module re-posts Takaro's own server messages to Discord (a Takaro-core echo affecting every game); the `chatBridgeNoEcho` fork does not. |
 | Events while the Takaro connection is down | ✅ | Events that happen while Takaro is unreachable are kept and delivered in order once the connection is back; the connector notices a dead socket within about 30 seconds. |
-| Reconnects after a server or container restart | ✅ | The connector comes back and re-identifies on its own, and players who were online are reported as disconnected. |
+| Reconnects after a server or container restart | ✅ | The connector comes back and re-identifies on its own, and players who were online are reported as disconnected. If the sidecar shares the game container's network (the docker-compose example), restart the sidecar together with the game container; on its own it recovers within about three minutes. |
 | No duplicate events after a connector restart | ✅ | The event cursor is persisted, so a sidecar restart replays nothing. |
 | Survives a network drop to Takaro | ✅ | The WebSocket reconnects by itself with a backoff of 2 to 60 seconds and re-identifies as the same server. |
 | Timed bans expire on their own | ✅ | The connector lifts a timed ban when it runs out, including when it was restarted in between. |
