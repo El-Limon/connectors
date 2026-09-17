@@ -172,9 +172,7 @@ async def check_identify(fake: Any, log_file: Path, timeout: float, alive: Any) 
             await asyncio.wait_for(fake.wait_for_identify(timeout), timeout + 5)
         except TimeoutError:
             problems.append("the connector never sent an identify frame")
-        found = await asyncio.to_thread(
-            wait_for_line, log_file, re.compile("Identified successfully"), 30, alive
-        )
+        found = await asyncio.to_thread(wait_for_line, log_file, re.compile("Identified successfully"), 30, alive)
         if not found:
             problems.append("the connector never logged 'Identified successfully'")
     keys = sorted(fake.identified or {})

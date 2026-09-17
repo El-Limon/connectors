@@ -192,9 +192,7 @@ class TargetRun:
         with record.open("w", encoding="utf-8") as handle, contextlib.redirect_stdout(handle):
             code = cli_main(["--quiet", *argv])
         if code != 0:
-            raise UpstreamUnavailable(
-                f"{name} into the verification data dir exited {code}; see {record.name}"
-            )
+            raise UpstreamUnavailable(f"{name} into the verification data dir exited {code}; see {record.name}")
 
     def install_and_deploy(self) -> dict[str, Any]:
         manifest_path = self.options.artifacts / "build-manifest.json"
@@ -326,9 +324,7 @@ class TargetRun:
 
             if self.wanted("connector-load"):
                 self.record(
-                    await asyncio.to_thread(
-                        base_checks.check_connector_load, self.server_log, self.target, 120, alive
-                    )
+                    await asyncio.to_thread(base_checks.check_connector_load, self.server_log, self.target, 120, alive)
                 )
             else:
                 self.skip("connector-load", "not selected by --checks")
