@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isSteamId64, mapBan, mapEntityType, mapPlayer, mapPluginEvent, num, str } from '../vein/mapping.js';
+import { aggregateInventory, isSteamId64, mapBan, mapEntityType, mapInventoryItem, mapPlayer, mapPluginEvent, num, str } from '../vein/mapping.js';
 
 const STEAM = '76561198000000001';
 
@@ -101,5 +101,58 @@ describe('chat channel mapping (lane L3e, L6b finding 3)', () => {
     expect(chat('friends')).toBe('friends');
     expect(chat(undefined)).toBe('global');
     expect(chat('nonsense')).toBe('global');
+  });
+});
+
+describe('pseudo-stackable inventory aggregation (F22)', () => {
+  const agg = (raw: unknown[]) => aggregateInventory(raw.map(mapInventoryItem));
+
+  it('collapses four one-unit MRE instances into a single row of amount 4', () => {
+    // VEIN's BP_MRE_C is bStackable=false / bPseudoStackable=true: one FVirtualItemInstance per
+    // unit, so the plugin reports four entries of amount 1. The game UI shows "MRE x 4".
+    expect(agg([
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+    ])).toEqual([{ code: 'BP_MRE_C', name: 'MRE', amount: 4 }]);
+  });
+
+  it('mixes real stackables with pseudo-stackables and keeps first-appearance order', () => {
+    expect(agg([
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'BP_Ammo_9mm_C', name: '9mm Ammo', amount: 30 },
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'BP_Corn_C', name: 'Corn', amount: 1 },
+      { code: 'BP_Ammo_9mm_C', name: '9mm Ammo', amount: 12 },
+      { code: 'BP_Corn_C', name: 'Corn', amount: 1 },
+      { code: 'BP_Corn_C', name: 'Corn', amount: 1 },
+    ])).toEqual([
+      { code: 'BP_MRE_C', name: 'MRE', amount: 2 },
+      { code: 'BP_Ammo_9mm_C', name: '9mm Ammo', amount: 42 },
+      { code: 'BP_Corn_C', name: 'Corn', amount: 3 },
+    ]);
+  });
+
+  it('keeps different qualities of the same code apart and defaults a missing amount to 1', () => {
+    expect(agg([
+      { code: 'BP_Axe_C', name: 'Axe', quality: '2' },
+      { code: 'BP_Axe_C', name: 'Axe' },
+      { code: 'BP_Axe_C', name: 'Axe', quality: '2' },
+    ])).toEqual([
+      { code: 'BP_Axe_C', name: 'Axe', amount: 2, quality: '2' },
+      { code: 'BP_Axe_C', name: 'Axe', amount: 1 },
+    ]);
+  });
+
+  it('is a no-op for an empty inventory and for one already-unique row', () => {
+    expect(agg([])).toEqual([]);
+    expect(agg([{ code: 'BP_MRE_C', name: 'MRE', amount: 1 }])).toEqual([{ code: 'BP_MRE_C', name: 'MRE', amount: 1 }]);
+  });
+
+  it('does not mutate the mapped input rows', () => {
+    const rows = [mapInventoryItem({ code: 'BP_MRE_C', name: 'MRE', amount: 1 }), mapInventoryItem({ code: 'BP_MRE_C', name: 'MRE', amount: 1 })];
+    aggregateInventory(rows);
+    expect(rows.map((r) => r.amount)).toEqual([1, 1]);
   });
 });

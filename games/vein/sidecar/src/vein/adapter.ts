@@ -6,6 +6,7 @@ import {
   mapBan,
   mapEntity,
   mapInventoryItem,
+  aggregateInventory,
   mapItemDefinition,
   mapLocation,
   mapPlayer,
@@ -180,7 +181,7 @@ export class VeinAdapter {
       case 'getPlayerInventory': {
         const pluginId = await this.resolvePluginId(playerId(args));
         const items = await this.plugin.getPlayerInventory(pluginId);
-        return (Array.isArray(items) ? items : []).map(mapInventoryItem);
+        return aggregateInventory((Array.isArray(items) ? items : []).map(mapInventoryItem));
       }
       case 'giveItem': {
         const pluginId = await this.resolvePluginId(playerId(args));

@@ -237,3 +237,28 @@ export function num(value: unknown): number | null {
   if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
   return null;
 }
+
+/**
+ * VEIN has pseudo-stackable items (`bStackable=false`, `bPseudoStackable=true`: corn, MRE, ...):
+ * every unit is its own `FVirtualItemInstance`, so the plugin's per-instance `/inventory` returns
+ * N entries of `amount: 1`. The game's own UI groups identical rows ("MRE  x 4"), and Takaro renders
+ * one row per IItemDTO, so forwarding them 1:1 shows four "MRE x1" rows. Aggregate by code (and
+ * quality, which is a distinct item for Takaro), summing `amount`, keeping first-appearance order
+ * and the first entry's `name`. The plugin endpoint stays the detailed, per-instance source.
+ */
+export function aggregateInventory(items: TakaroItem[]): TakaroItem[] {
+  const out: TakaroItem[] = [];
+  const index = new Map<string, TakaroItem>();
+  for (const item of items) {
+    const key = JSON.stringify([item.code, item.quality ?? null]);
+    const existing = index.get(key);
+    if (existing) {
+      existing.amount = (existing.amount ?? 1) + (item.amount ?? 1);
+      continue;
+    }
+    const copy: TakaroItem = { ...item, amount: item.amount ?? 1 };
+    index.set(key, copy);
+    out.push(copy);
+  }
+  return out;
+}

@@ -184,6 +184,20 @@ describe('all 17 Takaro actions', () => {
     expect(await ok('getPlayerInventory', { gameId: MOCK_STEAMID_2 })).toEqual([]);
   });
 
+  it('getPlayerInventory aggregates the plugin\'s per-instance pseudo-stackable rows (F22)', async () => {
+    mock.inventories[MOCK_STEAMID] = [
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'Item_Weapon_Pistol', name: 'Pistol', amount: 1 },
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+      { code: 'BP_MRE_C', name: 'MRE', amount: 1 },
+    ];
+    expect(await ok('getPlayerInventory', { gameId: MOCK_STEAMID })).toEqual([
+      { code: 'BP_MRE_C', name: 'MRE', amount: 4 },
+      { code: 'Item_Weapon_Pistol', name: 'Pistol', amount: 1 },
+    ]);
+  });
+
   it('giveItem uses key `item` and forwards amount (Vein has no quality tier)', async () => {
     expect(await ok('giveItem', { player: { gameId: MOCK_STEAMID }, item: 'Item_Weapon_Pistol', amount: 5, quality: '2' })).toEqual({});
     expect(mock.lastRequest('POST', '/give')?.body).toEqual({ gameId: MOCK_STEAMID, code: 'Item_Weapon_Pistol', amount: 5 });
