@@ -17,7 +17,9 @@
     },
     "mojang-data": {"provider": "mojang", "baseUrl": "https://piston-data.mojang.com"},
     "fabric-meta": {"provider": "fabric", "baseUrl": "https://meta.fabricmc.net"},
-    "fabric-maven": {"provider": "fabric", "baseUrl": "https://maven.fabricmc.net"}
+    "fabric-maven": {"provider": "fabric", "baseUrl": "https://maven.fabricmc.net"},
+    "paper-data": {"provider": "paper", "baseUrl": "https://fill-data.papermc.io"},
+    "neoforge-maven": {"provider": "neoforge", "baseUrl": "https://maven.neoforged.net"}
   },
   "build": {
     "system": "gradle",

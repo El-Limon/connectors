@@ -85,7 +85,18 @@ def test_only_the_exact_catalog_named_artifact_is_collected(
     gradle_stub(catalog_copy, decoys)
     out = tmp_path / "dist"
 
-    code, payload, _ = run("build", "--game", "minecraft", "--version", "0.1.1", "--out", str(out), repo=catalog_copy)
+    code, payload, _ = run(
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(out),
+        repo=catalog_copy,
+    )
 
     assert code == 0, payload
     assert [row["file"] for row in payload["artifacts"]] == ["takaro-minecraft-mod-fabric-26.2-0.1.1.jar"]
@@ -104,7 +115,18 @@ def test_the_manifest_checksums_and_meta_file_are_written(
     )
     out = tmp_path / "dist"
 
-    code, payload, _ = run("build", "--game", "minecraft", "--version", "0.1.1", "--out", str(out), repo=catalog_copy)
+    code, payload, _ = run(
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(out),
+        repo=catalog_copy,
+    )
 
     assert code == 0, payload
     manifest = json.loads((out / "build-manifest.json").read_text())
@@ -129,7 +151,16 @@ def test_a_failing_build_exits_six(run: Any, catalog_copy: Path, gradle_stub: An
     gradle_stub(catalog_copy, {}, exit_code=1)
 
     code, payload, _ = run(
-        "build", "--game", "minecraft", "--version", "0.1.1", "--out", str(tmp_path / "dist"), repo=catalog_copy
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(tmp_path / "dist"),
+        repo=catalog_copy,
     )
 
     assert code == 6
@@ -142,7 +173,16 @@ def test_a_build_that_produces_nothing_is_a_conflict(
     gradle_stub(catalog_copy, {f"{LIBS}/something-else.jar": artifact_spec("0" * 64)})
 
     code, payload, _ = run(
-        "build", "--game", "minecraft", "--version", "0.1.1", "--out", str(tmp_path / "dist"), repo=catalog_copy
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(tmp_path / "dist"),
+        repo=catalog_copy,
     )
 
     assert code == 7
@@ -154,7 +194,16 @@ def test_an_unstamped_artifact_is_a_conflict(run: Any, catalog_copy: Path, gradl
     gradle_stub(catalog_copy, {f"{LIBS}/takaro-minecraft-mod-fabric-26.2-0.1.1.jar": spec})
 
     code, payload, _ = run(
-        "build", "--game", "minecraft", "--version", "0.1.1", "--out", str(tmp_path / "dist"), repo=catalog_copy
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(tmp_path / "dist"),
+        repo=catalog_copy,
     )
 
     assert code == 7
@@ -185,6 +234,8 @@ def test_all_targets_covers_every_non_retired_target(
         "build",
         "--game",
         "minecraft",
+        "--platform",
+        "fabric",
         "--all-targets",
         "--version",
         "0.1.1",
@@ -207,7 +258,18 @@ def test_the_output_directory_is_created_when_missing(
     )
     out = tmp_path / "deep" / "dist"
 
-    code, _, _ = run("build", "--game", "minecraft", "--version", "0.1.1", "--out", str(out), repo=catalog_copy)
+    code, _, _ = run(
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(out),
+        repo=catalog_copy,
+    )
 
     assert code == 0
     assert stat.S_ISDIR(os.stat(out).st_mode)
@@ -221,7 +283,18 @@ def test_a_built_artifact_validates_against_its_own_target(
         {f"{LIBS}/takaro-minecraft-mod-fabric-26.2-0.1.1.jar": artifact_spec(fingerprint_of(run, catalog_copy))},
     )
     out = tmp_path / "dist"
-    run("build", "--game", "minecraft", "--version", "0.1.1", "--out", str(out), repo=catalog_copy)
+    run(
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(out),
+        repo=catalog_copy,
+    )
 
     code, _, _ = run(
         "artifact",
@@ -247,7 +320,18 @@ def test_a_decoy_jar_never_reaches_the_manifest(run: Any, catalog_copy: Path, gr
         },
     )
     out = tmp_path / "dist"
-    run("build", "--game", "minecraft", "--version", "0.1.1", "--out", str(out), repo=catalog_copy)
+    run(
+        "build",
+        "--game",
+        "minecraft",
+        "--platform",
+        "fabric",
+        "--version",
+        "0.1.1",
+        "--out",
+        str(out),
+        repo=catalog_copy,
+    )
 
     manifest = json.loads((out / "build-manifest.json").read_text())
 

@@ -18,7 +18,7 @@ def _tokens(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_resolve_env_never_prints_a_token(run: Any) -> None:
-    code, payload, stderr = run("targets", "resolve", "--game", "minecraft", "--format", "env")
+    code, payload, stderr = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", "--format", "env")
 
     assert code == 0
     assert SECRET not in payload
@@ -88,7 +88,7 @@ def test_short_values_are_not_treated_as_secrets(monkeypatch: pytest.MonkeyPatch
     """A two-character token value would otherwise redact half the output."""
     monkeypatch.setenv("TAKARO_REGISTRATION_TOKEN", "26")
 
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--format", "env")
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", "--format", "env")
 
     assert code == 0
     assert "MC" not in payload or "26.2" in payload

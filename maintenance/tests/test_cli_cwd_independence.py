@@ -37,8 +37,10 @@ def run_module(cwd: Path, extra_env: dict[str, str], *argv: str) -> subprocess.C
 
 
 def test_resolve_is_identical_from_a_foreign_directory(tmp_path: Path) -> None:
-    from_repo = run_module(REPO_ROOT, {}, "targets", "resolve", "--game", "minecraft")
-    from_elsewhere = run_module(tmp_path, HOSTILE_ENV, "targets", "resolve", "--game", "minecraft")
+    from_repo = run_module(REPO_ROOT, {}, "targets", "resolve", "--game", "minecraft", "--platform", "fabric")
+    from_elsewhere = run_module(
+        tmp_path, HOSTILE_ENV, "targets", "resolve", "--game", "minecraft", "--platform", "fabric"
+    )
 
     assert from_repo.returncode == 0, from_repo.stderr
     assert from_elsewhere.returncode == 0, from_elsewhere.stderr

@@ -82,6 +82,19 @@ def test_an_input_must_match_its_kind_schema(run: Any, catalog_copy: Path) -> No
     assert "input-kind-schema" in failures(payload)
 
 
+def test_an_unknown_input_kind_is_rejected(run: Any, catalog_copy: Path) -> None:
+    """The target schema no longer lists the kinds, so the kind gate is the only thing left."""
+    record = read_target(catalog_copy)
+    record["inputs"]["loader"]["kind"] = "not-a-real-kind"
+    write_target(catalog_copy, record)
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code == 2
+    assert "input-kind-schema" in failures(payload)
+    assert any("not-a-real-kind" in check["detail"] for check in payload["failures"])
+
+
 def test_an_install_path_that_leaves_the_install_directory_is_rejected(run: Any, catalog_copy: Path) -> None:
     record = read_target(catalog_copy)
     record["inputs"]["fabricApi"]["installPath"] = "../../etc/cron.d/takaro"
