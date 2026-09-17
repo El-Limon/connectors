@@ -22,27 +22,91 @@ A client's Minecraft version must match the server's. The Fabric connector runs 
 Minecraft 26.2, so players need **26.2 clients** — 26.x clients cannot join 1.21.11 servers,
 and 1.21.11 clients cannot join 26.x servers. Paper and NeoForge stay on 1.21.11 clients.
 
+## Targets
+
+Fabric is built from a **catalog target**: `catalog/minecraft/targets/fabric-26.2.json` pins the
+exact Minecraft version, Fabric loader, Fabric API, Java level, toolchain image and runtime image,
+each by hash or digest. Nothing in the Gradle files chooses a game version any more.
+
+```
+catalog/minecraft/targets/fabric-26.2.json   the record
+games/minecraft/mod/targets/fabric-26.2/     its Gradle project (a one-line build file)
+games/minecraft/mod/buildSrc/                the conventions that read the record
+```
+
+The Gradle project is named after the target and reads its own record, so adding a Fabric target
+is adding a JSON file and a directory — `settings.gradle.kts` picks it up on its own. Paper and
+NeoForge are still single-version modules; they move to `targets/` with their own issue.
+
+See [catalog/README.md](../../catalog/README.md) for the record format, the fingerprint and how to
+add or retire a target.
+
 ## Build
 
 ```bash
-(cd mod && ./gradlew build)
+just maint build --game minecraft --target fabric-26.2 --version 0.1.1 --out dist
 ```
 
-This produces 3 JARs:
+That resolves the target, runs Gradle, checks the jar carries the target's identity, and writes
+`dist/build-manifest.json`, `dist/SHA256SUMS` and a `.meta.json` beside the jar. Add
+`--toolchain container` to build in the pinned `eclipse-temurin` image instead of the host JDK.
 
-- `paper/build/libs/takaro-paper-<version>.jar` — Paper/Spigot plugin
-- `neoforge/build/libs/takaro-neoforge-<version>.jar` — NeoForge mod
-- `fabric/build/libs/takaro-fabric-<version>.jar` — Fabric mod
-
-Build a specific module:
+Gradle directly still works:
 
 ```bash
-(cd mod && ./gradlew :paper:build)
+(cd mod && ./gradlew :fabric-26.2:build)          # one target
+(cd mod && ./gradlew :paper:build)                # a legacy module
+(cd mod && ./gradlew :core:test :buildSrc:test)   # unit tests and fingerprint parity
 ```
+
+Artifacts:
+
+- `targets/fabric-26.2/build/libs/takaro-minecraft-mod-fabric-26.2-<version>.jar`
+- `paper/build/libs/takaro-paper-<version>.jar`
+- `neoforge/build/libs/takaro-neoforge-<version>.jar`
+
+The target jar's name is part of its identity: `takaro-maint` looks it up by that exact name
+rather than globbing `build/libs`, and the build fails if it does not match the catalog.
+
+### Reproducible jars
+
+Archives are built with fixed timestamps, ordering and permissions, and the source revision is
+passed in rather than read inside the build, so two builds of the same tree produce **byte-identical**
+jars. That is what makes a published release checkable: rebuild it and `cmp`.
+
+```bash
+(cd mod && ./gradlew clean :fabric-26.2:build -Pversion=0.1.1)
+cp targets/fabric-26.2/build/libs/*.jar /tmp/first.jar
+(cd mod && ./gradlew clean :fabric-26.2:build -Pversion=0.1.1)
+cmp /tmp/first.jar mod/targets/fabric-26.2/build/libs/takaro-minecraft-mod-fabric-26.2-0.1.1.jar
+```
+
+### What the jar carries
+
+`takaro.target-base` stamps every jar with `Takaro-Target`, `Takaro-Target-Fingerprint`,
+`Takaro-Connector-Version`, `Takaro-Source-Revision`, `Takaro-Game-Version` and
+`Takaro-Java-Release`, plus a `META-INF/takaro-target.json` the running mod reads back. On
+startup the connector compares that stamp with what the server actually is and refuses to connect
+on a mismatch (`TAKARO_TARGET_POLICY=warn` downgrades the refusal to a warning).
+
+`verifyTargetInputs` resolves every build dependency the record pins a hash for and compares the
+bytes before compiling, so a re-published artifact fails the build instead of shipping.
 
 Release artifacts are collected by `scripts/build-release.sh <version> <out-dir>`, which is what
 `.github/workflows/minecraft.yml` runs in CI before publishing the jars to the
 `minecraft-v<version>` release.
+
+## Verify a target
+
+```bash
+just maint verify --game minecraft --target fabric-26.2 --artifacts dist --out reports
+```
+
+This installs the pinned server files into a throwaway directory, deploys the built jar, boots the
+pinned container against a local fake Takaro, and checks startup, the target check, identify,
+heartbeat, players, the item and entity catalogues (display names, not registry ids), a console
+command and a clean shutdown. It publishes no host ports and writes a report that validates
+against `catalog/schema/v1/verify-report.schema.json`.
 
 ## Run servers
 
