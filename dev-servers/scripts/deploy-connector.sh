@@ -23,7 +23,31 @@ deploy_rust() {
 }
 
 deploy_minecraft() {
-    local platform="$1" dest jar subdir
+    local platform="$1" dest jar subdir target tmp toolchain
+
+    target="$(ds_target "minecraft-${platform}")"
+    if [ -n "$target" ]; then
+        # Catalog-driven: build the target's artifact and deploy it by manifest row, so
+        # the jar in mods/ is the one the ledger records and nothing else is guessed at.
+        toolchain=container
+        if ds_have java && java -version 2>&1 | grep -qE '"(2[5-9]|[3-9][0-9])'; then
+            toolchain=host
+        fi
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' RETURN
+        ds_info "Building Minecraft target ${target} (${toolchain} toolchain)..."
+        ds_maint build --game minecraft --target "$target" \
+            --version "$("${REPO_ROOT}/scripts/dev-version.sh" minecraft)" \
+            --out "$tmp" --toolchain "$toolchain"
+        ds_maint deploy --game minecraft --target "$target" \
+            --dest "$(ds_data_dir "minecraft-${platform}")" \
+            --from "${tmp}/build-manifest.json"
+        ds_ok "$(ds_data_dir "minecraft-${platform}")/mods"
+        return 0
+    fi
+
+    # TODO(#151): paper and neoforge keep the old gradle+copy path until they
+    # become catalog targets.
     ds_info "Building Minecraft ${platform} module (gradle)..."
     # Minecraft 26.2 (fabric) needs a JDK 25 toolchain; paper/neoforge still
     # target Java 21 class files but build fine on the same JDK 25.

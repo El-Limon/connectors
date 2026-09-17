@@ -71,6 +71,9 @@ for game in "${GAMES[@]}"; do
         ds_ok "${game} already running"
         continue
     fi
+    # A game driven by a catalog target must actually hold that target: starting one
+    # that does not would run a server the connector was never built for.
+    ds_preflight_target "$game"
     ds_info "Starting ${game} (~$(ds_ram_gb "$game") GB) — $(ds_description "$game")"
     # shellcheck disable=SC2046  # service list is intentionally word-split
     ds_compose "$game" up -d $(ds_startable_services "$game")

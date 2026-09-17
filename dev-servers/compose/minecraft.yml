@@ -8,7 +8,7 @@ x-minecraft-common: &minecraft-common
   stdin_open: true
   environment: &minecraft-env
     EULA: "TRUE"
-    VERSION: "${MINECRAFT_VERSION:-1.21.11}"
+    VERSION: "${MINECRAFT_VERSION:-1.21.11}"  # paper/neoforge only; fabric overrides it
     MEMORY: "${MINECRAFT_MEMORY:-2G}"
     ENABLE_RCON: "true"
     RCON_PORT: "25575"
@@ -19,6 +19,7 @@ x-minecraft-common: &minecraft-common
     TAKARO_DEBUG: "${TAKARO_DEBUG:-false}"
 
 services:
+  # TODO(#151): switch to ${MC_PAPER_*} once Paper becomes a catalog target.
   paper:
     <<: *minecraft-common
     profiles: ["paper"]
@@ -33,6 +34,7 @@ services:
     volumes:
       - ../_data/minecraft/paper:/data
 
+  # TODO(#151): switch to ${MC_NEOFORGE_*} once NeoForge becomes a catalog target.
   neoforge:
     <<: *minecraft-common
     profiles: ["neoforge"]
@@ -48,10 +50,13 @@ services:
     volumes:
       - ../_data/minecraft/neoforge:/data
 
+  # Fully driven by the catalog target: image, game version, loader and launcher all
+  # come from _data/.targets/minecraft-fabric.env, which install.sh resolves.
+  # The sentinel keeps `compose config` valid before the first install; the real gate
+  # is ds_preflight_target in start.sh.
   fabric:
     <<: *minecraft-common
-    # MC 26.2 requires Java 25.
-    image: itzg/minecraft-server:java25
+    image: "${MC_FABRIC_IMAGE:-target-not-resolved}"
     profiles: ["fabric"]
     container_name: takaro-dev-minecraft-fabric
     ports:
@@ -59,9 +64,13 @@ services:
       - "127.0.0.1:25577:25575"
     environment:
       <<: *minecraft-env
-      VERSION: "${MINECRAFT_FABRIC_VERSION:-26.2}"
       TYPE: "FABRIC"
-      MODRINTH_PROJECTS: "fabric-api"
+      VERSION: "${MC_FABRIC_VERSION:-}"
+      FABRIC_LOADER_VERSION: "${MC_FABRIC_LOADER_VERSION:-}"
+      FABRIC_LAUNCHER_VERSION: "${MC_FABRIC_LAUNCHER_VERSION:-}"
+      FABRIC_LAUNCHER: "${MC_FABRIC_LAUNCHER:-}"
       TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_FABRIC:-takaro-dev-fabric}"
     volumes:
       - ../_data/minecraft/fabric:/data
+
+# --- additional targets are appended below ---

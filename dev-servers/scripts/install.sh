@@ -54,9 +54,19 @@ install_rust() {
 
 install_minecraft() {
     local platform="$1"
+    mkdir -p "$DATA"
+
+    if [ -n "$(ds_target "$GAME")" ]; then
+        # Catalog-driven: the exact server jar, loader launcher and API jar the
+        # connector was built against, verified by hash and recorded in a ledger.
+        ds_info "Resolving the catalog target for ${GAME}..."
+        ds_write_target_env "$GAME"
+        ds_info "Installing pinned server files into ${DATA}..."
+        ds_maint install --game minecraft --target "$(ds_target "$GAME")" --dest "$DATA"
+    fi
+
     ds_info "Pulling the Minecraft server image..."
     ds_compose "$GAME" pull "$platform"
-    mkdir -p "$DATA"
     # Minecraft env vars override the connector's file config, and compose
     # already supplies them, so there is nothing to render here either.
     "${DS_DIR}/scripts/deploy-connector.sh" "$GAME"
