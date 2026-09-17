@@ -187,7 +187,9 @@ starting` log line.
 ## What works, what doesn't
 
 Verified end to end on **2026-09-17** against a VEIN Linux dedicated server on game build **25035268
-(v0.024h8)**, plugin **0.1.0**, with a real game client in the world.
+(v0.024h8)**, plugin **0.1.0**, with a real game client in the world. Every row below was re-checked on
+that final build — after a death and respawn, after the player left and rejoined, and after a full server
+restart.
 ✅ = works, ⚠️ = works with a caveat, ❌ = does not work / is not supported.
 
 <!-- REGENERATE FROM capabilities.json AT L7b -->
@@ -198,8 +200,8 @@ Verified end to end on **2026-09-17** against a VEIN Linux dedicated server on g
 | Player list | ✅ | Name, ping and whether the player has spawned. `gameId` is the player’s SteamID64 and `platformId` is `steam:<that id>`. |
 | Single player lookup | ✅ | Same data as the player list, for one player. An offline player still answers with a last-known record instead of an error. |
 | Player location | ✅ | The player’s position in the world, read straight from the pawn and following walking and teleports. |
-| Player inventory | ✅ | What the player is carrying. VEIN’s items are virtual stacks, so the amount is the stack size and the name is the item’s own label. |
-| Give an item | ✅ | The item appears in the player’s inventory without a relog. |
+| Player inventory | ✅ | What the player is carrying, read from the character’s inventory. Items VEIN keeps as one object per unit (corn, MREs, insulin…) are reported as a single row with the summed count, the way the game’s own bag shows them. While the player is dead the inventory is empty and no corpse loot leaks in. |
+| Give an item | ✅ | The item appears in the player’s inventory without a relog. For an item VEIN keeps as one object per unit, asking for N gives N separate objects, which the bag then groups. |
 | Item catalogue | ✅ | Every item class the server has loaded (1350 on the tested build), synced into Takaro’s item list. Names are the internal class names unless `TAKARO_ITEM_NAMES=1` is set, which asks the game for the readable name at start-up. |
 | Entity catalogue | ⚠️ | The zombie and animal types the server has loaded are synced into Takaro, but Takaro’s catalogue also keeps a few rows from earlier game builds, because its sync only adds and updates and never deletes. |
 | Locations / points of interest | ⚠️ | The connector serves the location markers currently streamed in, but Takaro never asks for them, so it cannot be checked end to end. |
@@ -215,9 +217,9 @@ Verified end to end on **2026-09-17** against a VEIN Linux dedicated server on g
 | Player joined event | ✅ | Arrives in Takaro on every join, with the player’s SteamID64. |
 | Player left event | ✅ | Arrives on a clean quit and after a server crash by reconciliation. |
 | Player chat event | ✅ | Real player chat reaches Takaro; messages the connector itself sent are not echoed back. |
-| Player death event | ✅ | Reaches Takaro when a player dies. A death with no killer (a fall, for instance) reports the player as their own attacker, because VEIN gives the connector no separate cause. |
-| Entity kill event | ✅ | Zombie and animal kills reach Takaro with the creature and the killing player. |
-| Log events | ❌ | The connector forwards server log lines (redacted), but Takaro does not store log lines as events, so they cannot be searched or used in modules. |
+| Player death event | ✅ | Reaches Takaro when a player dies, with the position and what killed them. A death with no killer — a fall or drowning — is reported with no attacker rather than blaming the victim. |
+| Entity kill event | ✅ | A creature killed by a player reaches Takaro with the creature’s name, the player and the item they were holding. Kills the game’s own AI makes among itself are not reported, because no player was involved. |
+| Log events | ⚠️ | The connector forwards server log lines (passwords and Steam tickets redacted, checked live), but Takaro does not store log lines as events, so they cannot be searched or used in modules. |
 | Map info | ❌ | Takaro does not support map info for Generic game servers, so there is nothing for the connector to serve. |
 | Map tiles | ❌ | Takaro does not support map tiles for Generic game servers. There is no map view for a VEIN server. |
 | Modules: chat commands | ✅ | In-game chat commands with the domain’s prefix reach the module and answer in chat. |
@@ -228,16 +230,16 @@ Verified end to end on **2026-09-17** against a VEIN Linux dedicated server on g
 | Shop: buy in game | ✅ | Buying from the shop with the in-game chat command. |
 | Shop: order in Takaro and claim in game | ✅ | An order placed in Takaro delivers the items to the player. |
 | Shop: bundle of several items | ✅ | One claim delivers every item in the listing. |
-| Shop: order while offline, claim later | ⚠️ | The claim is correctly refused while the player is offline and succeeds after the player rejoins. Not yet followed as one single order from offline all the way to the items counted in the world. |
+| Shop: order while offline, claim later | ✅ | The claim is refused while the player is offline and succeeds after rejoining. |
 | Shop: not enough currency | ✅ | The purchase is refused and the balance is unchanged. |
 | Economy: currency | ✅ | Balances are set, read and debited by Takaro. |
 | Economy: balance / top list in game | ✅ | The in-game economy commands answer in chat. |
 | Discord: game chat → Discord | ✅ | In-game chat is relayed to the linked Discord channel. |
-| Discord: Discord → game chat | ⚠️ | Waiting on one real human post in the linked Discord channel; the path is wired and every other direction works. |
+| Discord: Discord → game chat | ⚠️ | The path is wired and every other direction works, but the chat-bridge module ignores messages from bots, so this direction can only be confirmed by a real human post in the linked channel — that one check is still outstanding. |
 | Discord: module hook / cronjob posts | ✅ | Module hooks and cronjobs can post to Discord and edit their own messages. |
 | Discord: join/leave notices | ✅ | Join and leave notices posted to Discord by the chat-bridge module. |
 | Discord: no echo of server messages | ✅ | The stock `chatBridge` module re-posts Takaro’s own server messages to Discord (a Takaro-core echo affecting every game); the `chatBridgeNoEcho` fork does not. |
-| Events while the Takaro connection is down | ✅ | Events that happen while Takaro is unreachable are kept and delivered in order once the connection is back. |
+| Events while the Takaro connection is down | ✅ | Events that happen while Takaro is unreachable are kept and delivered in order once the connection is back. An event counts as delivered only when Takaro’s heartbeat confirms it, so nothing is lost at the moment the connection dies. |
 | Reconnects after a server or container restart | ✅ | The connector comes back and re-identifies on its own, and players who were online are reported as disconnected. When it shares the game container’s network it restarts itself after a game-container restart, so keep its restart policy on. |
 | No duplicate events after a connector restart | ✅ | The event cursor is persisted, so a sidecar restart replays nothing. |
 | Survives a network drop to Takaro | ✅ | The WebSocket reconnects by itself with a backoff of 2 to 60 seconds and re-identifies as the same server. |
@@ -300,6 +302,26 @@ Verified end to end on **2026-09-17** against a VEIN Linux dedicated server on g
   server is missing from the list, that pair is the thing to check. Direct connect works either way.
 - **There is no map.** Takaro does not support map info or map tiles for Generic game servers, so a
   VEIN server has no map view in Takaro.
+- **Some items are one object per unit, not a stack.** VEIN keeps corn, MREs, insulin and similar
+  "pseudo-stackable" items as a separate object per unit and only groups them on screen. Asking for
+  three corn therefore hands the player three separate corn, and the connector reports one row per
+  item type with the units summed — the same number the player sees in their bag.
+- **Kill events name the victim and the killer's held item.** A creature kill is reported with the
+  creature's name, the player who made it and the item they were holding. Kills the game's own AI
+  makes among itself are **not** reported at all: no player was involved, and guessing a killer from
+  "who is online" would fill Takaro's kill leaderboard with kills nobody made.
+- **A fall or drowning death has no attacker.** VEIN names the victim as their own killer for
+  environmental damage, so the connector drops that attacker rather than scoring the death as PvP.
+  The cause still appears in the death message.
+- **`unknown` and `debug` can appear as the weapon.** Takaro requires every kill event to carry a
+  weapon string, so when the killer held nothing identifiable the connector sends `unknown`
+  (a punch and an item it cannot resolve look the same on this build), and `debug` for a kill
+  triggered through the plugin's own debug endpoint.
+- **A rare duplicate event is possible around a connection loss.** Events are only marked delivered
+  once Takaro's heartbeat confirms them, which is what stops events being lost when the connection
+  dies. If the confirmation itself is lost after Takaro already stored an event, that event is sent
+  again and stored twice. The window is one heartbeat (a few seconds); Takaro's protocol has no
+  per-event acknowledgement, so this is the honest trade — duplicates are tolerable, silent loss is not.
 - **A game update can switch a feature off.** The plugin finds the game's code at load and
   self-checks every address before it is used; after a game update a feature it can no longer find
   reports `degraded` in `/health` and in Takaro's reachability reason, while the server and

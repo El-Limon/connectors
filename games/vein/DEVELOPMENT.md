@@ -184,3 +184,18 @@ So `docker compose restart vein` now needs **no** follow-up `docker restart <sid
 back within ~60 s (`docker inspect -f '{{.RestartCount}}'` goes up by one). If you are in a hurry, or if you
 deliberately run the sidecar with the watchdog disabled (`SIDECAR_EXIT_AFTER_UNREACHABLE_MS=0`), restart it by
 hand as before. Proof of the self-recovery: `evidence/2026-09-17-l4b-sidecar-fixes.md`.
+
+The second watchdog, `SIDECAR_EXIT_AFTER_PLUGIN_LOSS_MS` (default `180000`), exits the sidecar when the plugin
+alone has been unreachable for that long while the game's own `:8080` still answers — the shape of a game that
+came back without the preload. Both watchdogs are disabled by setting them to `0`.
+
+## Event delivery confirmation (F20)
+
+The Takaro protocol has no per-event acknowledgement, so the sidecar proves delivery with the WebSocket
+heartbeat: it pings every **5 s**, every written game event carries a monotonic `sendId`, and a pong releases
+everything written before that ping. The persisted cursor (`cursor.json`) advances only on that release, never
+on a bare `ws.send()`, and two unanswered pings (~10-15 s) tear the socket down; the whole unconfirmed window
+then goes back to the front of the pending queue and is re-sent in order after the next `identifyResponse`.
+Neither the ping interval nor the missed-pong budget is configurable by env — they are
+`TakaroWsClient` options defaulting to `5_000` / `2` in `sidecar/src/takaro/client.ts`. Trade-off: a pong lost after Takaro stored an event re-sends that event, so a duplicate is
+possible within one heartbeat. Proof: `evidence/2026-09-17-l4c-outage-delivery.md`.
