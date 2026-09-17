@@ -1,0 +1,127 @@
+// Lane L3: the pure, game-free half of the action handlers.
+//
+// Everything here is a function of its arguments only - no UObject, no symbol, no process state -
+// so tests/unit_test.cpp links it directly and exercises it on the host. actions.cpp holds only the
+// parts that genuinely have to touch the game.
+#pragma once
+#include "common.h"
+
+namespace ActionsUtil {
+
+std::string Lower(std::string s);
+
+// A SteamID64 is 0x0110000100000000 | accountId: the "individual account, public universe" pattern.
+// Specific enough that a stray word in a struct cannot pass for one.
+bool LooksLikeSteamId64(uint64_t v);
+
+// VEIN is Steam-only, so `gameId` is the bare 17-digit SteamID64. Accepts `steam:<id>`, a bare id,
+// or anything else (which is passed through lower-cased so a player *name* still matches).
+std::string NormalizeGameId(const std::string& raw);
+
+// Blueprint/reflection artefacts that must never appear in a catalogue.
+bool IsGeneratedArtefact(const std::string& name);
+
+// ---- lane L3c: readable catalogue names -----------------------------------------------------
+// Turns a VEIN class name into a human-readable label, used only when the game itself has no
+// display text for the class. Strips the Blueprint decorations (`BP_` prefix, `_C` suffix), splits
+// on underscores and camel-case boundaries, and drops a trailing `Item` word when something else
+// remains:
+//     BloodPressureCuffItem   -> "Blood Pressure Cuff"
+//     BP_NeedleThread_C       -> "Needle Thread"
+//     BP_USD_C                -> "USD"
+//     Item                    -> "Item"
+// Never returns the empty string: a name it cannot improve on comes back unchanged.
+std::string HumaniseCode(const std::string& code);
+
+// ---- lane L3c / finding F11: one `code` per item ---------------------------------------------
+// The catalogue, `giveItem` and the inventory must all speak the *same* identifier. The catalogue
+// and `giveItem` use the UClass short name (`BP_Pen_C`) because that is what
+// UAdminComponent::Server_GiveItem takes; a player's inventory holds a TSoftClassPtr whose
+// FSoftObjectPath is a package path (`/Game/Vein/Items/Junk/Office/BP_Pen`) or an object path
+// (`/Game/.../BP_Pen.BP_Pen_C`). This folds any of those forms onto the class short name:
+//     /Game/Vein/Items/Junk/Office/BP_Pen   -> BP_Pen_C
+//     /Game/.../BP_Pen.BP_Pen_C             -> BP_Pen_C
+//     BP_Pen_C                              -> BP_Pen_C     (already a class name; unchanged)
+// An empty or path-only input comes back empty.
+std::string ItemCodeFromSoftPath(const std::string& raw);
+
+// Splits on whitespace.
+std::vector<std::string> Words(const std::string& s);
+// Everything after the first `skipWords` whitespace-separated words, leading space stripped.
+std::string Rest(const std::string& s, size_t skipWords);
+
+// ---- catalogue lookup ---------------------------------------------------------------------
+// Exact code (case-insensitive), then exact name, then a *unique* case-insensitive substring of
+// either. An ambiguous or unknown needle returns -1 and sets `err`.
+struct CatalogueEntry {
+    std::string code;
+    std::string name;
+};
+int LookupIndex(const std::vector<CatalogueEntry>& entries, const std::string& needle, std::string& err);
+
+// True when `entry` should appear in a `?search=` filtered listing.
+bool MatchesSearch(const CatalogueEntry& entry, const std::string& lowerNeedle);
+
+
+// ---- lane L3d: broadcast path selection ------------------------------------------------------
+// `AVeinGameStateBase::NetMulticast_SendChat(AVeinPlayerState* Sender, ...)` dereferences `Sender`
+// through a `TObjectPtr` with no null check, so calling it with a null sender SIGSEGVs the whole
+// server (lane L6b, 2026-09-17). The broadcast path is therefore chosen here, in a pure function,
+// and `kChatWithSender` is unreachable unless a real sender object was found.
+enum class BroadcastPath {
+    kNone = 0,              // nothing usable - the caller must fail with 503
+    kGameStateServerMsg,    // AVeinGameStateBase::NetMulticast_BroadcastServerMessage(FString const&)
+    kAdminServerMsg,        // UAdminComponent::Server_SendServerMessage(FString const&)
+    kChatWithSender,        // NetMulticast_SendChat with a REAL AVeinPlayerState*
+};
+
+// What the process can actually do right now: which symbols resolved, and whether a validated,
+// non-null AVeinPlayerState is available to act as the chat sender.
+struct BroadcastCaps {
+    bool gameStateServerMsg = false;
+    bool adminServerMsg = false;
+    bool sendChat = false;
+    bool haveSender = false;
+};
+
+// `viaPref` is TAKARO_BROADCAST_VIA / `broadcastVia`: "" or "auto" (server message first, chat as a
+// last resort), "chat" (prefer real chat when a sender exists), "servermessage" / "admin" to pin a
+// path. Returns kNone with `err` set when nothing is safe to call.
+BroadcastPath ChooseBroadcastPath(const std::string& viaPref, const BroadcastCaps& caps, std::string& err);
+
+// The symbol name reported in the response's `via` field for a chosen path.
+const char* BroadcastPathSymbol(BroadcastPath p);
+
+// The message body as it goes on the wire: `[sender] text`, or `text` when there is no sender name.
+// Trailing/leading whitespace in the sender is ignored; a sender that is only whitespace is no
+// sender at all.
+std::string RenderMessage(const std::string& senderName, const std::string& text);
+
+// ---- lane L3b: admin grant list -------------------------------------------------------------
+// Parses TAKARO_ADMIN_STEAMIDS / TAKARO_SUPERADMIN_STEAMIDS: a list of SteamID64s separated by
+// commas, semicolons or whitespace. `steam:<id>` is accepted and stripped, surrounding quotes and
+// whitespace are trimmed, duplicates are dropped keeping first-seen order, and anything that is not
+// a 17-digit SteamID64 (the 0x0110000100000000 pattern) is rejected rather than passed to the game.
+// When `rejected` is non-null every discarded token is appended to it, so /health can show them.
+std::vector<std::string> ParseSteamIdList(const std::string& raw, std::vector<std::string>* rejected = nullptr);
+
+// ---- lane L3e: the pure half of "never report success without the effect" --------------------
+// Every mutating action now decides its own verdict from a before/after measurement rather than
+// from "the call returned". The measurements themselves need the game thread; the *decisions*
+// below are pure, so they are tested.
+
+// Euclidean distance between two {x,y,z} in centimetres.
+double Distance3(const double a[3], const double b[3]);
+
+// A teleport counts as verified only when the pawn BOTH left where it was and ended up within
+// `toleranceCm` of the target. "Did not move at all" is the exact failure L6b caught being reported
+// as success, and "is already standing on the target" is not a teleport we performed.
+bool TeleportArrived(const double before[3], const double after[3], const double target[3], double toleranceCm);
+
+// A give counts as verified only when the player holds strictly more of that item code than before.
+bool GiveArrived(int before, int after);
+
+// A JSON array of strings, for the `attempted` field of a 409 body.
+std::string JsonStrArray(const std::vector<std::string>& v);
+
+}  // namespace ActionsUtil
