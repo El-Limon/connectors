@@ -9,6 +9,7 @@ public class TakaroConfig {
     private long maxReconnectDelay = 300000;
     private double backoffMultiplier = 1.5;
     private boolean debugEnabled = false;
+    private String targetPolicy = "enforce";
 
     public String getWsUrl() { return wsUrl; }
     public void setWsUrl(String wsUrl) { this.wsUrl = wsUrl; }
@@ -34,6 +35,10 @@ public class TakaroConfig {
     public boolean isDebugEnabled() { return debugEnabled; }
     public void setDebugEnabled(boolean debugEnabled) { this.debugEnabled = debugEnabled; }
 
+    /** enforce (default), warn or off — how strictly the build target must match this server. */
+    public String getTargetPolicy() { return targetPolicy; }
+    public void setTargetPolicy(String targetPolicy) { this.targetPolicy = targetPolicy; }
+
     public void applyEnvOverrides() {
         String wsUrlEnv = System.getenv("TAKARO_WS_URL");
         if (wsUrlEnv != null && !wsUrlEnv.isEmpty()) {
@@ -46,6 +51,10 @@ public class TakaroConfig {
         String registrationEnv = System.getenv("TAKARO_REGISTRATION_TOKEN");
         if (registrationEnv != null && !registrationEnv.isEmpty()) {
             this.registrationToken = registrationEnv;
+        }
+        String policyEnv = System.getenv("TAKARO_TARGET_POLICY");
+        if (policyEnv != null && !policyEnv.isEmpty()) {
+            this.targetPolicy = policyEnv;
         }
         String debugEnv = System.getenv("TAKARO_DEBUG");
         if (debugEnv != null && !debugEnv.isEmpty()) {
