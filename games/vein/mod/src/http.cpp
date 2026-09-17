@@ -324,6 +324,9 @@ Response Route(const Request& r) {
             double radius = rad.empty() ? 5000.0 : atof(rad.c_str());
             return FromAction(Events::Nearby(QueryParam(r.query, "gameId"), radius));
         }
+        // lane L3f: which inventory container the plugin answers from, and which ones exist.
+        if (p.size() == 2 && p[1] == "inventories")
+            return FromAction(Actions::DebugInventories(QueryParam(r.query, "gameId")));
         if (p.size() == 2 && p[1] == "object") return DebugObject(r);
         if (p.size() == 2 && p[1] == "structs") return DebugStructs(r);
         return Err(404, "unknown debug endpoint");

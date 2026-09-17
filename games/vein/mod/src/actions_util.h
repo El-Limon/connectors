@@ -124,4 +124,53 @@ bool GiveArrived(int before, int after);
 // A JSON array of strings, for the `attempted` field of a 409 body.
 std::string JsonStrArray(const std::vector<std::string>& v);
 
+// ---- lane L3f / finding F19: the current pawn's inventory, never a stale container -----------
+// After a death and respawn the player state and the controller's outer chain can still reference
+// the OLD character, and VEIN additionally keeps the dead body's loot in a
+// `UPersistentCorpseInventory` (a `UBaseInventoryComponent` subclass). A scan that accepts any
+// inventory component found under the pawn or the controller's outer chain can therefore return a
+// corpse's or a cached character's items - which is exactly what `getPlayerInventory` did (Takaro
+// showed "Corn 2" for a character that was holding no corn at all).
+//
+// `IsPlayerInventoryClass` is the pure half of the guard: the component the live character carries
+// is a plain `BaseInventoryComponent`/`InventoryComponent`; anything whose class name names a
+// corpse, a cache, a container, a storage or a vehicle is somebody else's inventory and must never
+// answer for the player.
+bool IsPlayerInventoryClass(const std::string& className);
+
+// UE's `FGuid::ToString(EGuidFormats::Digits)`: the four words as 32 upper-case hex digits, which
+// is exactly the form VEIN's own `127.0.0.1:8080/status` prints for `characterId` and the form the
+// `selected character <id>` log line carries. An all-zero GUID means "no character" and returns "".
+std::string GuidDigits(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+
+// How `POST /give amount:N` is split into `AddItem` calls, given the item class's own stack limit
+// (`maxStack`, which is 1 for an item whose `bStackable` is false). Each returned element is the
+// `Stack` of one instance to build, and they sum to `amount`.
+//
+// The pre-L3f split was `n = maxStack > 1 && remaining > maxStack ? maxStack : remaining`, which
+// for maxStack == 1 degenerated to a SINGLE instance carrying `Stack = amount`. VEIN ignores
+// `Stack` on a non-stackable item, so three corn arrived as one corn - while the inventory reader
+// read the instance back as three (finding F19). A non-stackable item must therefore be added one
+// instance per unit.
+std::vector<int> StackSplit(int amount, int maxStack);
+
+// ---- lane L3f / finding F19: the current pawn's inventory, never a stale container -----------
+// After a death and respawn the player state, the controller and the world all still reference the
+// OLD character for a while, and VEIN additionally keeps the dead body's loot in a
+// `UPersistentCorpseInventory` (a `UBaseInventoryComponent` subclass). A scan that accepts any
+// inventory component found under the pawn or the controller's outer chain can therefore return a
+// corpse's or a cached character's items - which is exactly what `getPlayerInventory` did (Takaro
+// showed "Corn 2" for a character that was holding no corn at all).
+//
+// `IsPlayerInventoryClass` is the pure half of the guard: the component class the live character
+// carries is `UBaseInventoryComponent` / `BaseInventoryComponent` or a plain subclass; anything
+// whose class name names a corpse, a cache, a container, a storage or a vehicle is somebody
+// else's inventory and must never answer for the player.
+bool IsPlayerInventoryClass(const std::string& className);
+
+// UE's `FGuid::ToString(EGuidFormats::Digits)`: the four words as 32 upper-case hex digits, which
+// is exactly the form VEIN's own `127.0.0.1:8080/status` prints for `characterId` and the form the
+// `selected character <id>` log line carries. An all-zero GUID is "no character" and returns "".
+std::string GuidDigits(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+
 }  // namespace ActionsUtil

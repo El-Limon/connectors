@@ -50,4 +50,12 @@ bool KickBanned(const std::string& gameId);
 // proven without a human swinging a sword.
 Result KillNearest(const JsonValue& body);
 
+// Debug only (TAKARO_PLUGIN_DEBUG=1), lane L3f / finding F19: shows, for one player, the
+// controller's current pawn, the player state's PawnPrivate, the character id, the single
+// inventory component the plugin now answers from, and every UBaseInventoryComponent the OLD
+// pawn+controller sweep would have found (with its owner and whether that owner is the current
+// pawn). This is the endpoint that makes "Takaro is reading the wrong container" a measurement
+// instead of a hypothesis.
+Result DebugInventories(const std::string& gameId);
+
 }  // namespace Actions

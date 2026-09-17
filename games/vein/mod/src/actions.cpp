@@ -326,9 +326,12 @@ void* GameModeOf(void* world) { return world ? ReadPtrAt(world, Off(world, "Auth
 struct PlayerInfo {
     void* playerState = nullptr;
     void* controller = nullptr;
-    void* pawn = nullptr;
+    void* pawn = nullptr;      // LANE L3f: the CONTROLLER's current pawn - the only one that counts
+    void* statePawn = nullptr; // APlayerState::PawnPrivate, kept only so /debug/inventories can show
+                               // when the two disagree. Never used to answer a request.
     std::string gameId;  // SteamID64
     std::string name;
+    std::string characterId;  // AVeinPlayerState::LoadedCharacterID, as :8080/status prints it
     int ping = 0;
     bool spawned = false;
 };
@@ -399,6 +402,42 @@ bool PawnIsPlayerCharacter(void* pawn) {
     return n.find("CharacterCreation") == std::string::npos && n.find("Spectator") == std::string::npos;
 }
 
+// LANE L3f / finding F19: the current pawn is the CONTROLLER's pawn.
+//
+// `ReadPlayer` used to take the pawn from `APlayerState::PawnPrivate`. That field is replication
+// state: it is set when a pawn is possessed and it is only cleared by the *pawn* on its way out, so
+// across a death and a respawn it can still name the old character while the controller has long
+// since possessed the new one. Everything downstream - the inventory, `giveItem`, the location, the
+// teleport verification - then talks to a body the player is not in.
+//
+// `AController::Pawn` (DWARF: `AController` +0x300, a `TObjectPtr<APawn>`; resolved here by
+// reflection, never by that offset) is what `AController::GetPawn()` returns and what possession
+// updates first. It is the single source of truth for "which body is this player in right now".
+void* ControllerPawn(void* controller) {
+    if (!controller || !MemReadable(controller, 0x40)) return nullptr;
+    void* pawn = ReadPtrAt(controller, Off(controller, "Pawn"));
+    return (pawn && MemReadable(pawn, 0x40)) ? pawn : nullptr;
+}
+
+// AVeinPlayerState::LoadedCharacterID (an FGuid), rendered the way VEIN's own :8080/status and the
+// `selected character <id>` log line render it. Reflection first; the DWARF offset is a guarded
+// fallback for the case where the field is not a UPROPERTY on this build.
+std::string PlayerStateCharacterId(void* ps) {
+    if (!ps) return "";
+    int32_t off = Off(ps, "LoadedCharacterID");
+    if (off < 0) {
+        // DWARF (VeinServer-Linux-Test.debug, v0.024h8): AVeinPlayerState is 1048 bytes and
+        // LoadedCharacterID sits at 0x3e4. Only trusted when the object really is that class.
+        void* cls = VeinClass("AVeinPlayerState::StaticClass", "VeinPlayerState");
+        if (!cls || !Reflect::IsA(ps, cls)) return "";
+        off = 0x3e4;
+    }
+    if (!MemReadable((const char*)ps + off, 16)) return "";
+    uint32_t g[4];
+    memcpy(g, (const char*)ps + off, sizeof g);
+    return ActionsUtil::GuidDigits(g[0], g[1], g[2], g[3]);
+}
+
 bool ReadPlayer(void* ps, PlayerInfo& out) {
     if (!ps || !MemReadable(ps, 0x40)) return false;
     out.playerState = ps;
@@ -406,9 +445,15 @@ bool ReadPlayer(void* ps, PlayerInfo& out) {
     out.name = ReadFStringAt(ps, Off(ps, "PlayerNamePrivate"));
     if (out.name.empty()) out.name = state::CharacterName(out.gameId);
     else if (!out.gameId.empty()) state::NoteCharacterName(out.gameId, out.name);
-    out.pawn = ReadPtrAt(ps, Off(ps, "PawnPrivate"));
-    out.spawned = PawnIsPlayerCharacter(out.pawn);
     out.controller = ReadPtrAt(ps, Off(ps, "Owner"));
+    out.statePawn = ReadPtrAt(ps, Off(ps, "PawnPrivate"));
+    // LANE L3f: the controller's pawn, and only it. The player-state pawn is used exclusively when
+    // there is no controller at all to ask, where it is the only thing there is; it is never
+    // preferred over a live controller's answer.
+    out.pawn = ControllerPawn(out.controller);
+    if (!out.pawn && !out.controller) out.pawn = out.statePawn;
+    out.spawned = PawnIsPlayerCharacter(out.pawn);
+    out.characterId = PlayerStateCharacterId(ps);
     int32_t pingOff = Off(ps, "CompressedPing");
     if (pingOff >= 0 && MemReadable((const char*)ps + pingOff, 1))
         out.ping = (int)(*(const uint8_t*)((const char*)ps + pingOff)) * 4;
@@ -446,7 +491,8 @@ std::string PlayerJson(const PlayerInfo& p) {
     return "{\"gameId\":" + JsonStr(p.gameId) + ",\"name\":" + JsonStr(p.name) + ",\"steamId\":" + JsonStr(p.gameId) +
            ",\"platformId\":" + JsonStr("steam:" + p.gameId) + ",\"ping\":" + std::to_string(p.ping) +
            ",\"spawned\":" + (p.spawned ? "true" : "false") + ",\"pawn\":" +
-           JsonStr(p.pawn ? Reflect::ClassName(p.pawn) : "") + ",\"online\":true,\"connectedAt\":" +
+           JsonStr(p.pawn ? Reflect::ClassName(p.pawn) : "") + ",\"characterId\":" +
+           (p.characterId.empty() ? "null" : JsonStr(p.characterId)) + ",\"online\":true,\"connectedAt\":" +
            JsonStr(FirstSeen(p.gameId)) + "}";
 }
 
@@ -572,6 +618,11 @@ struct ItemDef {
     std::string code, name, description, category;
     float weight = 0;
     int32_t maxStack = 0;
+    // LANE L3f / finding F19: UItem::bStackable. VEIN also has `bPseudoStackable`, which only makes
+    // the UI GROUP identical entries - it does NOT make one entry hold several units. Only
+    // `bStackable` items carry a meaningful `FVirtualItemInstance::Stack`.
+    bool stackable = false;
+    bool stackableKnown = false;
     void* cls = nullptr;
 };
 Mutex g_itemLock;
@@ -642,6 +693,7 @@ bool BuildItems() {
     const int32_t typeOff = OffOf(itemCls, "Type");
     const int32_t weightOff = OffOf(itemCls, "Weight");
     const int32_t maxStackOff = OffOf(itemCls, "MaxStack");
+    const int32_t stackableOff = OffOf(itemCls, "bStackable");
 
     // Only trust the abstract filter when the flag word really is where DWARF said it is.
     const bool abstractOk = ClassIsAbstract(itemCls);
@@ -670,6 +722,10 @@ bool BuildItems() {
                 memcpy(&d.weight, (const char*)cdo + weightOff, 4);
             if (maxStackOff >= 0 && MemReadable((const char*)cdo + maxStackOff, 4))
                 memcpy(&d.maxStack, (const char*)cdo + maxStackOff, 4);
+            if (stackableOff >= 0 && MemReadable((const char*)cdo + stackableOff, 1)) {
+                d.stackable = *(const uint8_t*)((const char*)cdo + stackableOff) != 0;
+                d.stackableKnown = true;
+            }
             // Optional cross-check / last resort: the native getter. Off unless TAKARO_ITEM_NAMES=1.
             if (d.name.empty() && defaultName) {
                 FString out{};
@@ -711,6 +767,20 @@ bool BuildItems() {
 }
 
 // Catalogue display name for an exact code. Takes g_itemLock itself; "" when unknown.
+// LANE L3f: is one array entry of this item one unit, or a stack? Returns false for "unknown",
+// which is the safe answer: `amount` then falls back to 1 per entry and can never over-report.
+bool CatalogueStackable(const std::string& code, bool& known) {
+    Guard g(g_itemLock);
+    known = false;
+    if (!g_itemsBuilt) return false;
+    for (auto& d : g_items)
+        if (d.code == code) {
+            known = d.stackableKnown;
+            return d.stackable;
+        }
+    return false;
+}
+
 std::string CatalogueName(const std::string& code) {
     Guard g(g_itemLock);
     if (!g_itemsBuilt) return "";
@@ -807,8 +877,57 @@ std::string SoftClassName(const char* base) {
     return Reflect::NameToString(assetName);
 }
 
-// LANE L3e: the same component scan ReadInventory does, exposed so that /give can call the
-// component's own add-item function instead of the owner-gated admin RPC.
+// LANE L3f / finding F19: THE player's inventory component - `AVeinCharacter::Inventory` on the
+// controller's current pawn, and nothing else.
+//
+// This replaces the old "collect every UBaseInventoryComponent outered to the pawn or the
+// controller" sweep. That sweep had two ways to answer with the wrong container: the controller
+// carries a `UOfflineCharacterCache` (DWARF: `AVeinPlayerController` +0x840) with cached character
+// state, and `UPersistentCorpseInventory` is itself a `UBaseInventoryComponent` subclass, so a
+// dead body's loot passed the `IsA` test as readily as the live character's own bag. Combined with
+// a stale `PawnPrivate` it produced the reported defect: Takaro showed "Corn 2" for a character
+// that was carrying no corn.
+//
+// Three gates, all of which must pass:
+//   1. the pawn is the controller's CURRENT pawn (PlayerInfo::pawn is now resolved that way);
+//   2. the pawn is an AVeinPlayerCharacter, not the character-creation pawn (finding F14);
+//   3. the component is the pawn's own `Inventory` property, is a UBaseInventoryComponent, and its
+//      class name is not a corpse/cache/container class (ActionsUtil::IsPlayerInventoryClass).
+void* PawnInventory(void* pawn, std::string& why) {
+    if (!pawn) {
+        why = "the player has no character in the world (no pawn possessed)";
+        return nullptr;
+    }
+    if (!PawnIsPlayerCharacter(pawn)) {
+        why = "the player's current pawn is " + Reflect::ClassName(pawn) + ", not a character";
+        return nullptr;
+    }
+    int32_t off = Off(pawn, "Inventory");
+    if (off < 0) {
+        why = "the character class " + Reflect::ClassName(pawn) + " has no reflected Inventory property";
+        return nullptr;
+    }
+    void* inv = ReadPtrAt(pawn, off);
+    if (!inv || !MemReadable(inv, 0x40)) {
+        why = "the character's Inventory component is null";
+        return nullptr;
+    }
+    void* invCls = VeinClass("UBaseInventoryComponent::StaticClass", "BaseInventoryComponent");
+    if (invCls && !Reflect::IsA(inv, invCls)) {
+        why = "the character's Inventory is a " + Reflect::ClassName(inv) + ", not a UBaseInventoryComponent";
+        return nullptr;
+    }
+    std::string cls = Reflect::ClassName(inv);
+    if (!ActionsUtil::IsPlayerInventoryClass(cls)) {
+        why = "the character's Inventory is a " + cls + ", which is not a player inventory";
+        return nullptr;
+    }
+    return inv;
+}
+
+// LANE L3e / now diagnostic only: every UBaseInventoryComponent under the pawn or the controller.
+// `/debug/inventories` uses it to show what the old resolution would have picked; nothing that
+// answers a Takaro request may use it (see PawnInventory).
 std::vector<void*> FindInventoryComponents(const PlayerInfo& p) {
     std::vector<void*> comps, tmp;
     void* invCls = VeinClass("UBaseInventoryComponent::StaticClass", "BaseInventoryComponent");
@@ -845,18 +964,14 @@ std::vector<InvItem> ReadInventory(const PlayerInfo& p, std::string& detail) {
         detail = "FVirtualItemInstance is not reflectable (no Item field or an implausible size)";
         return out;
     }
-    std::vector<void*> comps, tmp;
-    for (void* owner : {p.pawn, p.controller}) {
-        if (!owner) continue;
-        tmp.clear();
-        if (Reflect::GetObjectsWithOuter(owner, tmp, true))
-            for (void* c : tmp)
-                if (c && Reflect::IsA(c, invCls)) comps.push_back(c);
-    }
-    if (comps.empty()) {
-        detail = "no UBaseInventoryComponent found under the pawn or the controller";
+    // LANE L3f: exactly one component, resolved from the controller's current pawn.
+    std::string why;
+    void* only = PawnInventory(p.pawn, why);
+    if (!only) {
+        detail = why;
         return out;
     }
+    std::vector<void*> comps{only};
     for (void* c : comps) {
         std::string invName;
         int32_t nameOff = Off(c, "Name");
@@ -887,7 +1002,23 @@ std::vector<InvItem> ReadInventory(const PlayerInfo& p, std::string& detail) {
             if (lay.customLabel >= 0) it.name = ReadFStringAt((void*)e, lay.customLabel);
             if (it.name.empty()) it.name = CatalogueName(it.code);
             if (it.name.empty()) it.name = ActionsUtil::HumaniseCode(it.code);
-            if (lay.stack >= 0 && MemReadable(e + lay.stack, 4)) {
+            // LANE L3f / finding F19: `Stack` is only a unit count for a STACKABLE item.
+            //
+            // This is the defect Tester reported as "Takaro says Corn 2, I have no corn". Corn's
+            // class defaults are `bStackable=false, bPseudoStackable=true, MaxStack=50,
+            // Weight=0.25`. `bPseudoStackable` only makes the UI group identical rows; each array
+            // entry is still exactly ONE corn. `POST /give amount:3` nevertheless built a single
+            // instance with `SetStack(3)` (see the give loop), the game gave the player one corn,
+            // and the reader then multiplied that one corn back up by the `Stack` field. Measured
+            // on the live rig 2026-09-17: the client's inventory showed one Corn row at 0,2 lbs
+            // with a total carry weight of 23,1 lbs - which is 0.25 for exactly one corn (two would
+            // have read 0,5 and 23,3) - while the plugin reported `amount: 2`.
+            //
+            // So: a stackable item's entry means `Stack` units; anything else - including an item
+            // the catalogue has not loaded yet - means one unit.
+            bool stackableKnown = false;
+            if (CatalogueStackable(it.code, stackableKnown) && stackableKnown && lay.stack >= 0 &&
+                MemReadable(e + lay.stack, 4)) {
                 int32_t q = *(const int32_t*)(e + lay.stack);
                 if (q > 0 && q < 1000000) it.amount = q;
             }
@@ -1419,12 +1550,11 @@ uint8_t AddOneStack(const GiveChain& c, void* inv, void* itemClass, int count) {
 // (`mov 0x978(%r12),%r14` in Server_GiveItem). Looked up by property name, never by that offset;
 // the component scan is the fallback.
 void* GiveTargetInventory(const PlayerInfo& p) {
-    if (p.pawn) {
-        void* inv = ReadPtrAt(p.pawn, Off(p.pawn, "Inventory"));
-        if (inv && MemReadable(inv, 0x40)) return inv;
-    }
-    std::vector<void*> comps = FindInventoryComponents(p);
-    return comps.empty() ? nullptr : comps[0];
+    // LANE L3f: the same single component the inventory is read from. The old fallback to the
+    // first component of a pawn+controller sweep could give into a corpse or a cached character -
+    // a give that "succeeded" into a container the player will never open.
+    std::string why;
+    return PawnInventory(p.pawn, why);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1785,6 +1915,16 @@ Actions::Result Actions::PlayerInventory(const std::string& gameId) {
     return OnGameThread("GET /players/{id}/inventory", [gameId]() -> JobOut {
         PlayerInfo p;
         if (!FindPlayerById(gameId, p)) return {404, ErrJson("player not online")};
+        // LANE L3f: no current character means there is no inventory to report. Answering `[]`
+        // here would be a lie that looks like "the player is carrying nothing"; answering with
+        // some other container's items - which is what the old sweep did - is worse. 404 is the
+        // honest answer, and it is the answer a player on the character screen or a player who is
+        // dead and has not respawned gets.
+        if (!p.spawned)
+            return {404, ErrJson(std::string("no character: ") +
+                                 (p.pawn ? "the player's current pawn is " + Reflect::ClassName(p.pawn) +
+                                           ", not a character"
+                                         : "the player has no pawn possessed"))};
         std::string detail;
         auto items = ReadInventory(p, detail);
         if (items.empty() && !detail.empty()) {
@@ -1801,6 +1941,89 @@ Actions::Result Actions::PlayerInventory(const std::string& gameId) {
                  JsonStr(items[i].path) + "}";
         }
         return {200, o + "]"};
+    });
+}
+
+// LANE L3f / finding F19: the diagnosis endpoint. Read-only, debug-gated.
+Actions::Result Actions::DebugInventories(const std::string& gameId) {
+    return OnGameThread("GET /debug/inventories", [gameId]() -> JobOut {
+        PlayerInfo p;
+        if (!FindPlayerById(gameId, p)) return {404, ErrJson("player not online")};
+        VirtualItemLayout lay = ReadVirtualItemLayout();
+        auto ptrStr = [](void* o) {
+            char b[32];
+            snprintf(b, sizeof b, "%p", o);
+            return std::string(b);
+        };
+        auto describe = [&](void* o) {
+            if (!o || !MemReadable(o, 0x40)) return std::string("null");
+            return "{\"ptr\":" + JsonStr(ptrStr(o)) + ",\"class\":" + JsonStr(Reflect::ClassName(o)) +
+                   ",\"name\":" + JsonStr(Reflect::ObjName(o)) + "}";
+        };
+        // The raw entries a component holds, uninterpreted: this is the measurement that says
+        // which container an item is really in.
+        auto entries = [&](void* c, std::string& json) -> int {
+            json = "[]";
+            if (!lay.ok()) return -1;
+            int32_t itemsOff = Off(c, "Items");
+            if (itemsOff < 0) return -1;
+            itemsOff += lay.innerArray;
+            if (!MemReadable((const char*)c + itemsOff, 16)) return -1;
+            TArray<char> arr{};
+            memcpy(&arr, (const char*)c + itemsOff, sizeof arr);
+            if (arr.Num < 0 || arr.Num > 8192) return -1;
+            if (arr.Num && !MemReadable(arr.Data, (size_t)arr.Num * lay.stride)) return -1;
+            json = "[";
+            for (int32_t i = 0; i < arr.Num && i < 64; i++) {
+                const char* e = arr.Data + (size_t)i * lay.stride;
+                int32_t stack = 0;
+                if (lay.stack >= 0 && MemReadable(e + lay.stack, 4)) memcpy(&stack, e + lay.stack, 4);
+                json += (i ? "," : "");
+                json += "{\"i\":" + std::to_string(i) + ",\"code\":" +
+                        JsonStr(ActionsUtil::ItemCodeFromSoftPath(SoftClassName(e + lay.item))) +
+                        ",\"stack\":" + std::to_string(stack) + "}";
+            }
+            json += "]";
+            return arr.Num;
+        };
+        auto count = [&](void* c) -> int {
+            std::string ignored;
+            return entries(c, ignored);
+        };
+        std::string why;
+        void* chosen = PawnInventory(p.pawn, why);
+
+        std::string o = "{\"gameId\":" + JsonStr(p.gameId) + ",\"name\":" + JsonStr(p.name) +
+                        ",\"characterId\":" + (p.characterId.empty() ? "null" : JsonStr(p.characterId)) +
+                        ",\"controller\":" + describe(p.controller) + ",\"controllerPawn\":" + describe(p.pawn) +
+                        ",\"playerStatePawn\":" + describe(p.statePawn) + ",\"pawnsAgree\":" +
+                        (p.pawn == p.statePawn ? "true" : "false") + ",\"spawned\":" +
+                        (p.spawned ? "true" : "false") + ",\"chosen\":" + describe(chosen) +
+                        ",\"chosenEntries\":" + std::to_string(chosen ? count(chosen) : -1) +
+                        ",\"chosenItems\":" + [&] {
+                            std::string j = "[]";
+                            if (chosen) entries(chosen, j);
+                            return j;
+                        }() +
+                        ",\"chosenRejectedBecause\":" + (chosen ? std::string("null") : JsonStr(why)) +
+                        ",\"legacySweep\":[";
+        // What the pre-L3f resolution would have returned, in the order it returned it.
+        bool first = true;
+        for (void* c : FindInventoryComponents(p)) {
+            // A UActorComponent has no reflected `Owner`: the owning actor is its Outer.
+            void* owner = Reflect::ObjOuter(c);
+            if (!first) o += ",";
+            first = false;
+            std::string items;
+            int n = entries(c, items);
+            o += "{\"component\":" + describe(c) + ",\"owner\":" + describe(owner) + ",\"ownerIsCurrentPawn\":" +
+                 (owner && owner == p.pawn ? "true" : "false") + ",\"ownerIsPlayerStatePawn\":" +
+                 (owner && owner == p.statePawn ? "true" : "false") + ",\"entries\":" + std::to_string(n) +
+                 ",\"items\":" + items + ",\"classAccepted\":" +
+                 (ActionsUtil::IsPlayerInventoryClass(Reflect::ClassName(c)) ? "true" : "false") +
+                 ",\"acceptedNow\":" + (c == chosen ? "true" : "false") + "}";
+        }
+        return {200, o + "]}"};
     });
 }
 
@@ -2301,13 +2524,16 @@ Actions::Result Actions::Give(const JsonValue& body) {
                 }
                 // Split by the item's own stack limit, exactly as Server_GiveItem does. The cap on
                 // the iteration count is a safety net, not a policy: `amount` is already <= 1000.
-                int remaining = amount, stack = MaxStackOf(itemClass), guard = 0;
+                // LANE L3f / finding F19: the split used to be
+                //     n = stack > 1 && remaining > stack ? stack : remaining;
+                // which for a NON-stackable item (MaxStackOf returns 1) collapsed to
+                // `n = remaining` and built ONE instance with `SetStack(amount)`. The game ignores
+                // `Stack` on a non-stackable item, so `giveItem BP_Corn_C amount:3` put exactly one
+                // corn in the player's hands while the plugin read the instance back as three.
+                // `ActionsUtil::StackSplit` is the same decision, made where it can be tested.
                 uint8_t last = 0;
-                while (remaining > 0 && guard++ < 1024) {
-                    int n = stack > 1 && remaining > stack ? stack : remaining;
+                for (int n : ActionsUtil::StackSplit(amount, MaxStackOf(itemClass)))
                     last = AddOneStack(chain, inv, itemClass, n);
-                    remaining -= n;
-                }
                 called = true;
                 addResult = (int)last;
                 via = "FVirtualItemInstance::FromItem + UBaseInventoryComponent::AddItem";

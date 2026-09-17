@@ -1,6 +1,8 @@
 #include "actions_util.h"
 
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
@@ -271,4 +273,37 @@ std::string ActionsUtil::JsonStrArray(const std::vector<std::string>& v) {
     std::string o = "[";
     for (size_t i = 0; i < v.size(); i++) o += (i ? "," : "") + JsonStr(v[i]);
     return o + "]";
+}
+
+// ---- lane L3f -------------------------------------------------------------------------------
+
+bool ActionsUtil::IsPlayerInventoryClass(const std::string& className) {
+    if (className.empty()) return false;
+    std::string l = Lower(className);
+    static const char* kNotThePlayers[] = {"corpse", "cache",   "container", "storage", "stash",
+                                           "loot",   "vehicle", "crafting",  "shop",    "vendor",
+                                           "grave",  "deadbody"};
+    for (auto* bad : kNotThePlayers)
+        if (l.find(bad) != std::string::npos) return false;
+    return l.find("inventory") != std::string::npos;
+}
+
+std::string ActionsUtil::GuidDigits(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    if (!a && !b && !c && !d) return "";
+    char buf[40];
+    snprintf(buf, sizeof buf, "%08X%08X%08X%08X", a, b, c, d);
+    return buf;
+}
+
+std::vector<int> ActionsUtil::StackSplit(int amount, int maxStack) {
+    std::vector<int> out;
+    if (amount <= 0) return out;
+    if (maxStack < 1) maxStack = 1;
+    // A safety net, not a policy: `amount` is already clamped to 1000 by the handler.
+    for (int remaining = amount; remaining > 0 && out.size() < 4096;) {
+        int n = remaining > maxStack ? maxStack : remaining;
+        out.push_back(n);
+        remaining -= n;
+    }
+    return out;
 }

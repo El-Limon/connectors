@@ -832,6 +832,80 @@ static void TestGiveVerification() {
     CHECK(!ActionsUtil::GiveArrived(3, 1), "losing items is never a successful give");
 }
 
+// ---- lane L3f / finding F19: never answer from a stale or foreign container -------------------
+static std::string SplitStr(const std::vector<int>& v) {
+    std::string o;
+    for (size_t i = 0; i < v.size(); i++) o += (i ? "," : "") + std::to_string(v[i]);
+    return o;
+}
+
+static void TestStackSplit() {
+    using ActionsUtil::StackSplit;
+    auto EQSPLIT = [](const std::vector<int>& got, const char* want) { EQ(SplitStr(got), std::string(want)); };
+    // A stackable item: whole stacks, then the remainder.
+    EQSPLIT(StackSplit(1, 50), "1");
+    EQSPLIT(StackSplit(50, 50), "50");
+    EQSPLIT(StackSplit(120, 50), "50,50,20");
+    // THE L3f defect: a NON-stackable item (maxStack 1, e.g. BP_Corn_C whose bStackable is false).
+    // The old split built ONE instance with Stack=3; the game gave one corn and the reader read
+    // three. One instance per unit is the only correct answer.
+    EQSPLIT(StackSplit(3, 1), "1,1,1");
+    EQSPLIT(StackSplit(1, 1), "1");
+    // A missing/implausible limit is treated as 1 rather than as "put it all in one instance".
+    EQSPLIT(StackSplit(3, 0), "1,1,1");
+    EQSPLIT(StackSplit(2, -5), "1,1");
+    // Nothing to give.
+    CHECK(StackSplit(0, 10).empty(), "amount 0 adds nothing");
+    CHECK(StackSplit(-1, 10).empty(), "a negative amount adds nothing");
+    // Whatever the split, it must hand out exactly `amount` units, none of them over the limit.
+    bool conserves = true, withinLimit = true;
+    for (int amount = 1; amount <= 40; amount++)
+        for (int max_ = 1; max_ <= 7; max_++) {
+            int sum = 0;
+            for (int n : StackSplit(amount, max_)) {
+                withinLimit = withinLimit && n >= 1 && n <= max_;
+                sum += n;
+            }
+            conserves = conserves && sum == amount;
+        }
+    CHECK(conserves, "the split hands out exactly `amount` units, for every amount 1..40 x limit 1..7");
+    CHECK(withinLimit, "no instance ever exceeds the item's own stack limit");
+}
+
+static void TestPlayerInventoryClassGuard() {
+    using ActionsUtil::IsPlayerInventoryClass;
+    // The live character's own bag, in every spelling the game uses for it.
+    CHECK(IsPlayerInventoryClass("BaseInventoryComponent"), "the character's own component is accepted");
+    CHECK(IsPlayerInventoryClass("UBaseInventoryComponent"), "the C++ spelling is accepted");
+    CHECK(IsPlayerInventoryClass("PlayerInventoryComponent"), "a player inventory subclass is accepted");
+    CHECK(IsPlayerInventoryClass("BP_VeinInventoryComponent_C"), "a blueprint subclass is accepted");
+    // The container that produced the reported defect: after a ~300 m fall death VEIN keeps the
+    // body's loot in a UPersistentCorpseInventory, which IS a UBaseInventoryComponent, so an IsA
+    // test alone let a corpse answer for the player ("Corn 2" for a character holding no corn).
+    CHECK(!IsPlayerInventoryClass("UPersistentCorpseInventory"), "a corpse's loot is never the player's");
+    CHECK(!IsPlayerInventoryClass("PersistentCorpseInventory"), "same, without the U");
+    CHECK(!IsPlayerInventoryClass("OfflineCharacterCacheInventory"), "the controller's character cache is not the player's");
+    CHECK(!IsPlayerInventoryClass("ContainerInventoryComponent"), "a world container is not the player's");
+    CHECK(!IsPlayerInventoryClass("VehicleInventoryComponent"), "a vehicle's boot is not the player's");
+    CHECK(!IsPlayerInventoryClass("StorageInventoryComponent"), "a storage box is not the player's");
+    // Anything that is not an inventory at all.
+    CHECK(!IsPlayerInventoryClass("ConditionComponent"), "a non-inventory component is rejected");
+    CHECK(!IsPlayerInventoryClass(""), "an unreadable class name is rejected");
+}
+
+static void TestCharacterIdFormatting() {
+    using ActionsUtil::GuidDigits;
+    // The live session the defect was found in: :8080/status reported this character id, and the
+    // plugin has to print the same 32 upper-case hex digits from AVeinPlayerState::LoadedCharacterID.
+    EQ(GuidDigits(0x6B09E1BCu, 0x89964DE6u, 0x83292C0Cu, 0xB420BB23u),
+       std::string("6B09E1BC89964DE683292C0CB420BB23"));
+    // Leading zeros must survive: a %X without the width would shorten the id.
+    EQ(GuidDigits(1, 2, 3, 4), std::string("00000001000000020000000300000004"));
+    EQ(GuidDigits(0xFFFFFFFFu, 0, 0, 0), std::string("FFFFFFFF000000000000000000000000"));
+    // No character loaded yet: an all-zero GUID is "none", not a string of zeros.
+    EQ(GuidDigits(0, 0, 0, 0), std::string(""));
+}
+
 static void TestAttemptedJson() {
     EQ(ActionsUtil::JsonStrArray({}), std::string("[]"));
     EQ(ActionsUtil::JsonStrArray({"AGameSession::KickPlayer"}), std::string("[\"AGameSession::KickPlayer\"]"));
@@ -970,6 +1044,9 @@ int main() {
     TestTeleportVerification();
     TestGiveVerification();
     TestAttemptedJson();
+    TestStackSplit();
+    TestPlayerInventoryClassGuard();
+    TestCharacterIdFormatting();
     printf("%s: %d checks, %d failed\n", g_failed ? "FAILED" : "PASSED", g_ran, g_failed);
     return g_failed ? 1 : 0;
 }
