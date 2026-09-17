@@ -40,6 +40,7 @@ services:
   vein-takaro:
     # REQUIRED: same network namespace, so the plugin API stays loopback-only
     network_mode: service:vein
+    # The release tarball's Dockerfile builds the prebuilt dist/ it ships.
     build: ./sidecar
     container_name: vein-takaro
     # REQUIRED: this is what re-attaches the sidecar to the game's new network namespace after the
@@ -68,4 +69,6 @@ services:
       DEBUG: "${DEBUG:-0}"
     volumes:
       - ./data/vein:/home/steam/vein:ro
+      # REQUIRED: the sidecar's /data. It keeps the event cursor (TAKARO_CURSOR_FILE);
+      # without it events are replayed after every restart.
       - ./data/vein-sidecar:/data
