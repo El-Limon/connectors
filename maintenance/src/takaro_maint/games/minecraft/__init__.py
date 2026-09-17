@@ -21,13 +21,17 @@ def platforms() -> dict[str, Any]:
     """Every platform module in this package, discovered rather than listed.
 
     A new platform registers by existing: drop ``neoforge.py`` next to ``fabric.py`` and it
-    is found here, with no edit to this file.
+    is found here, with no edit to this file. A module that is not a platform -- the game's
+    own ``verify`` hooks, say -- is recognised by not offering ``runtime_env``.
     """
-    return {
-        module_info.name: importlib.import_module(f"{__name__}.{module_info.name}")
-        for module_info in pkgutil.iter_modules(__path__)
-        if not module_info.name.startswith("_")
-    }
+    found: dict[str, Any] = {}
+    for module_info in pkgutil.iter_modules(__path__):
+        if module_info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f"{__name__}.{module_info.name}")
+        if hasattr(module, "runtime_env"):
+            found[module_info.name] = module
+    return found
 
 
 def _platform(resolved: dict[str, Any]) -> Any:

@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Any
 
 from .. import output
 from ..exit_codes import OK, VERIFICATION, UsageError
-from ..verify.runner import CHECK_IDS, RunOptions, cleanup_orphans, run_targets
+from ..verify.runner import RunOptions, check_ids, cleanup_orphans, run_targets
 from . import add_selection_arguments, select_many
+
+# What ``--takaro hosted`` reads from the environment. Only the NAMES are ever printed.
+HOSTED_ENV = (
+    "TAKARO_WS_URL",
+    "TAKARO_REGISTRATION_TOKEN",
+    "TAKARO_HOST",
+    "TAKARO_USERNAME",
+    "TAKARO_PASSWORD",
+    "TAKARO_DOMAIN_ID",
+)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -17,7 +28,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     add_selection_arguments(parser, multiple=True)
     parser.add_argument("--artifacts", required=True, help="a build output directory with a build-manifest.json")
     parser.add_argument("--out", required=True, help="where reports and logs are written")
-    parser.add_argument("--checks", default=None, help=f"comma-separated subset of: {', '.join(CHECK_IDS)}")
+    parser.add_argument(
+        "--checks", default=None, help="comma-separated subset of the check ids (base ids plus the game's own)"
+    )
     parser.add_argument("--parallel", type=int, default=1, help="targets to verify at once (only 1 today)")
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--takaro", default="local", choices=["local", "hosted"])
@@ -25,13 +38,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     parser.add_argument("--label", action="append", default=[], help="extra docker label, repeatable")
     parser.add_argument("--keep-on-failure", action="store_true", help="keep the data dir when a check fails")
     parser.add_argument("--cleanup-orphans", action="store_true", help="remove containers from an earlier run first")
-    parser.add_argument("--negative", action="store_true", help="reserved: restart and reconnect checks (#152)")
+    parser.add_argument(
+        "--negative", action="store_true", help="also boot the sibling target's artifact and require it to be refused"
+    )
     parser.set_defaults(handler=_verify, op="verify")
 
 
 def _verify(args: Any) -> int:
     if args.takaro == "hosted":
-        raise UsageError("hosted mode ships with #152; use --takaro local")
+        missing = [key for key in HOSTED_ENV if not os.environ.get(key)]
+        if missing:
+            raise UsageError(f"--takaro hosted needs these environment variables: {', '.join(missing)}")
     if args.parallel != 1:
         raise UsageError("--parallel is reserved; only one target at a time is supported today")
 
@@ -42,9 +59,10 @@ def _verify(args: Any) -> int:
 
     only = [c.strip() for c in args.checks.split(",")] if args.checks else None
     if only:
-        unknown = sorted(set(only) - set(CHECK_IDS))
+        known = check_ids(args.game)
+        unknown = sorted(set(only) - set(known))
         if unknown:
-            raise UsageError(f"unknown check(s) {unknown}; known checks: {', '.join(CHECK_IDS)}")
+            raise UsageError(f"unknown check(s) {unknown}; known checks: {', '.join(known)}")
 
     if args.cleanup_orphans:
         removed = cleanup_orphans(args.run_id)
@@ -60,6 +78,7 @@ def _verify(args: Any) -> int:
         only=only,
         keep_on_failure=args.keep_on_failure,
         negative=args.negative,
+        takaro=args.takaro,
     )
     reports = run_targets(catalog, targets, options)
     ok = all(report["outcome"] == "pass" for report in reports)
