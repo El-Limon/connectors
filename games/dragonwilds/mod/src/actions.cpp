@@ -1239,6 +1239,25 @@ Actions::Result Actions::Entities() {
                 std::string code = Reflect::ObjName(c);
                 if (code.empty() || code.rfind("SKEL_", 0) == 0 || code.rfind("REINST_", 0) == 0) continue;
                 if (!found.count(code)) found[code] = {code, "AI character class"};
+                // NOT the class default object: a Blueprint CDO's AIName is not initialised on this
+                // build and reads back as another asset's text (BP_AI_KalphiteGuardian_Character_C
+                // came back as "Giant Rat"). Only a spawned AI's AIName is trustworthy.
+            }
+        }
+        // Every AI currently spawned in the world knows its own readable name: ADominionAICharacter
+        // fills AIName from the UAIDataAsset it was configured with. Cached per Blueprint class so
+        // that the name survives the creature despawning, and so entity-killed reports the same one.
+        if (aiCls) {
+            std::vector<void*> live;
+            if (Reflect::GetObjectsOfClass(aiCls, live, true)) {
+                for (void* a : live) {
+                    if (!a) continue;
+                    std::string inst = Reflect::ObjName(a);
+                    if (inst.rfind("Default__", 0) == 0) continue;
+                    std::string code = Reflect::ClassName(a);
+                    std::string nm = TextToString(a, Off(a, "AIName"));
+                    if (!code.empty() && !nm.empty()) state::NoteEntityName(code, nm);
+                }
             }
         }
         // Third source, and the only complete one: the cooked asset registry.
@@ -1261,6 +1280,13 @@ Actions::Result Actions::Entities() {
                              g_registryWhy + "): the list is the AI character classes and data assets loaded so far");
         }
         if (found.empty()) return {503, ErrJson("no AI data assets or AI character classes are loaded")};
+        // One naming rule for the whole connector: `code` is the class/asset name, `name` is the
+        // AIName display text whenever any AI of that class has been seen. entity-killed uses the
+        // same cache, so Takaro's entity list and its kill events line up.
+        for (auto& kv : found) {
+            std::string nm = state::EntityName(kv.first);
+            if (!nm.empty()) kv.second.first = nm;
+        }
         std::string o = "[";
         bool first = true;
         for (auto& kv : found) {

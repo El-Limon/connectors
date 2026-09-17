@@ -246,3 +246,31 @@ std::string state::CharacterName(const std::string& gameId) {
     auto it = g_charNames.find(LowerId(gameId));
     return it == g_charNames.end() ? std::string() : it->second;
 }
+
+// ---- readable creature names (lane L3c) --------------------------------------------------------
+
+namespace {
+Mutex g_entityNameLock;
+std::map<std::string, std::string> g_entityNames;  // Blueprint class name -> AIName display text
+}  // namespace
+
+void state::NoteEntityName(const std::string& code, const std::string& name) {
+    if (code.empty() || name.empty()) return;
+    Guard g(g_entityNameLock);
+    auto it = g_entityNames.find(code);
+    if (it != g_entityNames.end() && it->second == name) return;
+    if (g_entityNames.size() > 512) g_entityNames.clear();
+    g_entityNames[code] = name;
+    PluginLog("state: entity %s is named '%s' (ADominionAICharacter::AIName)", code.c_str(), name.c_str());
+}
+
+std::string state::EntityName(const std::string& code) {
+    Guard g(g_entityNameLock);
+    auto it = g_entityNames.find(code);
+    return it == g_entityNames.end() ? std::string() : it->second;
+}
+
+std::map<std::string, std::string> state::EntityNames() {
+    Guard g(g_entityNameLock);
+    return g_entityNames;
+}

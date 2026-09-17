@@ -73,4 +73,12 @@ std::string BansPath();
 // Character Name[<name>]`), used when the reflected/native getters come back empty.
 void NoteCharacterName(const std::string& gameId, const std::string& name);
 std::string CharacterName(const std::string& gameId);
+
+// Readable creature names (lane L3c). `ADominionAICharacter::AIName` is an FText that only exists on
+// a spawned AI (the cooked UAIDataAsset it comes from is streamed in on demand), so the name is
+// cached the first time an AI of that Blueprint class is seen or killed. GET /entities and the
+// entity-killed event both read this map, so both report the same name for the same `code`.
+void NoteEntityName(const std::string& code, const std::string& name);
+std::string EntityName(const std::string& code);
+std::map<std::string, std::string> EntityNames();
 }  // namespace state

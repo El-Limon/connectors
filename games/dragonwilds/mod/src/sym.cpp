@@ -145,6 +145,13 @@ const Want kWanted[] = {
     {"UHealthComponent::GetLocalHealth", "UHealthComponent::GetLocalHealth() const"},
     {"UHealthComponent::StaticClass", nullptr},
     {"ADominionAICharacter::StaticClass", nullptr},
+    // --- lane L3c: which weapon made the kill ---
+    // The equipped main-hand item. ELoadoutSlot is a plain UENUM, so its numeric values are read
+    // out of the live UEnum by name instead of being hard-coded.
+    {"ULoadoutComponent::GetEquipmentFromSlot", "ULoadoutComponent::GetEquipmentFromSlot(ELoadoutSlot) const"},
+    {"UEnum::GetValueByName", "UEnum::GetValueByName(FName, EGetByNameFlags) const"},
+    {"ULoadoutComponent::StaticClass", nullptr},
+    {"UEquipment::StaticClass", nullptr},
 };
 const size_t kWantedCount = sizeof(kWanted) / sizeof(kWanted[0]);
 

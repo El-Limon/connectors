@@ -91,7 +91,13 @@ Settings screen). `steamId` is present when the platform id is a SteamID64; `pla
 - `since > latestSeq` means the server restarted; reset to `0`.
 - `truncated: true` means events between `since` and the oldest buffered event were dropped.
 - Types: `player-connected`, `player-disconnected`, `chat-message`, `player-death`, `entity-killed`,
-  `log`. All are wired (lane L2); `entity-killed` is hooked but has never fired yet.
+  `log`. All are wired (lane L2). `entity-killed` carries a readable `entity` name
+  (`ADominionAICharacter::AIName`) with the Blueprint class in `entityCode`/`entityClass`, and the
+  weapon that made the kill in `weapon`/`weaponCode`; `weaponSource` names the route that resolved
+  it (the fatal damage event's source item, the killer's equipped main/off hand, the loadout scan,
+  or `unresolved`). `weapon` is empty for a bare-handed kill and for an unresolved one alike -
+  `weaponSource` is what tells those apart. Only `weapon` is forwarded to Takaro; the other keys are
+  plugin-side, because Takaro's EventEntityKilled schema does not carry them.
 
 ### Event payloads (real output, build `++dominion+staging-CL-240163`)
 The `player` object is `{gameId, name, characterName?, platformName?, characterGuid?, steamId?, platformId}`;
@@ -101,7 +107,10 @@ The `player` object is `{gameId, name, characterName?, platformName?, characterG
 {"type":"player-disconnected","data":{"player":{…}}}
 {"type":"chat-message","data":{"msg":"hello","channel":"global","player":{…}}}
 {"type":"player-death","data":{"player":{…},"position":{"x":0,"y":0,"z":0},"attacker":{…}?,"killerEntity":"FallDamageActor","source":"telemetry|health-edge"}}
-{"type":"entity-killed","data":{"entity":"Goblin_Scout","weapon":"","player":{…}}}
+{"type":"entity-killed","data":{"entity":"Cow","entityCode":"BP_AI_Cow_Character_C",
+  "entityClass":"BP_AI_Cow_Character_C","weapon":"Rune Sword","weaponCode":"…",
+  "weaponSource":"the killer's equipped main hand (ELoadoutSlot::HeldRight)",
+  "source":"BP_OnDeath","attribution":"the fatal damage event's instigator","player":{…}}}
 {"type":"log","data":{"msg":"[2026.09.16-17.46.33:165][355]LogNet: Login request: ?p=<redacted>…"}}
 ```
 - `position` is omitted when the game did not fill the victim location; `attacker` only appears for a

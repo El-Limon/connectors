@@ -5,7 +5,8 @@
 //   player-disconnected  ADominionGameMode::PreLogout + AGameModeBase::Logout, deduped per connection
 //   chat-message         ProcessEvent slot hook on the live UPlayerChatComponent vtables
 //   player-death         ProcessEvent (Client_SendDeathEventTelemetry) + a health-edge fallback
-//   entity-killed        ProcessEvent (UProgressComponent::OnAIKilled)
+//   entity-killed        ProcessEvent (ADominionAICharacter::BP_OnDeath / UHealthComponent::OnDeathEvent),
+//                        with the creature's AIName and the weapon that made the kill (lane L3c)
 //   log                  rotation-aware tail of Saved/Logs/RSDragonwilds.log, redacted
 //
 // Rules obeyed here:
@@ -859,6 +860,170 @@ void* OwnerOf(void* comp) {
     return ValidObject(outer) ? outer : nullptr;
 }
 
+// ---------------------------------------------------------------------------------------------
+// lane L3c: readable creature names, and which weapon made the kill
+//
+// Names: ADominionAICharacter::AIName is an FText on the spawned actor (offset by reflection, never
+// a constant), filled from the UAIDataAsset the AI was configured with. The Blueprint class name
+// (BP_AI_Cow_Character_C) stays in `entityCode`/`entityClass`, so GET /entities and entity-killed
+// key on the same code and show the same name.
+//
+// Weapon, in order of confidence, and the order is reported in the event's `weaponSource`:
+//   1. the fatal damage event the victim's own UAiDamageComponent recorded
+//      (FDominionDamageEvent::Source / ::Instigator, offsets from reflection);
+//   2. the killer's equipped main hand, ULoadoutComponent::GetEquipmentFromSlot(ELoadoutSlot) with
+//      the numeric slot read out of the live ELoadoutSlot UEnum by name, then the off hand;
+//   3. the first held-equipment item in the killer's loadout inventory;
+//   4. nothing -> "" (a bare-handed kill and an unresolvable one are both empty; `weaponSource`
+//      says which).
+
+using FnGetEquipmentFromSlot = void* (*)(const void* loadout, uint8_t slot);
+using FnEnumGetValueByName = int64_t (*)(const void* uenum, FName name, int32_t flags);
+using FnTextDisplayString = const FString* (*)(const void* ftext);
+using FnGetAllItemsInto = void (*)(const void* inv, TArray<void*>* out);
+
+void* g_clsLoadout = nullptr;
+void* g_clsItemData = nullptr;
+void* g_clsHeldEquipmentData = nullptr;
+void* g_damageInfoStruct = nullptr;
+void* g_enumLoadoutSlot = nullptr;
+int64_t g_slotHeldRight = -1;
+int64_t g_slotHeldLeft = -1;
+std::atomic<bool> g_dmgDumped{false};
+std::atomic<uint64_t> g_weaponResolved{0};
+std::atomic<uint64_t> g_weaponUnresolved{0};
+
+template <typename T>
+T SymFn(const char* name) {
+    return (T)(uintptr_t)Sym::Addr(name);
+}
+
+// FText -> display string. Never faults: the getter is a plain inspector and every pointer is
+// bounds-checked first.
+std::string TextAt(void* base, int32_t off) {
+    if (!base || off < 0) return "";
+    auto disp = SymFn<FnTextDisplayString>("FTextInspector::GetDisplayString");
+    const void* p = (const char*)base + off;
+    if (!disp || !MemReadable(p, 16)) return "";
+    const FString* s = disp(p);
+    if (!s || !MemReadable(s, 16) || s->Num <= 0 || s->Num > (1 << 16)) return "";
+    return Reflect::Utf16To8(s->Data, s->Num);
+}
+
+struct WeaponRef {
+    std::string name;  // UItemData::Name, the display name ("Rune Sword")
+    std::string code;  // the UItemData asset name, the same code GET /items reports
+    std::string how;   // which of the routes above produced it
+    bool ok() const { return !name.empty() || !code.empty(); }
+};
+
+// An item-ish UObject (UItem/UEquipment, or a UItemData itself) -> display name + code.
+WeaponRef WeaponFromObject(void* obj, const char* how) {
+    WeaponRef w;
+    if (!ValidObject(obj)) return w;
+    void* data = nullptr;
+    int32_t off = PropOffOf(obj, "ItemData");
+    if (off >= 0) ReadAt(obj, off, data);
+    if (!ValidObject(data)) {
+        if (g_clsItemData && Reflect::IsA(obj, g_clsItemData)) data = obj;
+        else return w;
+    }
+    w.code = SafeObjName(data);
+    w.name = TextAt(data, PropOffOf(data, "Name"));
+    if (w.name.empty()) w.name = w.code;
+    if (w.ok()) w.how = how;
+    return w;
+}
+
+// The killer's ULoadoutComponent (the inventory that holds what is equipped). Components are
+// Outered to the pawn or to the controller, which is how /players reads inventories too.
+void* LoadoutOf(void* playerState) {
+    if (!g_clsLoadout || !ValidObject(playerState)) return nullptr;
+    void* owners[2] = {nullptr, nullptr};
+    int32_t off = PropOffOf(playerState, "PawnPrivate");
+    if (off >= 0) ReadAt(playerState, off, owners[0]);
+    off = PropOffOf(playerState, "Owner");
+    if (off >= 0) ReadAt(playerState, off, owners[1]);
+    for (void* owner : owners) {
+        if (!ValidObject(owner)) continue;
+        std::vector<void*> comps;
+        if (!Reflect::GetObjectsWithOuter(owner, comps, true)) continue;
+        for (void* c : comps)
+            if (ValidObject(c) && Reflect::IsA(c, g_clsLoadout)) return c;
+    }
+    return nullptr;
+}
+
+WeaponRef EquippedWeapon(void* playerState) {
+    WeaponRef w;
+    void* loadout = LoadoutOf(playerState);
+    if (!loadout) return w;
+    auto fromSlot = SymFn<FnGetEquipmentFromSlot>("ULoadoutComponent::GetEquipmentFromSlot");
+    if (fromSlot) {
+        const std::pair<int64_t, const char*> slots[2] = {
+            {g_slotHeldRight, "the killer's equipped main hand (ELoadoutSlot::HeldRight)"},
+            {g_slotHeldLeft, "the killer's equipped off hand (ELoadoutSlot::HeldLeft)"}};
+        for (const auto& sl : slots) {
+            if (sl.first < 0 || sl.first > 255) continue;
+            w = WeaponFromObject(fromSlot(loadout, (uint8_t)sl.first), sl.second);
+            if (w.ok()) return w;
+        }
+    }
+    // Fallback: scan the loadout inventory for a held-equipment item.
+    auto getAll = SymFn<FnGetAllItemsInto>("UInventoryComponent::GetAllItems");
+    auto freeFn = SymFn<void (*)(void*)>("FMemory::Free");
+    if (!getAll || !g_clsHeldEquipmentData) return w;
+    TArray<void*> items{};
+    getAll(loadout, &items);
+    if (items.Data && items.Num > 0 && items.Num <= 256 && MemReadable(items.Data, (size_t)items.Num * 8)) {
+        for (int32_t i = 0; i < items.Num && !w.ok(); i++) {
+            void* item = items.Data[i];
+            void* data = nullptr;
+            int32_t dOff = ValidObject(item) ? PropOffOf(item, "ItemData") : -1;
+            if (dOff < 0 || !ReadAt(item, dOff, data) || !ValidObject(data)) continue;
+            if (!Reflect::IsA(data, g_clsHeldEquipmentData)) continue;
+            w = WeaponFromObject(item, "the only held-equipment item in the killer's loadout");
+        }
+    }
+    if (items.Data && freeFn) freeFn(items.Data);
+    return w;
+}
+
+// The fatal damage event the victim's own damage component recorded. Only element 0 of
+// AppliedFatalDamageEvents is read: the array's element type may be a derived point-damage event,
+// but the base struct's fields sit at the same inherited offsets either way, so element 0 is always
+// safe to read at the FDominionDamageEvent offsets while a stride guess would not be.
+bool FatalDamageFacts(void* aiActor, void*& instigator, void*& source) {
+    instigator = nullptr;
+    source = nullptr;
+    void* dmg = nullptr;
+    int32_t off = PropOffOf(aiActor, "AiDamageComponent");
+    if (off >= 0) ReadAt(aiActor, off, dmg);
+    if (!ValidObject(dmg)) return false;
+    if (DebugEnabled() && !g_dmgDumped.exchange(true))
+        PluginLog("events: first fatal damage component %s = %s", SafeClassName(dmg).c_str(),
+                  Reflect::DumpObject(dmg, 64).c_str());
+
+    int32_t arrOff = PropOffOf(dmg, "AppliedFatalDamageEvents");
+    int32_t instOff = g_damageStruct ? PropOff(g_damageStruct, "Instigator") : -1;
+    int32_t srcOff = g_damageStruct ? PropOff(g_damageStruct, "Source") : -1;
+    TArray<char> arr{};
+    if (arrOff >= 0 && ReadAt(dmg, arrOff, arr) && arr.Data && arr.Num > 0 && arr.Num < 4096) {
+        if (instOff >= 0 && MemReadable(arr.Data + instOff, 8)) memcpy(&instigator, arr.Data + instOff, 8);
+        if (srcOff >= 0 && MemReadable(arr.Data + srcOff, 8)) memcpy(&source, arr.Data + srcOff, 8);
+    }
+    if (!ValidObject(source)) {
+        // UDamageComponent::FatalDamageInfo is an FDamageInfo, which names the source object too.
+        int32_t infoOff = PropOffOf(dmg, "FatalDamageInfo");
+        int32_t infoSrc = g_damageInfoStruct ? PropOff(g_damageInfoStruct, "Source") : -1;
+        void* s = nullptr;
+        if (infoOff >= 0 && infoSrc >= 0 && ReadAt(dmg, infoOff + infoSrc, s) && ValidObject(s)) source = s;
+    }
+    if (!ValidObject(instigator)) instigator = nullptr;
+    if (!ValidObject(source)) source = nullptr;
+    return instigator || source;
+}
+
 Mutex g_killLock;
 std::map<void*, uint64_t> g_lastKillMs;  // AI actor -> ms; BP_OnDeath and OnDeathEvent both fire
 const uint64_t kKillDedupeMs = 5000;
@@ -880,8 +1045,19 @@ bool KillAllowed(void* actor) {
 //   2. the AI's replicated CurrentTarget (what it was fighting when it died);
 //   3. the only player in the world, when there is exactly one.
 // The method used is reported in the event, so nothing here is presented as more than it is.
-Ident KillerOf(void* actor, std::string& how) {
+Ident KillerOf(void* actor, std::string& how, void* dmgInstigator, void*& stateOut) {
     Ident id;
+    stateOut = nullptr;
+    // The damage instigator the game itself recorded beats every heuristic below.
+    if (ValidObject(dmgInstigator)) {
+        void* st = PlayerStateOf(dmgInstigator);
+        if (st && IdentFromPlayerState(st, id) && id.valid()) {
+            how = "the fatal damage event's instigator";
+            stateOut = st;
+            return id;
+        }
+        id = Ident();
+    }
     static const char* kHints[] = {"Instigator", "Killer", "LastDamage", "Causer", "DamageDealer"};
     std::vector<void*> props;
     WalkProps(Reflect::ObjClass(actor), props, 256);
@@ -901,6 +1077,7 @@ Ident KillerOf(void* actor, std::string& how) {
         void* st = PlayerStateOf(o);
         if (st && IdentFromPlayerState(st, id) && id.valid()) {
             how = "damage instigator (" + pname + ")";
+            stateOut = st;
             return id;
         }
     }
@@ -910,6 +1087,7 @@ Ident KillerOf(void* actor, std::string& how) {
         void* st = PlayerStateOf(tgt);
         if (st && IdentFromPlayerState(st, id) && id.valid()) {
             how = "the AI's current target";
+            stateOut = st;
             return id;
         }
     }
@@ -918,12 +1096,17 @@ Ident KillerOf(void* actor, std::string& how) {
         std::vector<void*> states;
         if (Reflect::GetObjectsOfClass(g_clsPlayerState, states, true)) {
             std::vector<Ident> online;
+            std::vector<void*> onlineStates;
             for (void* st : states) {
                 Ident k;
-                if (IdentFromPlayerState(st, k) && k.valid()) online.push_back(k);
+                if (IdentFromPlayerState(st, k) && k.valid()) {
+                    online.push_back(k);
+                    onlineStates.push_back(st);
+                }
             }
             if (online.size() == 1) {
                 how = "the only player in the world";
+                stateOut = onlineStates[0];
                 return online[0];
             }
         }
@@ -947,25 +1130,46 @@ void HandleActorDeath(void* actor, const char* via) {
                   Reflect::DumpObject(actor, 256).c_str());
 
     std::string cls = SafeClassName(actor);
-    std::string entity = cls;
-    // The AI data asset carries the readable name when the actor has one.
-    for (const char* n : {"AIData", "AiData", "AIDataAsset", "AiDataAsset", "DataAsset"}) {
-        int32_t off = PropOffOf(actor, n);
-        void* asset = nullptr;
-        if (off < 0 || !ReadAt(actor, off, asset) || !ValidObject(asset)) continue;
-        std::string an = SafeObjName(asset);
-        if (!an.empty()) { entity = an; break; }
+    // Readable name: the AI's own AIName FText, else the one on the UAIDataAsset it was configured
+    // with. Whatever is found is cached per Blueprint class so GET /entities reports it too.
+    std::string entity = TextAt(actor, PropOffOf(actor, "AIName"));
+    std::string dataAsset;
+    void* data = nullptr;
+    int32_t dataOff = PropOffOf(actor, "LoadedData");
+    if (dataOff >= 0 && ReadAt(actor, dataOff, data) && ValidObject(data)) {
+        dataAsset = SafeObjName(data);
+        if (entity.empty()) entity = TextAt(data, PropOffOf(data, "AIName"));
     }
+    if (!entity.empty()) ::state::NoteEntityName(cls, entity);
+    if (entity.empty()) entity = ::state::EntityName(cls);
+    if (entity.empty()) entity = cls;
+
+    void* dmgInstigator = nullptr;
+    void* dmgSource = nullptr;
+    FatalDamageFacts(actor, dmgInstigator, dmgSource);
+
     std::string how;
-    Ident killer = KillerOf(actor, how);
-    std::string o = "{\"entity\":" + JsonStr(entity) + ",\"entityClass\":" + JsonStr(cls) +
-                    ",\"weapon\":\"\",\"source\":" + JsonStr(via) + ",\"attribution\":" + JsonStr(how);
+    void* killerState = nullptr;
+    Ident killer = KillerOf(actor, how, dmgInstigator, killerState);
+
+    WeaponRef weapon = WeaponFromObject(dmgSource, "the fatal damage event's source item");
+    if (!weapon.ok() && killerState) weapon = EquippedWeapon(killerState);
+    if (weapon.ok()) g_weaponResolved++;
+    else g_weaponUnresolved++;
+
+    std::string o = "{\"entity\":" + JsonStr(entity) + ",\"entityCode\":" + JsonStr(cls) +
+                    ",\"entityClass\":" + JsonStr(cls);
+    if (!dataAsset.empty()) o += ",\"entityDataAsset\":" + JsonStr(dataAsset);
+    o += ",\"weapon\":" + JsonStr(weapon.name) + ",\"weaponCode\":" + JsonStr(weapon.code) +
+         ",\"weaponSource\":" + JsonStr(weapon.ok() ? weapon.how : std::string("unresolved")) +
+         ",\"source\":" + JsonStr(via) + ",\"attribution\":" + JsonStr(how);
     if (killer.valid()) o += ",\"player\":" + PlayerJson(killer);
     o += "}";
     PluginState::Get().EmitEvent("entity-killed", o);
     g_kill.emitted++;
-    PluginLog("events: entity-killed '%s' (%s) via %s, killer %s [%s]", entity.c_str(), cls.c_str(), via,
-              killer.gameId.c_str(), how.c_str());
+    PluginLog("events: entity-killed '%s' (%s) via %s, killer %s [%s], weapon '%s' [%s]", entity.c_str(),
+              cls.c_str(), via, killer.gameId.c_str(), how.c_str(), weapon.name.c_str(),
+              weapon.ok() ? weapon.how.c_str() : "unresolved");
 }
 
 void DetourProcessEvent(void* self, void* func, void* params) {
@@ -1271,6 +1475,31 @@ void Phase(const char* p) {
     if (DebugEnabled()) PluginLog("events: housekeep phase %s", p);
 }
 
+// ELoadoutSlot's numeric values are never hard-coded: they are asked of the live UEnum by name.
+void ResolveLoadoutSlots() {
+    if (g_slotHeldRight >= 0) return;
+    g_enumLoadoutSlot = Reflect::FindObjectByPath("/Script/Dominion", "ELoadoutSlot");
+    auto byName = SymFn<FnEnumGetValueByName>("UEnum::GetValueByName");
+    if (!g_enumLoadoutSlot || !byName) {
+        PluginLog("events: ELoadoutSlot unavailable (enum=%p, UEnum::GetValueByName=%p); the equipped-weapon "
+                  "route falls back to scanning the loadout inventory",
+                  g_enumLoadoutSlot, (void*)(uintptr_t)byName);
+        return;
+    }
+    struct { const char* name; int64_t* out; } wanted[] = {
+        {"ELoadoutSlot::HeldRight", &g_slotHeldRight},
+        {"ELoadoutSlot::HeldLeft", &g_slotHeldLeft},
+    };
+    for (auto& w : wanted) {
+        FName n = Reflect::MakeName(w.name);
+        if (n.Comparison == 0) continue;  // not in the name pool: never stringify or call with it
+        int64_t v = byName(g_enumLoadoutSlot, n, 0);
+        if (v >= 0 && v <= 255) *w.out = v;
+    }
+    PluginLog("events: ELoadoutSlot HeldRight=%lld HeldLeft=%lld", (long long)g_slotHeldRight,
+              (long long)g_slotHeldLeft);
+}
+
 void GameThreadInit() {
     g_clsUObject = Reflect::StaticClass("UObject::StaticClass");
     g_clsUClass = Reflect::StaticClass("UClass::StaticClass");
@@ -1294,7 +1523,16 @@ void GameThreadInit() {
 
     g_chatDataStruct = FindStructByName("ChatMessageData");
     g_damageStruct = FindStructByName("DominionDamageEvent");
+    g_damageInfoStruct = FindStructByName("DamageInfo");
     g_msgBodyOff = g_chatDataStruct ? PropOff(g_chatDataStruct, "MessageBody") : -1;
+
+    // lane L3c: weapon attribution.
+    g_clsLoadout = Reflect::StaticClass("ULoadoutComponent::StaticClass");
+    if (!g_clsLoadout) g_clsLoadout = Reflect::FindObjectByPath("/Script/Dominion", "LoadoutComponent");
+    g_clsItemData = Reflect::StaticClass("UItemData::StaticClass");
+    if (!g_clsItemData) g_clsItemData = Reflect::FindObjectByPath("/Script/Dominion", "ItemData");
+    g_clsHeldEquipmentData = Reflect::FindObjectByPath("/Script/Dominion", "HeldEquipmentData");
+    ResolveLoadoutSlots();
 
     SweepProcessEventTargets();
     HookLivePreLogin();
@@ -1441,7 +1679,13 @@ std::string Events::DiagnosticsJson() {
     o += one("player-death", g_death, g_peCount.load() > 0) + ",";
     o += one("entity-killed", g_kill, g_peCount.load() > 0) + ",";
     o += one("log", g_log, g_log.hooked.load());
-    o += "],\"banEnforcement\":{\"preLoginHooked\":" + std::string(g_preLoginHooked.load() ? "true" : "false") +
+    o += "],\"weaponAttribution\":{\"heldRightSlot\":" + std::to_string(g_slotHeldRight) +
+         ",\"heldLeftSlot\":" + std::to_string(g_slotHeldLeft) + ",\"loadoutClass\":" +
+         std::string(g_clsLoadout ? "true" : "false") + ",\"getEquipmentFromSlot\":" +
+         std::string(Sym::Addr("ULoadoutComponent::GetEquipmentFromSlot") ? "true" : "false") +
+         ",\"resolved\":" + std::to_string(g_weaponResolved.load()) + ",\"unresolved\":" +
+         std::to_string(g_weaponUnresolved.load()) + "},";
+    o += "\"banEnforcement\":{\"preLoginHooked\":" + std::string(g_preLoginHooked.load() ? "true" : "false") +
          ",\"refusals\":" + std::to_string(g_banRefusals.load()) + ",\"bansFile\":" + JsonStr(::state::BansPath()) +
          ",\"pluginBans\":" + std::to_string(::state::BanList().size()) + "}";
     o += ",\"processEventVTables\":" + std::to_string(g_peCount.load());
