@@ -102,7 +102,7 @@ jobs:
         if: ${{ steps.params.outputs.publish == 'stable' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: scripts/publish-release.sh upload "${{ steps.params.outputs.tag }}" "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz"
+        run: scripts/publish-release.sh upload "${{ steps.params.outputs.tag }}" "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" "$RUNNER_TEMP/dist/SHA256SUMS"
 
       - name: Publish rolling dev build
         if: ${{ steps.params.outputs.publish == 'rolling' }}
@@ -113,7 +113,8 @@ jobs:
             "VEIN Connector - latest dev build" \
             "Rolling development build (\`${{ steps.params.outputs.version }}\`), updated on every push to main. Not for production." \
             "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" \
-            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz"
+            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" \
+            "$RUNNER_TEMP/dist/SHA256SUMS"
 
       - name: Publish PR build
         if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -124,7 +125,8 @@ jobs:
             "VEIN Connector - build for PR #${{ github.event.pull_request.number }}" \
             "Disposable build (\`${{ steps.params.outputs.version }}\`) for PR #${{ github.event.pull_request.number }}. Replaced on every push, deleted when the PR closes. Not for production." \
             "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" \
-            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz"
+            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" \
+            "$RUNNER_TEMP/dist/SHA256SUMS"
 
       - name: Comment PR build
         if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -136,4 +138,5 @@ jobs:
             "${{ steps.params.outputs.tag }}" \
             "${{ steps.params.outputs.version }}" \
             "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" \
-            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz"
+            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" \
+            "$RUNNER_TEMP/dist/SHA256SUMS"
