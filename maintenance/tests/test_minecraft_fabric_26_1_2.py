@@ -11,10 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from conftest import FIXTURES, Wired, make_jar, point_at, read_target, sha1, sha256, write_target
-from fake_upstream import FakeUpstream
+from conftest import FIXTURES, make_jar, read_target
 from test_cli_build import artifact_spec
 from test_cli_build import gradle_stub as _gradle_stub
 
@@ -45,51 +42,6 @@ def pinned_loader(repo_root: Path) -> str:
 def fingerprint(run: Any, target_id: str, repo: Path | None = None) -> str:
     _, payload, _ = run("targets", "resolve", "--game", "minecraft", "--target", target_id, repo=repo)
     return str(payload["fingerprint"])
-
-
-@pytest.fixture
-def wired_backport(catalog_copy: Path) -> Any:
-    """Serve stand-ins for the four 26.1.2 downloads and re-pin the copied record to them.
-
-    `conftest.wired` does this for the default target; the backport needs its own because
-    both records live in the same catalog and only one of them may be re-pinned.
-    """
-    with FakeUpstream() as upstream:
-        record = read_target(catalog_copy, BACKPORT)
-        loader_version = str(record["inputs"]["loader"]["loaderVersion"])
-        api_version = str(record["inputs"]["fabricApi"]["version"])
-
-        server_bytes = (FIXTURES / "upstream/mojang/26.1.2/server.jar").read_bytes()
-        launcher_bytes = (FIXTURES / "upstream/fabric/26.1.2/launcher.jar").read_bytes()
-        api_bytes = (FIXTURES / f"upstream/fabric/26.1.2/fabric-api-{api_version}.jar").read_bytes()
-        loader_bytes = (FIXTURES / f"upstream/fabric/26.1.2/fabric-loader-{loader_version}.jar").read_bytes()
-
-        manifest = json.loads((FIXTURES / "upstream/mojang/26.1.2/26.1.2.json").read_text())
-        manifest["downloads"]["server"] = {
-            "sha1": sha1(server_bytes),
-            "size": len(server_bytes),
-            "url": upstream.base_url + record["inputs"]["game"]["server"]["path"],
-        }
-        manifest_bytes = json.dumps(manifest).encode("utf-8")
-
-        game = record["inputs"]["game"]
-        game["manifest"]["path"] = f"/v1/packages/{sha1(manifest_bytes)}/26.1.2.json"
-        game["manifest"]["sha1"] = sha1(manifest_bytes)
-        game["server"]["sha1"] = sha1(server_bytes)
-        game["server"]["size"] = len(server_bytes)
-        record["inputs"]["loader"]["sha256"] = sha256(launcher_bytes)
-        record["inputs"]["fabricApi"]["sha256"] = sha256(api_bytes)
-        record["build"]["deps"]["fabric-api"]["sha256"] = sha256(api_bytes)
-        record["build"]["deps"]["fabric-loader"]["sha256"] = sha256(loader_bytes)
-        write_target(catalog_copy, record, BACKPORT)
-        point_at(catalog_copy, upstream.base_url)
-
-        upstream.add(game["manifest"]["path"], manifest_bytes)
-        upstream.add(game["server"]["path"], server_bytes)
-        upstream.add(record["inputs"]["loader"]["path"], launcher_bytes)
-        upstream.add(record["inputs"]["fabricApi"]["path"], api_bytes)
-        upstream.add(f"/net/fabricmc/fabric-loader/{loader_version}/fabric-loader-{loader_version}.jar", loader_bytes)
-        yield Wired(catalog_copy, upstream)
 
 
 def test_the_record_pins_the_verified_upstream_values(repo_root: Path) -> None:
@@ -144,7 +96,7 @@ def test_both_fabric_targets_validate_together(run: Any) -> None:
 
 
 def test_the_default_is_still_26_2(run: Any) -> None:
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft")
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric")
 
     assert code == 0
     assert payload["id"] == CURRENT
@@ -305,8 +257,8 @@ def test_build_selects_both_targets_with_independent_outputs(
     assert sorted(p.name for p in alone.glob("*.jar")) == ["takaro-minecraft-mod-fabric-26.1.2-0.1.1.jar"]
 
 
-def test_install_lays_out_the_26_1_2_inputs(run: Any, wired_backport: Any, tmp_path: Path) -> None:
-    root = wired_backport.root
+def test_install_lays_out_the_26_1_2_inputs(run: Any, wired: Any, tmp_path: Path) -> None:
+    root = wired.root
     record = read_target(root, BACKPORT)
     dest = tmp_path / "server"
 
@@ -328,9 +280,9 @@ def test_install_lays_out_the_26_1_2_inputs(run: Any, wired_backport: Any, tmp_p
 
 
 def test_deploying_the_26_2_row_into_a_26_1_2_install_is_a_conflict(
-    run: Any, wired_backport: Any, gradle_stub: Any, tmp_path: Path
+    run: Any, wired: Any, gradle_stub: Any, tmp_path: Path
 ) -> None:
-    root = wired_backport.root
+    root = wired.root
     dest = tmp_path / "server"
     assert run("install", "--game", "minecraft", "--target", BACKPORT, "--dest", str(dest), repo=root)[0] == 0
 
