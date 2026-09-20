@@ -98,3 +98,4 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 
 - [The catalog](../catalog/README.md) — what a target record is and how to add one.
 - [Discovery](docs/discovery.md) — how `scan` turns upstream releases into deduplicated maintenance issues.
+- [Runtime verification](docs/verify.md) — what `verify` boots, checks and reports, locally and in CI.

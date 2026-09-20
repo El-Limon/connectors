@@ -101,13 +101,23 @@ Release artifacts are collected by `scripts/build-release.sh <version> <out-dir>
 
 ```bash
 just maint verify --game minecraft --target fabric-26.2 --artifacts dist --out reports
+just maint verify --game minecraft --all-targets --artifacts dist --out reports --negative
 ```
 
 This installs the pinned server files into a throwaway directory, deploys the built jar, boots the
 pinned container against a local fake Takaro, and checks startup, the target check, identify,
-heartbeat, players, the item and entity catalogues (display names, not registry ids), a console
-command and a clean shutdown. It publishes no host ports and writes a report that validates
-against `catalog/schema/v1/verify-report.schema.json`.
+heartbeat, reconnect after a server-side close, players, the item and entity catalogues (display
+names, not registry ids), a console command, a clean shutdown and a restart on the same data
+directory. It publishes no host ports and writes a report that validates against
+`catalog/schema/v1/verify-report.schema.json`.
+
+`--negative` additionally boots the sibling Fabric target's jar and requires the server to refuse
+it. `--takaro hosted` registers the target once against a real Takaro instead of the fake, with
+every id and host redacted out of the files it keeps. The same command runs as the `verify` matrix
+job in the release workflow, so a target that cannot boot cannot be published.
+
+The checks, their budgets, the report fields and what this harness deliberately does not prove are
+documented in [maintenance/docs/verify.md](../../maintenance/docs/verify.md).
 
 ## Run servers
 
