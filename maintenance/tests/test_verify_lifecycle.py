@@ -6,13 +6,17 @@ asserted is the report the command writes and the containers it really asked for
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -368,3 +372,254 @@ def test_runtime_identity_is_scanned_for_every_platform_banner(tmp_path: Path) -
     empty = tmp_path / "empty.log"
     empty.write_text("[Server thread/INFO]: nothing identifying here\n")
     assert scan_runtime_identity(adapter, empty) == {}
+
+
+# --------------------------------------------------------------------------- hosted mode
+
+HOSTED_KEYS = (
+    "TAKARO_WS_URL",
+    "TAKARO_REGISTRATION_TOKEN",
+    "TAKARO_HOST",
+    "TAKARO_USERNAME",
+    "TAKARO_PASSWORD",
+    "TAKARO_DOMAIN_ID",
+)
+HOSTED_RETAINED = ("report.json", "docker.log", "server.log", "install.json", "deploy.json")
+IDENTITY = "takaro-maint-minecraft-fabric-26.2"
+
+
+class HostedRest:
+    """Takaro's REST API, faked down to the six calls a hosted verification makes.
+
+    A gameserver appears under the identity only once the connector has really identified
+    on the websocket side, so `hosted-registration` proves self-registration rather than
+    a row this fixture pre-created.
+    """
+
+    def __init__(self, ws: Any, loop: Any, seeded: dict[str, str] | None = None) -> None:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.ws = ws
+        self.loop = loop
+        self.servers: dict[str, str] = dict(seeded or {})
+        self.calls: list[str] = []
+        self.domains: list[str] = []
+        self.deleted_at: list[float] = []
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_: Any) -> None:
+                pass
+
+            def _body(self) -> dict[str, Any]:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    return dict(json.loads(raw or b"{}"))
+                except json.JSONDecodeError:
+                    return {}
+
+            def _reply(self, payload: dict[str, Any], cookie: bool = False) -> None:
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                if cookie:
+                    self.send_header("Set-Cookie", "takaro-session=fake; Path=/")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _route(self, method: str) -> None:
+                fake.domains.append(self.headers.get("X-Takaro-Domain") or "")
+                parts = [part for part in self.path.split("/") if part]
+                body = self._body()
+                if method == "POST" and parts == ["login"]:
+                    fake.calls.append("login")
+                    self._reply({"data": {"token": "fake-session-token"}}, cookie=True)
+                elif method == "POST" and parts == ["gameserver", "search"]:
+                    fake.calls.append("search")
+                    self._reply({"data": fake.search(body)})
+                elif method == "POST" and parts[:1] == ["gameserver"] and parts[-1:] == ["reachability"]:
+                    fake.calls.append("reachability")
+                    self._reply({"data": {"connectable": True}})
+                elif method == "GET" and parts[:1] == ["gameserver"] and parts[-1:] == ["players"]:
+                    fake.calls.append("players")
+                    self._reply({"data": []})
+                elif method == "POST" and parts[:1] == ["gameserver"] and parts[-1:] == ["shutdown"]:
+                    fake.calls.append("shutdown")
+                    fake.ask_the_connector_to_stop()
+                    self._reply({"data": {}})
+                elif method == "DELETE" and len(parts) == 2 and parts[0] == "gameserver":
+                    fake.calls.append("delete")
+                    fake.servers.pop(parts[1], None)
+                    fake.deleted_at.append(time.time())
+                    self._reply({"data": {}})
+                else:
+                    self._reply({"data": None})
+
+            def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+                self._route("POST")
+
+            def do_GET(self) -> None:  # noqa: N802
+                self._route("GET")
+
+            def do_DELETE(self) -> None:  # noqa: N802
+                self._route("DELETE")
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def search(self, body: dict[str, Any]) -> list[dict[str, str]]:
+        wanted = ((body.get("filters") or {}).get("identityToken") or [None])[0]
+        identified = (self.ws.identified or {}).get("identityToken")
+        if identified is not None and not any(token == identified for token in self.servers.values()):
+            self.servers[str(uuid.uuid4())] = identified
+        return [{"id": sid, "identityToken": token} for sid, token in self.servers.items() if token == wanted]
+
+    def ask_the_connector_to_stop(self) -> None:
+        future = asyncio.run_coroutine_threadsafe(self.ws.request("shutdown", {}, timeout=30), self.loop)
+        with contextlib.suppress(Exception):
+            future.result(timeout=35)
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=10)
+
+
+@contextlib.contextmanager
+def hosted_takaro(monkeypatch: pytest.MonkeyPatch, log_path: Path, seeded: dict[str, str] | None = None) -> Any:
+    """The real websocket fake and the REST fake, wired into the six hosted variables."""
+    from takaro_maint.verify.fake_takaro import FakeTakaro
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    ws = FakeTakaro(host="127.0.0.1", log_path=log_path)
+    port = asyncio.run_coroutine_threadsafe(ws.start(), loop).result(timeout=20)
+    rest = HostedRest(ws, loop, seeded)
+    monkeypatch.setenv("TAKARO_WS_URL", f"ws://127.0.0.1:{port}/")
+    monkeypatch.setenv("TAKARO_REGISTRATION_TOKEN", "hosted-registration-token-value")
+    monkeypatch.setenv("TAKARO_HOST", rest.url)
+    monkeypatch.setenv("TAKARO_USERNAME", "verify-robot@example.invalid")
+    monkeypatch.setenv("TAKARO_PASSWORD", "hosted-password-value")
+    monkeypatch.setenv("TAKARO_DOMAIN_ID", str(uuid.uuid4()))
+    try:
+        yield rest
+    finally:
+        rest.close()
+        asyncio.run_coroutine_threadsafe(ws.stop(), loop).result(timeout=20)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=10)
+        loop.close()
+
+
+def test_hosted_mode_needs_its_environment(
+    run: Any, wired: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in HOSTED_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    artifacts = artifacts_for(run, wired, tmp_path)
+
+    code, _, stderr = verify(run, wired, artifacts, tmp_path / "reports", "--takaro", "hosted")
+
+    assert code == 2
+    for key in HOSTED_KEYS:
+        assert key in stderr, key
+
+    monkeypatch.setenv("TAKARO_PASSWORD", "hunter2-decoy")
+    code, payload, stderr = verify(run, wired, artifacts, tmp_path / "reports", "--takaro", "hosted")
+
+    assert code == 2
+    assert "TAKARO_PASSWORD" not in stderr
+    assert "hunter2-decoy" not in stderr and "hunter2-decoy" not in str(payload)
+
+
+def test_hosted_run_registers_reaches_lists_shuts_down_and_deletes(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+
+    with hosted_takaro(monkeypatch, tmp_path / "ws.log") as rest:
+        code, payload, stderr = verify(run, wired, artifacts, out, "--takaro", "hosted")
+
+    assert code == 0, (payload, stderr)
+    report = report_of(out)
+    assert report["takaro"] == "hosted"
+    assert report["level"] == "startup"
+    assert report["outcome"] == "pass"
+    for check_id in (
+        "build",
+        "startup",
+        "connector-load",
+        "identify",
+        "hosted-registration",
+        "heartbeat",
+        "players",
+        "shutdown",
+    ):
+        assert row(report, check_id)["status"] == "pass", (check_id, row(report, check_id))
+    for check_id in ("catalog-items", "catalog-entities", "console", "reconnect", "negative-wrong-target"):
+        assert row(report, check_id)["status"] == "skip"
+        assert "local fake" in row(report, check_id)["detail"]["reason"]
+    assert row(report, "restart")["status"] == "skip"
+    assert row(report, "heartbeat")["detail"]["connectable"] is True
+    assert row(report, "players")["detail"]["players"] == 0
+    assert row(report, "shutdown")["detail"]["exitCode"] == 0
+
+    assert rest.calls[0] == "login"
+    assert "search" in rest.calls
+    assert [call for call in rest.calls if call in ("reachability", "players", "shutdown", "delete")] == [
+        "reachability",
+        "players",
+        "shutdown",
+        "delete",
+    ]
+    assert all(domain for domain in rest.domains), rest.domains
+    assert rest.servers == {}, "the hosted run must delete every gameserver it registered"
+
+
+def test_hosted_retained_files_carry_no_ids_hosts_or_tokens(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+
+    with hosted_takaro(monkeypatch, tmp_path / "ws.log"):
+        code, payload, _ = verify(run, wired, artifacts, out, "--takaro", "hosted")
+        secrets = [os.environ[key] for key in HOSTED_KEYS]
+        ws_host = "127.0.0.1"
+
+    assert code == 0, payload
+    for name in HOSTED_RETAINED:
+        text = (out / "fabric-26.2" / name).read_text()
+        assert not UUID.search(text), f"{name} kept a UUID"
+        assert ws_host not in text, f"{name} kept the Takaro host"
+        for value in secrets:
+            assert value not in text, f"{name} kept {value[:4]}..."
+    assert row(report_of(out), "hosted-registration")["detail"]["gameServerId"] == "<redacted>"
+
+
+def test_a_stale_hosted_registration_is_deleted_before_the_boot(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+    stale = str(uuid.uuid4())
+
+    with hosted_takaro(monkeypatch, tmp_path / "ws.log", seeded={stale: IDENTITY}) as rest:
+        code, payload, _ = verify(run, wired, artifacts, out, "--takaro", "hosted")
+
+    assert code == 0, payload
+    assert rest.calls[:3] == ["login", "search", "delete"]
+    booted_at = (docker_stub / "takaro-verify-minecraft-fabric-26.2-t1" / "env.json").stat().st_mtime
+    assert rest.deleted_at[0] <= booted_at, "the stale gameserver must be gone before the container starts"
+    assert stale not in rest.servers
