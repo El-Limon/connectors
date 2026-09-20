@@ -127,8 +127,14 @@ exits 2. It is never run in CI and never given to a workflow.
 What it asserts, and nothing beyond it:
 
 - `hosted-registration`: the connector registers its **own** gameserver under the identity
-  `takaro-maint-<game>-<target>`. The harness never pre-creates one; it polls until exactly
-  one exists, and a stale one from an earlier run is deleted before the boot.
+  `takaro-maint-<game>-<target>-<run id>-<nonce>`. The harness never pre-creates one; it polls
+  until exactly one exists. Before the boot it deletes every gameserver whose identity starts
+  with `takaro-maint-<game>-<target>-`, so a crashed earlier run leaves nothing behind — which
+  also means two hosted verifications of the same target must not run at the same time.
+
+  The identity has to be new on every run: Takaro answers a registration under an identity
+  whose gameserver has been deleted with `409`, so a fixed one would work exactly once. That is
+  why the run id and a nonce are part of it.
 - `heartbeat`: Takaro's own reachability probe answers `connectable: true`.
 - `players`: the new gameserver lists no players.
 - `shutdown`: a shutdown asked for through the API stops the container with exit code 0.

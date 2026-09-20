@@ -385,7 +385,7 @@ HOSTED_KEYS = (
     "TAKARO_DOMAIN_ID",
 )
 HOSTED_RETAINED = ("report.json", "docker.log", "server.log", "install.json", "deploy.json")
-IDENTITY = "takaro-maint-minecraft-fabric-26.2"
+IDENTITY_PREFIX = "takaro-maint-minecraft-fabric-26.2-"
 
 
 class HostedRest:
@@ -396,15 +396,17 @@ class HostedRest:
     a row this fixture pre-created.
     """
 
-    def __init__(self, ws: Any, loop: Any, seeded: dict[str, str] | None = None) -> None:
+    def __init__(self, ws: Any, loop: Any, seeded: dict[str, str] | None = None, broken: str = "") -> None:
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         self.ws = ws
         self.loop = loop
         self.servers: dict[str, str] = dict(seeded or {})
         self.calls: list[str] = []
+        self.methods: list[str] = []
         self.domains: list[str] = []
         self.deleted_at: list[float] = []
+        self.broken = broken
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -433,6 +435,12 @@ class HostedRest:
 
             def _route(self, method: str) -> None:
                 fake.domains.append(self.headers.get("X-Takaro-Domain") or "")
+                fake.methods.append(f"{method} {self.path}")
+                if fake.broken and self.path.endswith(fake.broken):
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 parts = [part for part in self.path.split("/") if part]
                 body = self._body()
                 if method == "POST" and parts == ["login"]:
@@ -441,7 +449,7 @@ class HostedRest:
                 elif method == "POST" and parts == ["gameserver", "search"]:
                     fake.calls.append("search")
                     self._reply({"data": fake.search(body)})
-                elif method == "POST" and parts[:1] == ["gameserver"] and parts[-1:] == ["reachability"]:
+                elif method == "GET" and parts[:1] == ["gameserver"] and parts[-1:] == ["reachability"]:
                     fake.calls.append("reachability")
                     self._reply({"data": {"connectable": True}})
                 elif method == "GET" and parts[:1] == ["gameserver"] and parts[-1:] == ["players"]:
@@ -477,11 +485,13 @@ class HostedRest:
         return f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
     def search(self, body: dict[str, Any]) -> list[dict[str, str]]:
-        wanted = ((body.get("filters") or {}).get("identityToken") or [None])[0]
+        """Exact-match on `filters.identityToken`, or the whole listing when there is none."""
+        wanted = (body.get("filters") or {}).get("identityToken")
         identified = (self.ws.identified or {}).get("identityToken")
-        if identified is not None and not any(token == identified for token in self.servers.values()):
+        if identified is not None and identified not in self.servers.values():
             self.servers[str(uuid.uuid4())] = identified
-        return [{"id": sid, "identityToken": token} for sid, token in self.servers.items() if token == wanted]
+        rows = [{"id": sid, "identityToken": token} for sid, token in self.servers.items()]
+        return [row for row in rows if row["identityToken"] in wanted] if wanted else rows
 
     def ask_the_connector_to_stop(self) -> None:
         future = asyncio.run_coroutine_threadsafe(self.ws.request("shutdown", {}, timeout=30), self.loop)
@@ -495,7 +505,12 @@ class HostedRest:
 
 
 @contextlib.contextmanager
-def hosted_takaro(monkeypatch: pytest.MonkeyPatch, log_path: Path, seeded: dict[str, str] | None = None) -> Any:
+def hosted_takaro(
+    monkeypatch: pytest.MonkeyPatch,
+    log_path: Path,
+    seeded: dict[str, str] | None = None,
+    broken: str = "",
+) -> Any:
     """The real websocket fake and the REST fake, wired into the six hosted variables."""
     from takaro_maint.verify.fake_takaro import FakeTakaro
 
@@ -504,7 +519,7 @@ def hosted_takaro(monkeypatch: pytest.MonkeyPatch, log_path: Path, seeded: dict[
     thread.start()
     ws = FakeTakaro(host="127.0.0.1", log_path=log_path)
     port = asyncio.run_coroutine_threadsafe(ws.start(), loop).result(timeout=20)
-    rest = HostedRest(ws, loop, seeded)
+    rest = HostedRest(ws, loop, seeded, broken)
     monkeypatch.setenv("TAKARO_WS_URL", f"ws://127.0.0.1:{port}/")
     monkeypatch.setenv("TAKARO_REGISTRATION_TOKEN", "hosted-registration-token-value")
     monkeypatch.setenv("TAKARO_HOST", rest.url)
@@ -576,7 +591,7 @@ def test_hosted_run_registers_reaches_lists_shuts_down_and_deletes(
     assert row(report, "shutdown")["detail"]["exitCode"] == 0
 
     assert rest.calls[0] == "login"
-    assert "search" in rest.calls
+    assert rest.calls[1] == "search", "the sweep for leftovers comes before anything else"
     assert [call for call in rest.calls if call in ("reachability", "players", "shutdown", "delete")] == [
         "reachability",
         "players",
@@ -584,6 +599,7 @@ def test_hosted_run_registers_reaches_lists_shuts_down_and_deletes(
         "delete",
     ]
     assert all(domain for domain in rest.domains), rest.domains
+    assert any(entry.startswith("GET ") and entry.endswith("/reachability") for entry in rest.methods), rest.methods
     assert rest.servers == {}, "the hosted run must delete every gameserver it registered"
 
 
@@ -605,7 +621,9 @@ def test_hosted_retained_files_carry_no_ids_hosts_or_tokens(
         assert ws_host not in text, f"{name} kept the Takaro host"
         for value in secrets:
             assert value not in text, f"{name} kept {value[:4]}..."
-    assert row(report_of(out), "hosted-registration")["detail"]["gameServerId"] == "<redacted>"
+    registration = row(report_of(out), "hosted-registration")
+    assert registration["detail"]["gameServerId"] == "<redacted>"
+    assert registration["detail"]["identity"].startswith(IDENTITY_PREFIX)
 
 
 def test_a_stale_hosted_registration_is_deleted_before_the_boot(
@@ -615,7 +633,7 @@ def test_a_stale_hosted_registration_is_deleted_before_the_boot(
     out = tmp_path / "reports"
     stale = str(uuid.uuid4())
 
-    with hosted_takaro(monkeypatch, tmp_path / "ws.log", seeded={stale: IDENTITY}) as rest:
+    with hosted_takaro(monkeypatch, tmp_path / "ws.log", seeded={stale: IDENTITY_PREFIX + "p0-old"}) as rest:
         code, payload, _ = verify(run, wired, artifacts, out, "--takaro", "hosted")
 
     assert code == 0, payload
@@ -623,3 +641,25 @@ def test_a_stale_hosted_registration_is_deleted_before_the_boot(
     booted_at = (docker_stub / "takaro-verify-minecraft-fabric-26.2-t1" / "env.json").stat().st_mtime
     assert rest.deleted_at[0] <= booted_at, "the stale gameserver must be gone before the container starts"
     assert stale not in rest.servers
+    registered = row(report_of(out), "hosted-registration")["detail"]["identity"]
+    assert registered.startswith(IDENTITY_PREFIX) and registered != IDENTITY_PREFIX + "p0-old"
+
+
+def test_a_takaro_api_that_refuses_a_call_fails_that_row_and_still_cleans_up(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An API error is a verdict on one check, not a traceback that loses the whole report."""
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+
+    with hosted_takaro(monkeypatch, tmp_path / "ws.log", broken="/reachability") as rest:
+        code, payload, _ = verify(run, wired, artifacts, out, "--takaro", "hosted")
+
+    assert code == 8, payload
+    report = report_of(out)
+    heartbeat = row(report, "heartbeat")
+    assert heartbeat["status"] == "fail"
+    assert any("404" in problem for problem in heartbeat["detail"]["problems"]), heartbeat
+    assert row(report, "hosted-registration")["status"] == "pass"
+    assert report["outcome"] == "fail"
+    assert rest.servers == {}, "a failed hosted run still deletes the gameserver it registered"

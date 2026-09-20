@@ -212,6 +212,8 @@ class TargetRun:
         self.data_dir = Path(tempfile.mkdtemp(prefix="takaro-verify-"))
         # One throwaway token per run, reused by every boot on this data dir.
         self.registration_token = secrets.token_urlsafe(24)
+        # Something short and unique per run, for names that must not repeat across runs.
+        self.nonce = secrets.token_hex(3)
         self.container: Container | None = None
         self.containers: list[Container] = []
         self.extra_logs: list[Path] = []

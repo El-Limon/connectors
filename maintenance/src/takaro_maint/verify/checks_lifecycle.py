@@ -10,6 +10,7 @@ gameserver is called).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.cookiejar
 import json
 import re
@@ -38,6 +39,14 @@ EXIT_BUDGET = 30.0
 CLOSED_LINE = re.compile(r"WebSocket closed \(code=1001")
 IDENTIFIED_LINE = re.compile(r"Identified successfully")
 UUID_ANYWHERE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+
+class HostedApiError(RuntimeError):
+    """A Takaro API call a hosted check depends on did not answer.
+
+    Carries the method, the path and the status only. A response body can quote back what
+    was sent, and nothing from a hosted run is allowed into an evidence file unredacted.
+    """
 
 
 @dataclass(frozen=True)
@@ -327,6 +336,11 @@ def host_of(url: str) -> str:
     return urllib.parse.urlsplit(url).hostname or ""
 
 
+def _ids(payload: Any) -> list[str]:
+    rows = payload.get("data") or [] if isinstance(payload, dict) else []
+    return [str(row["id"]) for row in rows if isinstance(row, dict) and row.get("id")]
+
+
 # --------------------------------------------------------------------------- hosted Takaro
 
 
@@ -355,8 +369,13 @@ class HostedTakaro:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(f"{self.host}{path}", data=data, headers=headers, method=method)
-        with self._opener.open(request, timeout=self._timeout) as response:  # noqa: S310
-            raw = response.read().decode("utf-8") or "{}"
+        try:
+            with self._opener.open(request, timeout=self._timeout) as response:  # noqa: S310
+                raw = response.read().decode("utf-8") or "{}"
+        except urllib.error.HTTPError as exc:
+            raise HostedApiError(f"{method} {path} answered {exc.code}") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise HostedApiError(f"{method} {path} did not answer ({type(exc).__name__})") from None
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
@@ -370,11 +389,22 @@ class HostedTakaro:
 
     def find(self, identity: str) -> list[str]:
         payload = self._call("POST", "/gameserver/search", {"filters": {"identityToken": [identity]}})
+        return _ids(payload)
+
+    def find_prefix(self, prefix: str) -> list[str]:
+        """Every gameserver whose identity starts with ``prefix``.
+
+        The identity filter matches exactly, so the listing is filtered here. This is what
+        finds what a crashed run left behind, whose exact identity nobody knows any more.
+        """
+        payload = self._call("POST", "/gameserver/search", {"limit": 200})
         rows = payload.get("data") or [] if isinstance(payload, dict) else []
-        return [str(row["id"]) for row in rows if isinstance(row, dict) and row.get("id")]
+        return _ids({"data": [row for row in rows if str((row or {}).get("identityToken") or "").startswith(prefix)]})
 
     def reachability(self, server_id: str) -> bool:
-        payload = self._call("POST", f"/gameserver/{server_id}/reachability", {})
+        # `GET /gameserver/{id}/reachability` is the per-server probe; the `POST /gameserver/
+        # reachability` sibling tests connection details that have not been saved yet.
+        payload = self._call("GET", f"/gameserver/{server_id}/reachability")
         data = payload.get("data") or {} if isinstance(payload, dict) else {}
         return bool(data.get("connectable"))
 
@@ -387,7 +417,7 @@ class HostedTakaro:
         self._call("POST", f"/gameserver/{server_id}/shutdown", {})
 
     def delete(self, server_id: str) -> None:
-        try:
+        # Best effort by design: this runs in a `finally`, where a raise would hide the
+        # failure that brought the run here.
+        with contextlib.suppress(HostedApiError):
             self._call("DELETE", f"/gameserver/{server_id}")
-        except urllib.error.URLError:
-            pass

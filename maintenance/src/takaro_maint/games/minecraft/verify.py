@@ -10,12 +10,14 @@ what a hosted gameserver is called, and what a refusal looks like on these loade
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from ... import output, paths
+from ...exit_codes import UpstreamUnavailable
 from ...verify import checks, checks_lifecycle
 from ...verify.report import build_report, write_report
 from .fabric import TARGET_CHECK_PREFIX
@@ -70,9 +72,19 @@ def sibling_target(catalog: Any, target: Any) -> Any | None:
     return sorted(others, key=lambda other: other.id)[0] if others else None
 
 
-def hosted_identity(target: Any) -> str:
-    """The identity token a hosted verification registers its gameserver under."""
-    return f"takaro-maint-{target.game}-{target.id}"
+def hosted_identity_prefix(target: Any) -> str:
+    """Every identity a hosted verification of this target has ever registered under."""
+    return f"takaro-maint-{target.game}-{target.id}-"
+
+
+def hosted_identity(target: Any, run_id: str, nonce: str) -> str:
+    """The identity token this hosted run registers its gameserver under.
+
+    It has to be new every time: Takaro answers a registration under an identity whose
+    gameserver was deleted with 409, so a fixed identity works exactly once. The run id
+    keeps it traceable and the nonce keeps two runs with the same id apart.
+    """
+    return f"{hosted_identity_prefix(target)}{run_id}-{nonce}"
 
 
 # --------------------------------------------------------------------------- local hooks
@@ -122,7 +134,8 @@ async def run_hosted(
     The catalogue, console and lifecycle checks stay the local fake's job, so a hosted report
     reaches ``startup`` by design. Every id and host is redacted before anything is retained.
     """
-    identity = hosted_identity(run.target)
+    identity = hosted_identity(run.target, run.options.run_id, run.nonce)
+    prefix = hosted_identity_prefix(run.target)
     ws_url = os.environ["TAKARO_WS_URL"]
     registration_token = os.environ["TAKARO_REGISTRATION_TOKEN"]
     api_host = os.environ["TAKARO_HOST"]
@@ -133,9 +146,15 @@ async def run_hosted(
     runtime: dict[str, Any] = {}
     server_ids: list[str] = []
     try:
-        await asyncio.to_thread(takaro.login)
-        for stale in await asyncio.to_thread(takaro.find, identity):
-            output.info("deleting a gameserver left under this identity by an earlier run")
+        # Nothing can be asserted if Takaro will not talk to us, so this is the run failing
+        # to start rather than a check with a verdict.
+        try:
+            await asyncio.to_thread(takaro.login)
+            stale_servers = await asyncio.to_thread(takaro.find_prefix, prefix)
+        except checks_lifecycle.HostedApiError as exc:
+            raise UpstreamUnavailable(f"the hosted Takaro did not accept this run: {exc}") from None
+        for stale in stale_servers:
+            output.info("deleting a gameserver an earlier verification of this target left behind")
             await asyncio.to_thread(takaro.delete, stale)
 
         if run.wanted("build"):
@@ -191,7 +210,9 @@ async def run_hosted(
         run.record(await _hosted_shutdown(takaro, container, server_ids))
         run.skip("restart", "hosted mode boots once")
     finally:
-        for server_id in set(server_ids) | set(await asyncio.to_thread(takaro.find, identity)):
+        with contextlib.suppress(checks_lifecycle.HostedApiError):
+            server_ids.extend(await asyncio.to_thread(takaro.find, identity))
+        for server_id in set(server_ids):
             await asyncio.to_thread(takaro.delete, server_id)
         run.cleanup()
 
@@ -245,14 +266,18 @@ async def _hosted_registration(takaro: Any, identity: str, server_ids: list[str]
         loop = asyncio.get_running_loop()
         deadline = loop.time() + checks_lifecycle.REGISTRATION_BUDGET
         found: list[str] = []
+        problems: list[str] = []
         while loop.time() < deadline:
-            found = await asyncio.to_thread(takaro.find, identity)
+            try:
+                found = await asyncio.to_thread(takaro.find, identity)
+            except checks_lifecycle.HostedApiError as exc:
+                problems.append(str(exc))
+                break
             if len(found) == 1:
                 break
             await asyncio.sleep(3)
         server_ids.extend(found)
-        problems: list[str] = []
-        if len(found) != 1:
+        if not problems and len(found) != 1:
             problems.append(
                 f"{len(found)} gameserver(s) carry this identity after "
                 f"{checks_lifecycle.REGISTRATION_BUDGET:.0f} s, expected exactly 1"
@@ -277,12 +302,16 @@ async def _hosted_heartbeat(takaro: Any, server_ids: list[str]) -> checks.CheckR
         if not server_ids:
             problems.append("no gameserver was registered, so reachability could not be asked for")
         for attempt in range(3):
-            connectable = await asyncio.to_thread(takaro.reachability, server_ids[0]) if server_ids else False
+            try:
+                connectable = await asyncio.to_thread(takaro.reachability, server_ids[0]) if server_ids else False
+            except checks_lifecycle.HostedApiError as exc:
+                problems.append(str(exc))
+                break
             if connectable:
                 break
             if attempt < 2:
                 await asyncio.sleep(10)
-        if server_ids and not connectable:
+        if server_ids and not connectable and not problems:
             problems.append("Takaro could not reach the connector in three attempts")
     return checks.CheckResult(
         "heartbeat",
@@ -303,7 +332,10 @@ async def _hosted_players(takaro: Any, server_ids: list[str]) -> checks.CheckRes
         if not server_ids:
             problems.append("no gameserver was registered, so its players could not be listed")
         else:
-            players = await asyncio.to_thread(takaro.players, server_ids[0])
+            try:
+                players = await asyncio.to_thread(takaro.players, server_ids[0])
+            except checks_lifecycle.HostedApiError as exc:
+                problems.append(str(exc))
             if players:
                 problems.append(f"an empty server reported {len(players)} players")
     return checks.CheckResult(
@@ -318,7 +350,10 @@ async def _hosted_shutdown(takaro: Any, container: Any, server_ids: list[str]) -
     with checks._Timer() as timer:
         problems: list[str] = []
         if server_ids:
-            await asyncio.to_thread(takaro.shutdown, server_ids[0])
+            try:
+                await asyncio.to_thread(takaro.shutdown, server_ids[0])
+            except checks_lifecycle.HostedApiError as exc:
+                problems.append(str(exc))
         else:
             problems.append("no gameserver was registered, so Takaro could not be asked to shut it down")
         code = await asyncio.to_thread(container.wait_for_exit, checks_lifecycle.SHUTDOWN_BUDGET)
