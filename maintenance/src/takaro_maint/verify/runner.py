@@ -95,6 +95,7 @@ class Container:
     log_file: Path
     docker_log: Path
     secrets: list[str] = field(default_factory=list)
+    removed: bool = field(default=False, init=False)
     _follower: subprocess.Popen[bytes] | None = field(default=None, init=False)
 
     def start(self) -> None:
@@ -123,6 +124,11 @@ class Container:
         return result.stdout.strip()
 
     def alive(self) -> bool:
+        # A removed container is dead by definition, and asking docker about it would
+        # keep every check that polls `alive` waiting out its whole budget after an
+        # interrupt has already torn the run down.
+        if self.removed:
+            return False
         result = subprocess.run(
             [*docker_command(), "inspect", "-f", "{{.State.Running}}", self.name],
             capture_output=True,
@@ -133,7 +139,7 @@ class Container:
 
     def wait_for_exit(self, timeout: float) -> int:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while not self.removed and time.monotonic() < deadline:
             result = subprocess.run(
                 [*docker_command(), "inspect", "-f", "{{.State.Running}}|{{.State.ExitCode}}", self.name],
                 capture_output=True,
@@ -150,6 +156,7 @@ class Container:
         return -1
 
     def remove(self) -> None:
+        self.removed = True
         if self._follower is not None:
             self._follower.terminate()
             try:
