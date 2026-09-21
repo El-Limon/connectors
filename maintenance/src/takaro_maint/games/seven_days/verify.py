@@ -31,7 +31,7 @@ READY_LINE = re.compile(r"INF StartGame done")
 HANDSHAKE_LINE = re.compile(r"\[Takaro\] \*INFO\* WebSocket connection confirmed")
 LOADED_LINE = re.compile(r"\[MODS\]\s+Loaded Mod: Takaro \((?P<version>[^)]+)\)")
 QUIT_LINE = re.compile(r"INF Preparing quit|\[NET\] ServerShutdown")
-BANNER_MARKER = "INF Version:"
+BANNER_MARKERS = ("Last played version:", "GamePref.GameVersion")
 
 # The mod waits ReconnectIntervalSeconds (30) before its first attempt and backs off from
 # there, so the 20 s the lifecycle checks allow a Minecraft connector is far too short.
@@ -82,7 +82,7 @@ def scan_runtime_identity(adapter: Any, log_file: Path) -> dict[str, Any]:
         return {}
     with log_file.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
-            if BANNER_MARKER not in line:
+            if not any(marker in line for marker in BANNER_MARKERS):
                 continue
             parsed = adapter.parse_runtime_identity(line)
             if parsed and parsed.get("gameVersion"):

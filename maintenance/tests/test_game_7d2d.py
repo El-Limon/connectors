@@ -348,15 +348,20 @@ def test_verify_hooks_render_config_and_use_the_7d2d_ready_line(tmp_path: Path) 
 
 def test_the_runtime_identity_comes_from_the_server_banner() -> None:
     adapter = adapter_for(GAME)
-    banner = (
-        "2026-09-21T09:58:00 0.9 INF Version: V 3.2.0 (b10) Compatibility Version: V 3.2, Build: LinuxPlayer 64 Bit"
-    )
+    mono = {"loader": "mono", "loaderVersion": None}
 
-    assert adapter.parse_runtime_identity(banner) == {
-        "gameVersion": "3.2.0.b10",
-        "loader": "mono",
-        "loaderVersion": None,
+    # The two lines this server writes about itself, as captured from a real boot.
+    assert adapter.parse_runtime_identity("2026-09-21T11:03:39 1.413 INF Last played version: V 3.2.0") == {
+        "gameVersion": "3.2.0",
+        **mono,
     }
+    assert adapter.parse_runtime_identity("GamePref.GameVersion = V 3.2.0") == {"gameVersion": "3.2.0", **mono}
+    assert adapter.parse_runtime_identity("INF Last played version: V 3.2.0 (b10)") == {
+        "gameVersion": "3.2.0.b10",
+        **mono,
+    }
+    # A line about another version entirely: the world's, not the server's.
+    assert adapter.parse_runtime_identity("INF Loaded world file from different version: 'V 4.0 (b8)'") is None
     assert adapter.parse_runtime_identity("nothing to see here") is None
 
 

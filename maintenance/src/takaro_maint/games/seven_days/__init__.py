@@ -27,8 +27,17 @@ DIST_ROOT = "games/7d2d/_data/dist"
 BUILD_SCRIPT = "games/7d2d/scripts/build-release.sh"
 ASSEMBLY_CSHARP = "7DaysToDieServer_Data/Managed/Assembly-CSharp.dll"
 
-# "2026-09-15T12:00:00 0.123 INF Version: V 3.2.0 (b10) Compatibility Version: V 3.2, Build: LinuxPlayer 64 Bit"
-_VERSION_BANNER = re.compile(r"INF Version:\s*V\s*(?P<version>[0-9][0-9.]*)\s*\((?P<build>b[0-9]+)\)")
+# What this server actually writes about itself, in the order it writes it:
+#   "INF Last played version: V 3.2.0"
+#   "GamePref.GameVersion = V 3.2.0"
+# Both are anchored on their own prefix so that a line about some *other* version -- the
+# world file's, say ("Loaded world file from different version: 'V 4.0 (b8)'") -- is not
+# mistaken for the server's. The build number is not in either line; the exact build is
+# proven by the installed bytes, not by a log line.
+_VERSION_BANNERS = (
+    re.compile(r"INF Last played version:\s*V\s*(?P<version>[0-9][0-9.]*)(?:\s*\((?P<build>b[0-9]+)\))?"),
+    re.compile(r"GamePref\.GameVersion\s*=\s*V\s*(?P<version>[0-9][0-9.]*)(?:\s*\((?P<build>b[0-9]+)\))?"),
+)
 
 # The mod folder the server loads, and the only path an artifact zip may write to.
 MOD_FOLDER = "Takaro"
@@ -79,15 +88,19 @@ class SevenDaysAdapter:
         return list(resolved.get("preserve", []))
 
     def parse_runtime_identity(self, log_line: str) -> dict[str, Any] | None:
-        """The server's own version banner, the one line that names the build that booted."""
-        match = _VERSION_BANNER.search(log_line)
-        if not match:
-            return None
-        return {
-            "gameVersion": f"{match.group('version')}.{match.group('build')}",
-            "loader": "mono",
-            "loaderVersion": None,
-        }
+        """The server's own version line, when it writes one."""
+        for banner in _VERSION_BANNERS:
+            match = banner.search(log_line)
+            if not match:
+                continue
+            build = match.group("build")
+            version = match.group("version")
+            return {
+                "gameVersion": f"{version}.{build}" if build else version,
+                "loader": "mono",
+                "loaderVersion": None,
+            }
+        return None
 
     # -- build ----------------------------------------------------------------
     def artifact_paths(self, resolved: dict[str, Any], version: str, repo_root: Path) -> dict[str, Path]:
