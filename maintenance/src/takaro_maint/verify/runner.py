@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import importlib
 import os
 import secrets
 import shlex
@@ -20,11 +21,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
-from .. import output, paths
+from .. import output, paths, redact
 from ..catalog.loader import Catalog, Target, resolve
-from ..exit_codes import UpstreamUnavailable
+from ..exit_codes import UpstreamUnavailable, UsageError
 from ..games import adapter_for
 from ..install.ledger import read_ledger
 from ..publish import read_manifest
@@ -44,6 +46,23 @@ CHECK_IDS = (
     "console",
     "shutdown",
 )
+
+
+def game_hooks(game: str) -> ModuleType | None:
+    """``takaro_maint.games.<game>.verify``, when the game ships verification hooks.
+
+    A game without one verifies with the base checks alone; nothing here is a hard dependency.
+    """
+    try:
+        return importlib.import_module(f"takaro_maint.games.{game}.verify")
+    except ModuleNotFoundError:
+        return None
+
+
+def check_ids(game: str | None = None) -> tuple[str, ...]:
+    """The base check ids, plus the ones the game's own hooks add."""
+    hooks = game_hooks(game) if game else None
+    return (*CHECK_IDS, *getattr(hooks, "CHECK_IDS", ()))
 
 
 def docker_command() -> list[str]:
@@ -75,12 +94,14 @@ class Container:
     argv: list[str]
     log_file: Path
     docker_log: Path
+    secrets: list[str] = field(default_factory=list)
     _follower: subprocess.Popen[bytes] | None = field(default=None, init=False)
 
     def start(self) -> None:
         self.docker_log.parent.mkdir(parents=True, exist_ok=True)
         with self.docker_log.open("a", encoding="utf-8") as handle:
-            handle.write(" ".join(shlex.quote(part) for part in self.argv) + "\n")
+            # The registration token is on this command line; the kept log may not carry it.
+            handle.write(redact.redact(" ".join(shlex.quote(part) for part in self.argv), self.secrets) + "\n")
         result = subprocess.run(self.argv, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise UpstreamUnavailable(f"docker run failed: {result.stderr.strip()}")
@@ -163,6 +184,7 @@ class RunOptions:
     only: list[str] | None = None
     keep_on_failure: bool = False
     negative: bool = False
+    takaro: str = "local"
 
 
 class TargetRun:
@@ -174,13 +196,18 @@ class TargetRun:
         self.options = options
         self.resolved = resolve(catalog, target)
         self.adapter = adapter_for(target.game)
+        self.hooks = game_hooks(target.game)
         self.out = options.out / target.id
         self.out.mkdir(parents=True, exist_ok=True)
         self.server_log = self.out / "server.log"
         self.docker_log = self.out / "docker.log"
         self.fake_log = self.out / "fake-takaro.log"
         self.data_dir = Path(tempfile.mkdtemp(prefix="takaro-verify-"))
+        # One throwaway token per run, reused by every boot on this data dir.
+        self.registration_token = secrets.token_urlsafe(24)
         self.container: Container | None = None
+        self.containers: list[Container] = []
+        self.extra_logs: list[Path] = []
         self.results: list[base_checks.CheckResult] = []
 
     # -- setup ----------------------------------------------------------------
@@ -216,12 +243,12 @@ class TargetRun:
         )
         return read_manifest(manifest_path)
 
-    def container_argv(self, ws_url: str) -> list[str]:
-        registration_token = secrets.token_urlsafe(24)
+    def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
         takaro_env = {
             "TAKARO_WS_URL": ws_url,
             "TAKARO_IDENTITY_TOKEN": f"takaro-verify-{self.options.run_id}",
-            "TAKARO_REGISTRATION_TOKEN": registration_token,
+            "TAKARO_REGISTRATION_TOKEN": self.registration_token,
+            **(extra_env or {}),
         }
         environment = {
             "UID": str(os.getuid()),
@@ -234,7 +261,7 @@ class TargetRun:
             **self.adapter.runtime_env(self.resolved, takaro_env),
         }
         ttl = int(time.time()) + 3 * 3600
-        name = f"takaro-verify-{self.target.game}-{self.target.id}-{self.options.run_id}"
+        name = f"takaro-verify-{self.target.game}-{self.target.id}-{self.options.run_id}{suffix}"
         argv = [
             *docker_command(),
             "run",
@@ -255,6 +282,34 @@ class TargetRun:
         self.container_name = name
         return argv
 
+    def boot(
+        self,
+        ws_url: str,
+        *,
+        suffix: str = "",
+        log_name: str = "server.log",
+        extra_env: dict[str, str] | None = None,
+    ) -> Container:
+        """Start one more container on this run's data dir.
+
+        The caller drives its lifecycle; ``cleanup()`` removes it either way.
+        """
+        argv = self.container_argv(ws_url, suffix=suffix, extra_env=extra_env)
+        container = Container(
+            name=self.container_name,
+            argv=argv,
+            log_file=self.out / log_name,
+            docker_log=self.docker_log,
+            secrets=[self.registration_token, *(extra_env or {}).values()],
+        )
+        container.start()
+        bindings = container.inspect_port_bindings()
+        with self.docker_log.open("a", encoding="utf-8") as handle:
+            handle.write(f"HostConfig.PortBindings={bindings}\n")
+        self.containers.append(container)
+        self.container = container
+        return container
+
     # -- checks ---------------------------------------------------------------
     def wanted(self, check_id: str) -> bool:
         return self.options.only is None or check_id in self.options.only
@@ -273,6 +328,12 @@ class TargetRun:
         assert ledger is not None
         ledger_inputs = ledger.data["inputs"]
 
+        if self.options.takaro == "hosted":
+            if self.hooks is None or not hasattr(self.hooks, "run_hosted"):
+                raise UsageError(f"game '{self.target.game}' ships no hosted verification")
+            hosted: dict[str, Any] = await self.hooks.run_hosted(self, manifest, ledger_inputs, started_at)
+            return hosted
+
         if self.wanted("build"):
             self.record(base_checks.check_build(self.options.artifacts, manifest, self.target))
         else:
@@ -285,19 +346,8 @@ class TargetRun:
 
         runtime: dict[str, Any] = {}
         try:
-            self.container = Container(
-                name="",
-                argv=self.container_argv(ws_url),
-                log_file=self.server_log,
-                docker_log=self.docker_log,
-            )
-            self.container.name = self.container_name
-            self.container.start()
-            bindings = self.container.inspect_port_bindings()
-            with self.docker_log.open("a", encoding="utf-8") as handle:
-                handle.write(f"HostConfig.PortBindings={bindings}\n")
-
-            alive = self.container.alive
+            container = self.boot(ws_url)
+            alive = container.alive
             if self.wanted("startup"):
                 # Every check that polls a file or the docker CLI runs off the event loop,
                 # so the fake Takaro keeps answering the connector while it does.
@@ -361,20 +411,25 @@ class TargetRun:
                 else:
                     self.skip(check_id, "not selected by --checks")
 
+            if self.hooks is not None and hasattr(self.hooks, "after_protocol"):
+                await self.hooks.after_protocol(self, fake, alive)
+
             if self.wanted("shutdown"):
-                self.record(await base_checks.check_shutdown(fake, self.container.wait_for_exit))
+                self.record(await base_checks.check_shutdown(fake, container.wait_for_exit))
             else:
                 self.skip("shutdown", "not selected by --checks")
+
+            if self.hooks is not None and hasattr(self.hooks, "after_shutdown"):
+                await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)
+
+            if self.options.negative:
+                if self.hooks is not None and hasattr(self.hooks, "negative"):
+                    await self.hooks.negative(self, fake, ws_url, manifest)
+                else:
+                    self.skip("negative-wrong-target", f"game '{self.target.game}' ships no negative check")
         finally:
             await fake.stop()
             self.cleanup()
-
-        if self.options.negative:
-            self.record(
-                base_checks.CheckResult(
-                    "negative", "skip", 0, {"reason": "restart and reconnect checks ship with #152"}
-                )
-            )
 
         report = build_report(
             target=self.target,
@@ -384,13 +439,17 @@ class TargetRun:
             runtime=runtime,
             checks=[result.as_dict() for result in self.results],
             started_at=started_at,
-            logs=[self.server_log, self.fake_log, self.docker_log],
+            logs=[self.server_log, self.fake_log, self.docker_log, *self.extra_logs],
             repo_root=paths.repo_root(),
+            takaro=self.options.takaro,
         )
         write_report(self.out, report)
         return report
 
     def _scan_runtime_identity(self) -> dict[str, Any]:
+        scan = getattr(self.hooks, "scan_runtime_identity", None)
+        if scan is not None:
+            return dict(scan(self.adapter, self.server_log) or {})
         found = base_checks.find_line(self.server_log, "with Fabric Loader")
         if not found:
             return {}
@@ -398,8 +457,8 @@ class TargetRun:
 
     def cleanup(self) -> None:
         failed = any(result.status == "fail" for result in self.results)
-        if self.container is not None:
-            self.container.remove()
+        for container in self.containers:
+            container.remove()
         if failed and self.options.keep_on_failure:
             output.warn(f"keeping the verification data dir at {self.data_dir}")
             return

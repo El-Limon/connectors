@@ -32,8 +32,8 @@ class FakeTakaro:
     _server: Server | None = field(default=None, init=False)
     _connection: ServerConnection | None = field(default=None, init=False)
     _pending: dict[str, asyncio.Future[Any]] = field(default_factory=dict, init=False)
-    _connected: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     identified: dict[str, Any] | None = field(default=None, init=False)
+    identify_count: int = field(default=0, init=False)
     events: list[dict[str, Any]] = field(default_factory=list, init=False)
 
     async def start(self) -> int:
@@ -89,6 +89,7 @@ class FakeTakaro:
         kind = frame.get("type")
         if kind == "identify":
             self.identified = frame.get("payload", {})
+            self.identify_count += 1
             await self._send(
                 connection,
                 {
@@ -96,7 +97,6 @@ class FakeTakaro:
                     "payload": {"gameServerId": self.game_server_id, "status": "authenticated"},
                 },
             )
-            self._connected.set()
             return
         if kind in ("response", "error"):
             future = self._pending.pop(str(frame.get("requestId")), None)
@@ -109,10 +109,26 @@ class FakeTakaro:
         if kind == "gameEvent":
             self.events.append(frame.get("payload", {}))
 
-    async def wait_for_identify(self, timeout: float) -> dict[str, Any]:
-        await asyncio.wait_for(self._connected.wait(), timeout)
+    async def wait_for_identify(self, timeout: float, *, minimum: int = 1) -> dict[str, Any]:
+        """Resolve once at least ``minimum`` identify frames have arrived (the first by default).
+
+        Counting rather than waiting on a one-shot event is what lets a caller wait for the
+        identify that follows a reconnect or a second boot.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self.identify_count < minimum:
+            if loop.time() >= deadline:
+                raise TimeoutError(f"only {self.identify_count} identify frame(s) arrived, expected {minimum}")
+            await asyncio.sleep(0.1)
         assert self.identified is not None
         return self.identified
+
+    async def disconnect(self, code: int = 1001, reason: str = "going away") -> None:
+        """Close the connector's socket from the Takaro side; the connector is expected to come back."""
+        connection = self._connection
+        if connection is not None:
+            await connection.close(code=code, reason=reason)
 
     async def request(self, action: str, args: dict[str, Any] | None = None, *, timeout: float = 30.0) -> Any:
         """Send one ``request`` frame and resolve on its matching ``response``."""
