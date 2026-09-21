@@ -9,7 +9,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 
 def _blob(path: str, content: str) -> dict[str, Any]:
@@ -161,7 +161,10 @@ class FakeGitHub:
                 start = (page - 1) * per_page
                 headers = {}
                 if start + per_page < len(items):
-                    headers["Link"] = f'<{fake.api_url}{path}?page={page + 1}>; rel="next"'
+                    # The real API carries every filter through into the next-page link, and a
+                    # link that dropped `state=all` would quietly narrow page two.
+                    following = urlencode({**{k: v[0] for k, v in query.items()}, "page": page + 1})
+                    headers["Link"] = f'<{fake.api_url}{path}?{following}>; rel="next"'
                 self._reply(200, items[start : start + per_page], headers)
 
             def _contents(self, name: str, ref: str) -> None:
