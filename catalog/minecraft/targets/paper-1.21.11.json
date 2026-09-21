@@ -8,8 +8,8 @@
   "support": {
     "status": "maintained",
     "since": "2026-09-17",
-    "evidence": ["takaro-maint verify 2026-09-21: protocol level against the local fake Takaro (connector load, identify, heartbeat, reconnect, players, catalogues, console, shutdown, restart) and one hosted identify, reachability, player listing and shutdown against Takaro (gettakaro/connectors#152)"],
-    "notes": "Pinned by gettakaro/connectors#151. Runtime verification passes at protocol level against the local fake Takaro and the target registers against a hosted Takaro. Gameplay evidence with a real client is still pending (gettakaro/connectors#174)."
+    "evidence": ["takaro-maint verify 2026-09-21: protocol level against the local fake Takaro (connector load, identify, heartbeat, reconnect, players, catalogues, console, shutdown, restart) and one hosted identify, reachability, player listing and shutdown against Takaro (gettakaro/connectors#152)", "takaro-maint gameplay 2026-09-21: recorded real-client gameplay through Takaro on this target - join, chat, inventory read, item grant, teleport and leave (gettakaro/connectors#152, gettakaro/connectors#174)"],
+    "notes": "Pinned by gettakaro/connectors#151. Runtime verification passes at protocol level against the local fake Takaro and the target registers against a hosted Takaro. Real-client gameplay (join, chat, inventory read, item grant, teleport, leave) is recorded for this target."
   },
   "inputs": {
     "loader": {
