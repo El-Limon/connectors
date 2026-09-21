@@ -17,11 +17,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .. import net, output, paths
-from ..exit_codes import OK, ConflictError, IntegrityError, UsageError
+from .. import channels, net, output, paths
+from ..exit_codes import OK, ConflictError, IntegrityError, UpstreamUnavailable, UsageError
 from ..steam import depotdownloader as dd
+from ..steam import steamcmd
 from ..steam.install import SteamInput
-from . import add_selection_arguments, select_one
+from . import add_selection_arguments, load_catalog, select_one
 
 REFERENCES_MARKER = Path(".takaro") / "references.json"
 
@@ -57,8 +58,20 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         default=None,
         help="download and hash this declared file so --write can record it; repeatable",
     )
+    pin.add_argument(
+        "--metadata",
+        action="store_true",
+        help="read the build id from Steam's app metadata and cross-check it against the depots",
+    )
     pin.add_argument("--write", action="store_true", help="write the result back into the target record")
     pin.set_defaults(handler=_pin, op="steam pin")
+
+    branches = inner.add_parser("branches", help="list the branches Steam publishes for a game's app")
+    branches.add_argument("--game", required=True, help="catalog game id, e.g. 7d2d")
+    branches.add_argument("--app", type=int, default=None, help="Steam app id (default: the watch block's)")
+    branches.add_argument("--os", default=None, help="linux | windows | macos (default: the watch block's)")
+    branches.add_argument("--depot", action="append", default=None, help="depot id; repeatable")
+    branches.set_defaults(handler=_branches, op="steam branches")
 
     references = inner.add_parser("references", help="fetch the build's reference assemblies from the pinned manifests")
     add_selection_arguments(references)
@@ -73,6 +86,140 @@ def _log_path(cache: Path, game: str, target_id: str) -> Path:
     return cache / "steam" / "logs" / f"{game}-{target_id}.log"
 
 
+def _app_info_log(cache: Path, app: int) -> Path:
+    """steamcmd's own log, beside DepotDownloader's."""
+    return steamcmd.log_path(cache, app)
+
+
+def _steam_watch(game_id: str) -> dict[str, Any]:
+    """The watch block of a game's Steam source, or an empty one when it has none yet."""
+    game = load_catalog().game(game_id)
+    for _, record in sorted((game.record.get("sources") or {}).items()):
+        if record.get("provider") == "steam":
+            return dict(record.get("watch") or {})
+    raise UsageError(f"game '{game_id}' declares no source with provider 'steam'")
+
+
+def _known(watch: dict[str, Any]) -> list[str]:
+    return [str(entry) for entry in watch.get("knownBranches") or []]
+
+
+def _classify(label: str, watch: dict[str, Any]) -> str:
+    """What this run already knows about an upstream branch label.
+
+    ``watched`` and ``declared`` come from the catalog's own channels — the difference is
+    ``enabled`` — ``known`` is a label a ``knownBranches`` selector covers, and anything
+    left is ``unfamiliar``: a branch nobody has decided about yet.
+    """
+    if label in {channels.channel_label(channel, key) for key, channel in channels.enabled_channels(watch).items()}:
+        return "watched"
+    if label in channels.declared_labels(watch):
+        return "declared"
+    return "known" if selects(label, _known(watch)) else "unfamiliar"
+
+
+def _branches(args: Any) -> int:
+    watch = _steam_watch(args.game)
+    app = args.app if args.app is not None else watch.get("app")
+    if app is None:
+        raise UsageError(f"game '{args.game}' declares no app in its Steam watch block; pass --app <id>")
+    app = int(app)
+    wanted = [str(depot) for depot in (args.depot or watch.get("depots") or [])]
+
+    info = steamcmd.app_info(app, log=_app_info_log(paths.cache_dir(), app))
+    depots = [depot for depot in info.depots.values() if not wanted or depot.id in wanted]
+    declared = channels.declared_labels(watch)
+
+    rows: list[dict[str, Any]] = []
+    for label in sorted(info.branches):
+        branch = info.branches[label]
+        manifests = {
+            depot.id: {
+                "gid": depot.manifests[label].gid,
+                "size": depot.manifests[label].size,
+                "download": depot.manifests[label].download,
+            }
+            for depot in depots
+            if label in depot.manifests
+        }
+        rows.append(
+            {
+                "label": label,
+                "branch": declared.get(label),
+                "buildid": branch.buildid,
+                "timeupdated": steamcmd.iso(branch.timeupdated) if branch.timeupdated is not None else None,
+                "timebuildupdated": (
+                    steamcmd.iso(branch.timebuildupdated) if branch.timebuildupdated is not None else None
+                ),
+                "description": branch.description,
+                "pwdrequired": branch.pwdrequired,
+                "classification": _classify(label, watch),
+                "manifests": manifests or None,
+                "encrypted": sorted(depot.id for depot in depots if label in depot.encrypted),
+            }
+        )
+
+    output.emit(
+        "steam branches",
+        True,
+        app=app,
+        name=info.name,
+        os=args.os or watch.get("os"),
+        changeNumber=info.change_number,
+        lastChange=info.last_change,
+        privateBranches=info.private_branches,
+        branches=rows,
+        depots=[{"id": depot.id, "oslist": depot.oslist} for depot in sorted(depots, key=lambda d: d.id)],
+    )
+    return OK
+
+
+def _metadata(spec: SteamInput, branch: str, observed: dict[str, dict[str, Any]], cache: Path) -> dict[str, Any]:
+    """Steam's own view of the branch, cross-checked against the depots just read.
+
+    The build id is not in a depot manifest — DepotDownloader never sees one — so it has to
+    come from the app metadata, and the two have to be read a moment apart. If the depot
+    head and the metadata head disagree, a publish is in flight between the two reads, and
+    recording that pair would pin a build id to manifests that never shipped under it.
+    That is a retry, not a record.
+    """
+    info = steamcmd.app_info(spec.app, log=_app_info_log(cache, spec.app))
+    published = info.branches.get(branch)
+    if published is None:
+        listed = ", ".join(sorted(info.branches)) or "<none>"
+        raise UpstreamUnavailable(
+            f"app {spec.app} does not list a branch '{branch}'"
+            + ("; privatebranches=1: it may be password-protected" if info.private_branches else "")
+            + f". Listed: {listed}"
+        )
+    disagree = []
+    compared = []
+    for depot, entry in sorted(observed.items()):
+        found = info.depots.get(depot)
+        manifest = found.manifests.get(branch) if found is not None else None
+        if manifest is None:
+            # A protected branch publishes its manifest ids encrypted, so the metadata has
+            # nothing to compare against. That is not a disagreement -- but it is also not
+            # the cross-check this function is named for, so the caller is told which
+            # depots it actually got rather than being left to assume all of them.
+            continue
+        compared.append(depot)
+        if manifest.gid != str(entry["manifest"]):
+            disagree.append(f"depot {depot}: metadata {manifest.gid}, depot {entry['manifest']}")
+    if disagree:
+        raise UpstreamUnavailable(
+            f"Steam metadata and the depot disagree on the head of '{branch}' ({'; '.join(disagree)}); "
+            "a publish is in flight, retry"
+        )
+    return {
+        "buildid": published.buildid,
+        "timeupdated": steamcmd.iso(published.timeupdated) if published.timeupdated is not None else None,
+        "description": published.description,
+        "changeNumber": info.change_number,
+        "crossChecked": compared,
+    }
+
+
 def _pin(args: Any) -> int:
     _, target = select_one(args)
     spec = SteamInput.of(target.record)
@@ -80,6 +227,9 @@ def _pin(args: Any) -> int:
     log = _log_path(cache, target.game, target.id)
     branch = args.branch or spec.branch
     depots = [str(depot) for depot in (args.depot or sorted(spec.depots))]
+    metadata = getattr(args, "metadata", False)
+    if metadata and args.buildid is not None:
+        raise UsageError("--metadata reads the build id from Steam; pass one or the other, not both")
 
     observed: dict[str, dict[str, Any]] = {}
     changed: list[str] = []
@@ -109,7 +259,9 @@ def _pin(args: Any) -> int:
 
         recorded = _record_files(args, spec, observed, branch, cache, log) if args.record_files else {}
 
-    snippet = _snippet(spec, observed, args.buildid, recorded)
+    published = _metadata(spec, branch, observed, cache) if metadata else None
+    buildid = int(published["buildid"]) if published is not None else args.buildid
+    snippet = _snippet(spec, observed, buildid, recorded)
     stale = _stale_files(spec, observed, recorded)
     written = None
     if args.write:
@@ -133,7 +285,8 @@ def _pin(args: Any) -> int:
         target=target.id,
         app=spec.app,
         branch=branch,
-        buildid=args.buildid,
+        buildid=buildid,
+        metadata=published,
         depots=observed,
         files=recorded,
         changed=sorted(changed),

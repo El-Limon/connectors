@@ -32,7 +32,8 @@ frozen, managed Python 3.12 environment. Docker is needed for `verify` and for
 | `targets list [--game G] [--platform P] [--status …] [--rig-game ID] [--format json\|table\|gha]` | List targets. `gha` prints a build matrix. |
 | `targets resolve --game G [--target ID] [--format json\|env\|gha] [--prefix P] [--out FILE]` | The full resolution: fingerprint, image refs, artifact names, URLs and deployment environment. |
 | `install --game G [--target ID] --dest DIR` | Download and verify every pinned input, stage it, swap it into place, write the ledger. |
-| `steam pin --game G [--target ID] [--record-files PATH…] [--write]` | Read what Steam serves on the branch now, report which depots moved, and re-pin the target. |
+| `steam pin --game G [--target ID] [--metadata] [--record-files PATH…] [--write]` | Read what Steam serves on the branch now, report which depots moved, and re-pin the target. `--metadata` takes the build id from Steam's app metadata and cross-checks it against the depots. |
+| `steam branches --game G [--app N] [--depot D…]` | List every branch the app publishes — build id, publish time, depot manifests — and say which ones the catalog watches, declares, knows or has never decided about. |
 | `steam references --game G [--target ID] --dest DIR` | Fetch only the assemblies the build compiles against from the pinned manifests, into a per-fingerprint directory. |
 | `ledger check --game G [--target ID] --dest DIR` | Does this directory really hold that target, with the recorded bytes intact? |
 | `build --game G [--target ID \| --all-targets] --version V --out DIR [--toolchain host\|container]` | Build the artifacts, validate their identity, write `build-manifest.json`, `SHA256SUMS` and per-file `.meta.json`. |
@@ -80,6 +81,8 @@ line behaves the same from anywhere.
 | `TAKARO_MAINT_GRADLE` | Override the build command (tests use a stub). |
 | `TAKARO_MAINT_DOCKER` | Override the docker binary (tests use a stub). |
 | `TAKARO_MAINT_DEPOTDOWNLOADER` | Override the pinned DepotDownloader executable (tests use a stub). |
+| `TAKARO_MAINT_STEAMCMD` | Override the steamcmd command line — a command line, so it can be a `docker run …` (tests use a stub). |
+| `TAKARO_MAINT_STEAM_BRANCH_PASSWORD__<app>__<LABEL>` | The password of one protected Steam branch, read only from the environment and never written anywhere. |
 | `TAKARO_MAINT_REPO` | Repository for GitHub operations. Also `--repo`. |
 | `TAKARO_MAINT_GITHUB_API_URL` | GitHub API base. Also `--api-url`. |
 | `GH_TOKEN` | GitHub token; otherwise `gh auth token` is tried. |
@@ -106,4 +109,6 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [Discovery](docs/discovery.md) — how `scan` turns upstream releases into deduplicated maintenance issues.
 - [Runtime verification](docs/verify.md) — what `verify` boots, checks and reports, locally and in CI.
 - [Steam exact install](docs/steam-install.md) — pinned DepotDownloader, depot manifests, staged swap and rollback for Steam-delivered servers.
+- [Steam discovery](docs/steam-discovery.md) — reading Steam branch heads and depot manifests through `app_info_print`.
+- [Adding a game](docs/adding-a-game.md) — the provider contract: what a new connector adds to the catalog and what it never touches.
 - [Releases](docs/release.md) — the release channels, the asset names, the compatibility record and how a release is recovered.

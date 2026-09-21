@@ -1,0 +1,150 @@
+[
+  {
+    "tag_name": "rustbeta_staging_build",
+    "name": "Rust (Staging) Build \u2014 v2.3.1459",
+    "prerelease": true,
+    "draft": false,
+    "published_at": "2026-09-20T22:51:48Z",
+    "assets": [
+      {
+        "name": "Carbon.Linux.Debug.info",
+        "size": 565,
+        "digest": "sha256:7f4b24551d8af937e8db55aeb72aa20560f920c92e6dcca8241c6e765c2058c0",
+        "updated_at": "2026-09-20T22:51:49Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_staging_build/Carbon.Linux.Debug.info"
+      },
+      {
+        "name": "Carbon.Linux.Debug.tar.gz",
+        "size": 21569421,
+        "digest": "sha256:571b0766fd5eee604369d61cc192c7d02ba469ef0154e0daaf9b742ab8e7963a",
+        "updated_at": "2026-09-20T22:51:50Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_staging_build/Carbon.Linux.Debug.tar.gz"
+      },
+      {
+        "name": "Carbon.Linux.Minimal.info",
+        "size": 569,
+        "digest": "sha256:01aface54dafd39c582879a4b7b5389fdc5bfa45f80e3b16e121a5f11b743bf8",
+        "updated_at": "2026-09-20T22:51:49Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_staging_build/Carbon.Linux.Minimal.info"
+      },
+      {
+        "name": "Carbon.Linux.Minimal.tar.gz",
+        "size": 21202815,
+        "digest": "sha256:fc97d99f60364150856ff6b4626cdbc26d67b833c06f2055fd466db06693faf7",
+        "updated_at": "2026-09-20T22:51:50Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_staging_build/Carbon.Linux.Minimal.tar.gz"
+      }
+    ]
+  },
+  {
+    "tag_name": "edge_build",
+    "name": "Edge Build \u2014 v2.1.1272",
+    "prerelease": true,
+    "draft": false,
+    "published_at": "2026-09-20T22:58:20Z",
+    "assets": [
+      {
+        "name": "Carbon.Linux.Debug.info",
+        "size": 661,
+        "digest": "sha256:c6437b83914812013167e94eb24dec0477a3955ce71e78faf86685d0e36ed17f",
+        "updated_at": "2026-09-20T22:58:22Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/edge_build/Carbon.Linux.Debug.info"
+      },
+      {
+        "name": "Carbon.Linux.Debug.tar.gz",
+        "size": 21565772,
+        "digest": "sha256:068b844f88dc735b291fed2add83bb9599e1834f696837dc88d13ed2c24817bc",
+        "updated_at": "2026-09-20T22:58:24Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/edge_build/Carbon.Linux.Debug.tar.gz"
+      },
+      {
+        "name": "Carbon.Linux.Minimal.info",
+        "size": 665,
+        "digest": "sha256:4c9f8c6222930259376e01fb62abbdc768b11f618c8d1d6904b528cf01cee37e",
+        "updated_at": "2026-09-20T22:58:22Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/edge_build/Carbon.Linux.Minimal.info"
+      },
+      {
+        "name": "Carbon.Linux.Minimal.tar.gz",
+        "size": 21199136,
+        "digest": "sha256:fe69b8b73260a03e54367c333b5636a84d8e37be54cfc5ab38ff184cf79b1016",
+        "updated_at": "2026-09-20T22:58:23Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/edge_build/Carbon.Linux.Minimal.tar.gz"
+      }
+    ]
+  },
+  {
+    "tag_name": "rustbeta_aux01_build",
+    "name": "Rust (Aux01) Build \u2014 v2.5.510",
+    "prerelease": true,
+    "draft": false,
+    "published_at": "2026-09-15T11:07:53Z",
+    "assets": [
+      {
+        "name": "Carbon.Linux.Debug.info",
+        "size": 520,
+        "digest": "sha256:8a7c5d61785e22853f06be670c334361e6a049588718571d477783548836a8f5",
+        "updated_at": "2026-09-15T11:07:54Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_aux01_build/Carbon.Linux.Debug.info"
+      },
+      {
+        "name": "Carbon.Linux.Debug.tar.gz",
+        "size": 21569733,
+        "digest": "sha256:0e8bef7dc9ea46d1e54f705c4b7da44d20a03f6991bb7ae1ea34dac05749f658",
+        "updated_at": "2026-09-15T11:07:55Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_aux01_build/Carbon.Linux.Debug.tar.gz"
+      },
+      {
+        "name": "Carbon.Linux.Minimal.info",
+        "size": 524,
+        "digest": "sha256:0ee5d8f0d1c11f58e1463093c238c091be1c968b900250e32f233cad5a4d1481",
+        "updated_at": "2026-09-15T11:07:54Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_aux01_build/Carbon.Linux.Minimal.info"
+      },
+      {
+        "name": "Carbon.Linux.Minimal.tar.gz",
+        "size": 21196368,
+        "digest": "sha256:5f683a31f14e18b67a7366767f0301f1954fe77fb0899943dfcdbef51f2f257c",
+        "updated_at": "2026-09-15T11:07:55Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/rustbeta_aux01_build/Carbon.Linux.Minimal.tar.gz"
+      }
+    ]
+  },
+  {
+    "tag_name": "production_build",
+    "name": "Production Build \u2014 v2.0.259",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-09-06T13:42:18Z",
+    "assets": [
+      {
+        "name": "Carbon.Linux.Minimal.info",
+        "size": 538,
+        "digest": "sha256:682271164dacb05ecbb498c140a08f94079b51a51049186bc32072c4f3732c79",
+        "updated_at": "2026-09-06T13:42:19Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/production_build/Carbon.Linux.Minimal.info"
+      },
+      {
+        "name": "Carbon.Linux.Minimal.tar.gz",
+        "size": 21203386,
+        "digest": "sha256:3a4abc838afdef85253d05631422a19f962013f424e9ffb146da0115ed643f52",
+        "updated_at": "2026-09-06T13:42:20Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/production_build/Carbon.Linux.Minimal.tar.gz"
+      },
+      {
+        "name": "Carbon.Linux.Release.info",
+        "size": 538,
+        "digest": "sha256:ccfc5ecfbb4aef1f8b82dddd77730b6bb862064d59328f335edf475b0094f6c7",
+        "updated_at": "2026-09-06T13:42:19Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/production_build/Carbon.Linux.Release.info"
+      },
+      {
+        "name": "Carbon.Linux.Release.tar.gz",
+        "size": 21387905,
+        "digest": "sha256:bfc3cf3d638d588fab94fd4d05a7e8ab2fae28fbbfb5962ecc8fdbd9bb7bb306",
+        "updated_at": "2026-09-06T13:42:20Z",
+        "browser_download_url": "https://github.com/CarbonCommunity/Carbon/releases/download/production_build/Carbon.Linux.Release.tar.gz"
+      }
+    ]
+  }
+]

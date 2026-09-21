@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..catalog import ids
+from ..exit_codes import UsageError
 from ..providers import provider_for
 
 
@@ -63,7 +64,15 @@ def plan_inputs(game_record: dict[str, Any], target_record: dict[str, Any]) -> l
         install_path = spec.get("installPath")
         if not install_path:
             continue  # build-only input
-        url = ids.resolved_url(game_record, spec["source"], spec["path"])
+        # Not every input kind is a path under its source's baseUrl: a GitHub release asset
+        # is addressed by repo/tag/asset, a Thunderstore package by namespace/name/version.
+        # ``input_url`` asks the source's provider whenever the input names no ``path``.
+        url = ids.input_url(game_record, spec)
+        if not url:
+            raise UsageError(
+                f"input '{name}' of kind '{kind}' asks to be installed at '{install_path}', "
+                f"but provider '{ids.source_of(game_record, spec['source'])['provider']}' names no URL for it"
+            )
         source = {**ids.source_of(game_record, spec["source"]), "url": url}
         plans.append(
             InputPlan(
