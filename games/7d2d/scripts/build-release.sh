@@ -24,6 +24,11 @@ ARTIFACT="${SEVEND2D_ARTIFACT/\{version\}/${VERSION}}"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${REPO_ROOT}" log -1 --format=%ct)}"
 
 cd "${PROJECT_ROOT}"
+# A release is built from nothing but the sources and the pinned inputs: msbuild's
+# intermediate output decides what is copied into the package, so it never carries over
+# from an earlier build of another target or version.
+rm -rf ./mod/obj ./mod/bin ./_data/build
+
 "${SCRIPT_DIR}/setup-environment.sh" --target "${SEVEND2D_TARGET}"
 "${SCRIPT_DIR}/build-mod.sh" --target "${SEVEND2D_TARGET}"
 
