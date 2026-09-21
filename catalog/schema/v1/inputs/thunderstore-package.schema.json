@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/inputs/thunderstore-package.schema.json",
+  "title": "Thunderstore package input",
+  "description": "One versioned Thunderstore package, downloaded from <baseUrl>/package/download/<namespace>/<name>/<version>/ and pinned by sha256.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "source", "hashOrigin", "namespace", "name", "version", "sha256", "installPath"],
+  "properties": {
+    "kind": {"const": "thunderstore-package"},
+    "source": {"type": "string", "minLength": 1, "description": "A game.json source whose provider serves Thunderstore."},
+    "hashOrigin": {"enum": ["upstream", "self-recorded"]},
+    "namespace": {"type": "string", "pattern": "^[A-Za-z0-9_]+$"},
+    "name": {"type": "string", "pattern": "^[A-Za-z0-9_]+$"},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "size": {"type": "integer", "minimum": 1},
+    "installPath": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$"}
+  }
+}
