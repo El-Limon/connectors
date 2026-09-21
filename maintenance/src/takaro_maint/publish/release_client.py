@@ -89,6 +89,17 @@ class ReleaseClient:
         return dict(self.github.post(f"/repos/{self.repo}/releases", payload))
 
     def update(self, release_id: int, **fields: Any) -> dict[str, Any]:
+        """Patch a release.
+
+        Always send ``tag_name``: GitHub drops a **draft** release's tag association when a
+        PATCH omits it, renaming the release to ``untagged-<hash>``. On the stable path the
+        release being patched is release-please's draft and its tag is the whole point, so
+        losing it would publish the set under a tag nobody asked for.
+        """
+        if "tag_name" not in fields:
+            raise TrackerError(
+                f"refusing to patch release {release_id} without tag_name: GitHub would drop a draft release's tag"
+            )
         return dict(self.github.patch(f"/repos/{self.repo}/releases/{release_id}", fields))
 
     def delete_release(self, release_id: int) -> None:

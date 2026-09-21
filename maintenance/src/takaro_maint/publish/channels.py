@@ -264,7 +264,7 @@ def publish_stable(
 
     body = merge_body(str(release.get("body") or ""), render_table(record))
     if body != str(release.get("body") or ""):
-        release = client.update(release_id, body=body)
+        release = client.update(release_id, tag_name=tag, body=body)
 
     verification = verify_release(
         client, release, connector=str(record["connector"]), expect={a.name: a.path for a in assets}
@@ -273,7 +273,7 @@ def publish_stable(
     finalized = False
     already_published = not bool(release.get("draft"))
     if finalize and not already_published:
-        release = client.update(release_id, draft=False)
+        release = client.update(release_id, tag_name=tag, draft=False)
         finalized = True
 
     return {

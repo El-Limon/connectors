@@ -223,7 +223,12 @@ class FakeReleases:
                         self._json(404, {"message": "not found"})
                         return
                     if method == "PATCH":
-                        release.update({k: v for k, v in (body or {}).items()})
+                        fields = dict(body or {})
+                        release.update(fields)
+                        # Real GitHub behaviour: patching a draft release without resending
+                        # tag_name drops its tag association and renames it `untagged-<hash>`.
+                        if release["draft"] and "tag_name" not in fields:
+                            release["tag_name"] = f"untagged-{release['id']}"
                         if not release["draft"] and release["tag_name"] not in fake.tags:
                             fake.tags[release["tag_name"]] = str(release["target_commitish"])
                         self._json(200, self._public(release))

@@ -234,6 +234,30 @@ def test_stable_appends_the_asset_table_once_and_keeps_release_notes(
     assert "protocol (local)" in once
 
 
+def test_patching_the_draft_keeps_its_tag(
+    run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs]
+) -> None:
+    """GitHub drops a draft release's tag when a PATCH omits tag_name.
+
+    Every stable publication patches release-please's draft — first its body, then `draft:
+    false` — so an omitted tag_name would detach the tag the whole release hangs off and
+    publish the set as `untagged-<hash>`.
+    """
+    directory, _, built = assembled
+    stable_draft(fake, built.commit, body="## 0.1.1\n\n* a fix")
+
+    first, _, err = publish(run, fake, directory, built.root, "--target-commit", built.commit, "--no-finalize")
+    assert first == 0, err
+    assert fake.release_for(TAG) is not None, "the body patch detached the draft's tag"
+
+    second, payload, err = publish(run, fake, directory, built.root, "--target-commit", built.commit)
+
+    assert second == 0, f"{err}\n{payload}"
+    assert payload["finalized"] is True
+    assert fake.release_for(TAG)["draft"] is False
+    assert [r["tag_name"] for r in fake.releases] == [TAG]
+
+
 def test_no_finalize_leaves_the_draft_alone(
     run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs]
 ) -> None:
