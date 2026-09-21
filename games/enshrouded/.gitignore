@@ -1,0 +1,4 @@
+# The debug plugin build: `DEBUG_CORRUPT_SIG=<signature> ./mod/build.sh`, which is what
+# `takaro-maint verify --negative` produces to prove the degrade self-check. The release
+# build's mod/build/ is covered by the repository-wide `build/` rule; this one is not.
+mod/build-debug/

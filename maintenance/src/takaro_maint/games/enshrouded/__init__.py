@@ -269,17 +269,28 @@ class EnshroudedAdapter:
                 stale.unlink()
 
     def _checked_names(self, archive: zipfile.ZipFile, artifact: Path, folder: str) -> list[str]:
-        """Every entry, refused unless it lives inside the single expected top-level folder."""
+        """Every entry, refused unless it lives inside the single expected top-level folder.
+
+        This checks zip entries rather than record-supplied install paths, so it cannot use
+        ``paths.safe_relative``: that one requires every segment to start alphanumerically,
+        and the sidecar zip legitimately ships ``.dockerignore`` and ``.env.example``. What
+        has to hold here is containment -- nothing absolute, no backslash a Windows-built
+        archive might smuggle in, and no segment that climbs back out of the folder.
+        """
         names: list[str] = []
         for name in archive.namelist():
             relative = name.rstrip("/")
             if not relative:
                 continue
-            if not relative.startswith(f"{folder}/"):
+            escapes = (
+                relative.startswith("/")
+                or "\\" in relative
+                or any(segment in ("", ".", "..") for segment in relative.split("/"))
+            )
+            if escapes or not relative.startswith(f"{folder}/"):
                 raise ConflictError(
                     f"{artifact.name} holds '{name}', outside the single {folder}/ folder; nothing was extracted"
                 )
-            paths.safe_relative(relative, field="artifact zip entry")
             names.append(relative)
         return names
 

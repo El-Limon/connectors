@@ -478,6 +478,9 @@ def _sidecar_zip(path: Path) -> None:
         archive.writestr("TakaroEnshroudedSidecar/dist/index.js", "console.log(1)\n")
         archive.writestr("TakaroEnshroudedSidecar/Dockerfile", "FROM scratch\n")
         archive.writestr("TakaroEnshroudedSidecar/package.json", "{}\n")
+        # The real zip ships these two, and a docker build from the folder needs them.
+        archive.writestr("TakaroEnshroudedSidecar/.dockerignore", "node_modules\n")
+        archive.writestr("TakaroEnshroudedSidecar/.env.example", "TAKARO_WS_URL=\n")
 
 
 def _manifest_for(run: Any, repo: Path, directory: Path, files: dict[str, Path]) -> Path:
@@ -521,8 +524,13 @@ def test_deploy_places_the_dll_and_the_sidecar_folder_and_refuses_escapes(
     assert dll.read_bytes() == b"the dll"
     assert oct(dll.stat().st_mode)[-3:] == "644"
     assert not stale.exists()
-    assert (dest / "takaro" / "sidecar" / "TakaroEnshroudedSidecar" / "dist" / "index.js").is_file()
-    assert (dest / "takaro" / "sidecar" / "TakaroEnshroudedSidecar" / "Dockerfile").is_file()
+    unpacked = dest / "takaro" / "sidecar" / "TakaroEnshroudedSidecar"
+    assert (unpacked / "dist" / "index.js").is_file()
+    assert (unpacked / "Dockerfile").is_file()
+    # The dotfiles a `docker build` from this folder needs: they are ordinary zip entries,
+    # not the record-supplied install paths whose first character has to be alphanumeric.
+    assert (unpacked / ".dockerignore").is_file()
+    assert (unpacked / ".env.example").is_file()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
     # The known core gap: `deploy` records only the last role it placed.
     assert ledger["artifact"]["role"] == "sidecar"
