@@ -94,9 +94,11 @@ CARBON_CONFIG_SEED: dict[str, Any] = {
 }
 
 #: The runtime container is a plain base image; the game is the mounted tree and this script.
+#:
+#: No memory hook goes with it. A verification world (size 1000, ten slots) peaks around
+#: 2.7 GB and fits inside the runner's 3 GB default; a server anybody plays on will not,
+#: which is why the rig's compose file sets no limit at all.
 CONTAINER_COMMAND = ("/bin/bash", "/takaro/start.sh")
-#: RustDedicated needs 4-6 GB of a 6 GB depot set; the 3 GB default is OOM-killed.
-CONTAINER_MEMORY = "8g"
 
 _PROTOCOL = re.compile(r"^Protocol:\s*(?P<protocol>[0-9][0-9.]*)")
 _CARBON_BANNER = re.compile(r"Initialized Carbon\.Startup (?P<version>[0-9]+(?:\.[0-9]+)+)")
@@ -364,11 +366,6 @@ class RustAdapter:
         """The base image has no entrypoint of its own; the tracked launcher is the server."""
         del resolved, data_dir
         return list(CONTAINER_COMMAND)
-
-    def container_memory(self, resolved: dict[str, Any]) -> str:
-        """RustDedicated's own footprint, which the 3 GB default would OOM-kill."""
-        del resolved
-        return CONTAINER_MEMORY
 
     # -- install --------------------------------------------------------------
     def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:

@@ -635,7 +635,6 @@ def test_verify_hooks_patterns_identity_and_container_shape(tmp_path: Path) -> N
         f"{REPO_ROOT}/games/rust/start.sh:/takaro/start.sh:ro",
     ]
     assert adapter.container_command(resolved, data) == ["/bin/bash", "/takaro/start.sh"]
-    assert adapter.container_memory(resolved) == "8g"
     environment = adapter.runtime_env(
         {"runtime": {"container": {"env": {"RUST_SERVER_PORT": "28015"}}}},
         {"TAKARO_WS_URL": "ws://host.docker.internal:27128/"},
