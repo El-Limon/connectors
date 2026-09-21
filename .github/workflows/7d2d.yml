@@ -3,9 +3,23 @@ name: 7D2D Connector
 on:
   push:
     branches: [main]
-    paths: ['games/7d2d/**', 'tests/test_7d2d_connector_regressions.py', 'scripts/**', '.github/workflows/7d2d.yml']
+    paths:
+      - 'games/7d2d/**'
+      - 'catalog/7d2d/**'
+      - 'maintenance/**'
+      - 'tests/test_7d2d_connector_regressions.py'
+      - 'scripts/**'
+      - '.github/workflows/7d2d.yml'
+      - '.github/workflows/connector-release.yml'
   pull_request:
-    paths: ['games/7d2d/**', 'tests/test_7d2d_connector_regressions.py', 'scripts/**', '.github/workflows/7d2d.yml']
+    paths:
+      - 'games/7d2d/**'
+      - 'catalog/7d2d/**'
+      - 'maintenance/**'
+      - 'tests/test_7d2d_connector_regressions.py'
+      - 'scripts/**'
+      - '.github/workflows/7d2d.yml'
+      - '.github/workflows/connector-release.yml'
   workflow_call:
     inputs:
       version:
@@ -23,16 +37,15 @@ on:
         required: true
         type: string
       tag:
-        description: Existing release tag to upload the assets to (e.g. zomboid-v1.0.1)
+        description: Existing release tag to upload the assets to (e.g. 7d2d-v0.1.6)
         required: true
         type: string
 
 # Serialize same-ref runs so consecutive main pushes don't race on the rolling
 # 7d2d-dev release. Release runs (caller's workflow name) are in a different group.
 concurrency:
-  group: 7d2d-${{ github.ref }}-${{ inputs.tag || 'ci' }}
-  # A push during a release run queues behind it; only ordinary CI runs are cancelled.
-  cancel-in-progress: ${{ inputs.tag == '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   codestyle:
@@ -50,51 +63,59 @@ jobs:
       - name: Check formatting
         run: dotnet csharpier --check . ../tests
 
-  package:
+  test:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
-          # A release or recovery run builds the tag, never whatever main has become.
-          ref: ${{ inputs.tag || github.ref }}
-          fetch-tags: true
+          version: "0.12.15"
 
-      # The tag, the version, the manifest and the checked-out commit must all agree
-      # before anything is built.
-      - name: Release guard
-        run: scripts/release-guard.sh 7d2d "${{ inputs.version }}" "${{ inputs.tag }}"
+      - run: uv python install
+      - run: uv sync --frozen --project maintenance
 
-      # All release/comment operations act as takaro-ci-bot[bot] (not github-actions[bot]).
-      # Skipped on fork PRs, which can't access the App secrets and don't publish builds.
-      - name: Generate token
-        id: app-token
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      - name: Resolve the target
+        id: target
+        run: |
+          maintenance/bin/takaro-maint targets resolve \
+            --game 7d2d \
+            --format gha >> "$GITHUB_OUTPUT"
+
+      # Keyed on the fingerprint: a re-pinned target fetches its own assemblies rather
+      # than compiling against the previous build's.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          app-id: ${{ secrets.TAKARO_CI_APP_ID }}
-          private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
+          path: |
+            games/7d2d/_data/7dtd-binaries
+            ~/.cache/takaro-maint
+          key: 7d2d-refs-${{ steps.target.outputs.fp16 }}
 
-      - name: Cache 7D2D managed DLLs
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        id: binaries-cache
-        with:
-          path: games/7d2d/_data/7dtd-binaries
-          key: 7d2d-managed-v3-2-0-b24994542-v1
+      # The reference assemblies only — a filelist against the pinned depot manifests,
+      # not the 17 GB depot a hosted runner has no room for.
+      - name: Fetch the pinned reference assemblies and dependencies
+        run: games/7d2d/scripts/setup-environment.sh --target "${{ steps.target.outputs.target }}"
 
-      - name: Make scripts executable
-        run: chmod +x games/7d2d/scripts/*.sh scripts/*.sh
-
-      - name: Set up environment
-        run: games/7d2d/scripts/setup-environment.sh
-
-      - name: Run Generic Connector contract harness
-        run: games/7d2d/scripts/test-contract.sh
+      - name: Run the Generic Connector contract harness
+        run: games/7d2d/scripts/test-contract.sh --target "${{ steps.target.outputs.target }}"
 
       - name: Run source regressions
         run: python3 -m unittest tests/test_7d2d_connector_regressions.py
+
+  params:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.params.outputs.version }}
+      tag: ${{ steps.params.outputs.tag }}
+      publish: ${{ steps.params.outputs.publish }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
 
       - name: Resolve release params
         id: params
@@ -106,45 +127,17 @@ jobs:
           DEV_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/release-params.sh 7d2d >> "$GITHUB_OUTPUT"
 
-      - name: Build release artifact
-        run: games/7d2d/scripts/build-release.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
-
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-        with:
-          version: "0.12.15"
-
-      - run: uv python install
-      - run: uv sync --frozen --project maintenance
-
-      # One publisher for every connector: the set is assembled, published and read
-      # back from GitHub. `--mode legacy` means the files are named here rather than
-      # derived from a catalog, so this connector's asset names are unchanged.
-      # Fork PRs get a read-only token, so they build for validation only.
-      - name: Publish
-        if: ${{ steps.params.outputs.publish != 'none' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        shell: bash
-        run: |
-          scripts/publish-release.sh publish \
-            --connector 7d2d \
-            --channel "${{ steps.params.outputs.publish }}" \
-            --version "${{ steps.params.outputs.version }}" \
-            --tag "${{ steps.params.outputs.tag }}" \
-            --pr-number "${{ github.event.pull_request.number }}" \
-            --mode legacy \
-            --dist "$RUNNER_TEMP/dist" \
-            --out "$RUNNER_TEMP/assembled" \
-            -- \
-            "$RUNNER_TEMP/dist/takaro-7d2d-mod.zip"
-
-      - name: Comment PR build
-        if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          scripts/comment-pr-build.sh 7d2d \
-            "${{ github.event.pull_request.number }}" \
-            "${{ steps.params.outputs.tag }}" \
-            "${{ steps.params.outputs.version }}" \
-            "$RUNNER_TEMP/assembled"
+  release:
+    needs: [test, params]
+    uses: ./.github/workflows/connector-release.yml
+    secrets: inherit
+    with:
+      connector: 7d2d
+      version: ${{ needs.params.outputs.version }}
+      tag: ${{ needs.params.outputs.tag }}
+      publish: ${{ needs.params.outputs.publish }}
+      pr_number: ${{ github.event.pull_request.number }}
+      # The 7D2D dedicated server is a 17.6 GB Steam depot set: a hosted runner cannot
+      # install or boot it, so the release claims contract verification only. Runtime
+      # onboarding for this connector is tracked separately.
+      runtime: false
