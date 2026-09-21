@@ -160,6 +160,12 @@ async def run_hosted(
     takaro = checks_lifecycle.HostedTakaro(
         api_host, os.environ["TAKARO_USERNAME"], os.environ["TAKARO_PASSWORD"], domain_id
     )
+    # Known before the first container starts, because every exit from here on redacts with it.
+    extra = [
+        *(os.environ[key] for key in HOSTED_ENV_KEYS),
+        checks_lifecycle.host_of(ws_url),
+        checks_lifecycle.host_of(api_host),
+    ]
     runtime: dict[str, Any] = {}
     server_ids: list[str] = []
     try:
@@ -232,15 +238,12 @@ async def run_hosted(
         for server_id in set(server_ids):
             await asyncio.to_thread(takaro.delete, server_id)
         run.cleanup()
+        # Redaction belongs in the `finally`: a run that dies of a boot failure, a docker
+        # error or an interrupt keeps its logs just the same, and those are the files that
+        # get banked. It also runs before the report is built, so `logs[].sha256` describes
+        # the bytes that were kept; the report itself is redacted right after it is written.
+        checks_lifecycle.redact_retained(run.out, extra)
 
-    # Every log is redacted before the report is built, so `logs[].sha256` describes the
-    # bytes that were kept; the report itself is redacted right after it is written.
-    extra = [
-        *(os.environ[key] for key in HOSTED_ENV_KEYS),
-        checks_lifecycle.host_of(ws_url),
-        checks_lifecycle.host_of(api_host),
-    ]
-    checks_lifecycle.redact_retained(run.out, extra)
     report = build_report(
         target=run.target,
         game_record=run.catalog.game(run.target.game).record,
