@@ -590,6 +590,10 @@ def test_after_boot_attaches_the_bridge_to_the_server_network_namespace(
     assert resolved["build"]["deps"]["bridge-runtime"]["resolvedCoordinate"] in argv
     assert "tm.issue=163" in argv
     assert any(part.startswith("tm.run=") for part in argv)
+    # The config is mounted outside the read-only /bridge mount: docker cannot create a
+    # mountpoint inside one, so a config under /bridge never gets as far as node.
+    assert "BRIDGE_CONFIG=/config/TakaroConfig.txt" in argv
+    assert f"{fake_run.data_dir / 'bridge' / 'TakaroConfig.txt'}:/config/TakaroConfig.txt:ro" in argv
 
     # The command line carries two secrets, and the kept log carries neither.
     recorded = recorder.read_text()

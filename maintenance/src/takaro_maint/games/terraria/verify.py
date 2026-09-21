@@ -168,13 +168,15 @@ def after_boot(run: Any, container: Any, takaro_env: dict[str, str]) -> None:
         "--user",
         f"{os.getuid()}:{os.getgid()}",
         "-e",
-        "BRIDGE_CONFIG=/bridge/TakaroConfig.txt",
+        "BRIDGE_CONFIG=/config/TakaroConfig.txt",
         "-e",
         "HOME=/tmp",
         "-v",
         f"{data / 'bridge' / 'TakaroTerrariaBridge'}:/bridge:ro",
+        # The config lives outside /bridge: docker would have to create the mountpoint
+        # inside a read-only mount otherwise, which fails before the process starts.
         "-v",
-        f"{data / 'bridge' / 'TakaroConfig.txt'}:/bridge/TakaroConfig.txt:ro",
+        f"{data / 'bridge' / 'TakaroConfig.txt'}:/config/TakaroConfig.txt:ro",
         "-v",
         f"{data / 'tshock' / 'logs'}:/tshock/logs:ro",
         "-w",

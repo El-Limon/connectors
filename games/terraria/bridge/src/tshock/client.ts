@@ -70,12 +70,20 @@ export class TShockClient {
   }
 
   async broadcast(message: string): Promise<CommandResult> {
-    const data = await this.get('/v2/server/broadcast', { token: await this.getToken(), msg: message }, true);
-    return { success: statusOk(data), rawResult: responseText(data) };
+    // /v2/server/broadcast answers 200 and reaches the players, but writes nothing to the
+    // server console, so an operator reading the log never sees what Takaro said. The
+    // /broadcast command reaches the same players and logs "(Server Broadcast) <message>"
+    // (verified against TShock 6.1.0).
+    const result = await this.rawCommand(`/broadcast ${message}`);
+    if (!result.success) return result;
+    return { success: true, rawResult: result.rawResult || 'The message was broadcasted successfully' };
   }
 
   async rawCommand(command: string): Promise<CommandResult> {
-    const params = { token: await this.getToken(), cmd: command };
+    // The REST endpoint runs commands, not console input: without the command specifier
+    // TShock answers "Invalid command entered." So an operator's "say hi" -- which is what
+    // a TShock console takes -- becomes "/say hi" on the way out.
+    const params = { token: await this.getToken(), cmd: command.startsWith('/') ? command : `/${command}` };
     const data = await this.getWithFallback(['/v2/server/rawcmd', '/v3/server/rawcmd'], params, true);
     const rawResult = responseText(data);
     return { success: statusOk(data) && !isTShockFailureResult(rawResult), rawResult };
