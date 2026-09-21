@@ -23,7 +23,7 @@ deploy_rust() {
 }
 
 deploy_minecraft() {
-    local platform="$1" dest jar subdir target tmp toolchain
+    local platform="$1" target tmp toolchain
 
     target="$(ds_target "minecraft-${platform}")"
     if [ -n "$target" ]; then
@@ -46,30 +46,7 @@ deploy_minecraft() {
         return 0
     fi
 
-    # TODO(#151): paper and neoforge keep the old gradle+copy path until they
-    # become catalog targets.
-    ds_info "Building Minecraft ${platform} module (gradle)..."
-    # Minecraft 26.2 (fabric) needs a JDK 25 toolchain; paper/neoforge still
-    # target Java 21 class files but build fine on the same JDK 25.
-    if ds_have java && java -version 2>&1 | grep -qE '"(2[5-9]|[3-9][0-9])'; then
-        ( cd "${REPO_ROOT}/games/minecraft/mod" && ./gradlew ":${platform}:build" )
-    else
-        ds_info "No host JDK 25+ — building in eclipse-temurin:25-jdk"
-        ds_toolchain_run eclipse-temurin:25-jdk "${REPO_ROOT}/games/minecraft/mod" \
-            ./gradlew ":${platform}:build" --no-daemon
-    fi
-
-    jar="$(find "${REPO_ROOT}/games/minecraft/mod/${platform}/build/libs" \
-        -name "takaro-${platform}-*.jar" \
-        -not -name '*-dev-shadow*' -not -name '*-sources*' 2>/dev/null | head -1)"
-    [ -n "$jar" ] || ds_die "no JAR built for ${platform}"
-
-    # Paper loads plugins/, the mod loaders load mods/.
-    [ "$platform" = "paper" ] && subdir="plugins" || subdir="mods"
-    dest="$(ds_data_dir "minecraft-${platform}")/${subdir}"
-    mkdir -p "$dest"
-    cp "$jar" "${dest}/TakaroMinecraft.jar"
-    ds_ok "${dest}/TakaroMinecraft.jar"
+    ds_die "no catalog target drives rig game minecraft-${platform}; add one under catalog/minecraft/targets (see catalog/README.md)"
 }
 
 deploy_7d2d() {

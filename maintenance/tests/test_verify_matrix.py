@@ -107,3 +107,40 @@ def test_the_plan_matrix_lists_the_four_minecraft_targets(run: Any) -> None:
     for row in rows:
         assert row["id"] and row["fp16"] and row["status"]
         assert len(row["fp16"]) == 16
+
+
+def test_every_job_checks_out_the_commit_that_started_the_run() -> None:
+    """A branch tip can move while earlier jobs run; `github.sha` cannot."""
+    text = WORKFLOW.read_text()
+    expected = "ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}"
+
+    names = [match.group("name") for match in JOB.finditer(text)]
+    assert names, "the workflow has no jobs"
+    for name in names:
+        block = job(name)
+        if "actions/checkout" not in block:
+            continue
+        assert expected in step(block, "actions/checkout"), name
+
+    assert "github.ref" not in text, "a release job would check out a moving branch tip"
+
+
+CONNECTOR_WORKFLOWS = (
+    "7d2d",
+    "conan-exiles",
+    "dragonwilds",
+    "enshrouded",
+    "minecraft",
+    "rust",
+    "terraria",
+    "valheim",
+    "zomboid",
+)
+
+
+def test_every_connector_workflow_keeps_release_runs_out_of_the_ci_group() -> None:
+    """A recovery dispatch runs on the same ref and workflow as a push; only the tag separates them."""
+    for name in CONNECTOR_WORKFLOWS:
+        text = (REPO_ROOT / ".github/workflows" / f"{name}.yml").read_text()
+        assert "-${{ github.ref }}-${{ inputs.tag || 'ci' }}" in text, name
+        assert "cancel-in-progress: ${{ inputs.tag == '' }}" in text, name

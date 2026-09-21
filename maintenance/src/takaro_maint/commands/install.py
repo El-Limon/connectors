@@ -14,8 +14,8 @@ from ..catalog.loader import resolve
 from ..exit_codes import OK, ConflictError, UsageError
 from ..games import adapter_for
 from ..install import plan_inputs
-from ..install.ledger import check_ledger, read_ledger, write_ledger
-from ..install.staging import StagedInstall
+from ..install.ledger import Ledger, check_ledger, read_ledger, write_ledger
+from ..install.staging import StagedInstall, is_protected
 from . import add_selection_arguments, select_one
 
 
@@ -45,6 +45,37 @@ def tree_hash(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _superseded_paths(existing: Ledger | None, plans: list[Any], preserve: list[str], fingerprint: str) -> list[str]:
+    """Files the previous install put here that this target does not, in a stable order.
+
+    An input path the new target also uses is overwritten by the swap, not removed. A deployed
+    connector jar is superseded as soon as the fingerprint changes: it was built for the old target.
+    """
+    if existing is None:
+        return []
+    keep = {plan.install_path for plan in plans}
+    stale: set[str] = set()
+    for entry in existing.data.get("inputs", []):
+        path = str(entry["path"])
+        if path not in keep and not is_protected(path, preserve):
+            stale.add(path)
+    artifact = existing.data.get("artifact")
+    if artifact and existing.fingerprint != fingerprint:
+        stale.add(str(artifact["path"]))
+    return sorted(stale)
+
+
+def _remove_superseded(dest: Path, relatives: list[str]) -> list[str]:
+    removed: list[str] = []
+    for relative in relatives:
+        path = dest / paths.safe_relative(relative, field="ledger inputs[].path")
+        if path.is_file():
+            path.unlink()
+            removed.append(relative)
+            output.info(f"removed superseded {relative}")
+    return removed
+
+
 def _world_dirs(dest: Path, preserve: list[str]) -> list[Path]:
     del preserve
     return sorted(p for p in dest.glob("world*") if p.is_dir())
@@ -65,6 +96,7 @@ def _install(args: Any) -> int:
 
     plans = plan_inputs(game_record, target.record)
     existing = read_ledger(dest)
+    superseded = _superseded_paths(existing, plans, preserve, target.fingerprint)
 
     # World compatibility is decided before the fast path: a directory holding a world from
     # another game revision is not "already installed", whatever its ledger fingerprint says.
@@ -121,6 +153,7 @@ def _install(args: Any) -> int:
             fingerprint=target.fingerprint,
             dest=str(dest),
             inputs=[{"name": p.name, "url": p.url, "installPath": p.install_path} for p in plans],
+            wouldRemove=superseded,
         )
         return OK
 
@@ -154,6 +187,9 @@ def _install(args: Any) -> int:
                 output.info(f"moved {len(worlds)} world director(y|ies) to {moved_world}")
 
             placed = staging.commit()
+            # After the point of no return: a failed download still leaves the directory
+            # byte-identical to what it was.
+            removed = _remove_superseded(dest, superseded)
     except BaseException:
         after = tree_hash(dest)
         if after != before:
@@ -190,6 +226,7 @@ def _install(args: Any) -> int:
         fingerprint=target.fingerprint,
         dest=str(dest),
         placed=placed,
+        removed=removed,
         worldMovedTo=moved_world,
         inputs=ledger_inputs,
     )

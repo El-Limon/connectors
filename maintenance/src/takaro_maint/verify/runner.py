@@ -221,12 +221,17 @@ class TargetRun:
 
     # -- setup ----------------------------------------------------------------
     def _run_command(self, name: str, argv: list[str]) -> None:
-        """Run a sub-command, keeping its JSON out of this run's single stdout document."""
+        """Run a sub-command, keeping its JSON out of this run's single stdout document.
+
+        The sub-command parses its own arguments, so the repo root is passed on explicitly:
+        without it the process-wide root is reset and the target is resolved from a different
+        catalog than the one this run was asked about.
+        """
         from ..cli import main as cli_main
 
         record = self.out / f"{name}.json"
         with record.open("w", encoding="utf-8") as handle, contextlib.redirect_stdout(handle):
-            code = cli_main(["--quiet", *argv])
+            code = cli_main(["--quiet", "--repo-root", str(paths.repo_root()), *argv])
         if code != 0:
             raise UpstreamUnavailable(f"{name} into the verification data dir exited {code}; see {record.name}")
 

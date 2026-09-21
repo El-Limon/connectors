@@ -25,15 +25,10 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.12.15"
-      # connector-release.yml is left out for one pre-existing over-long jq program in its
-      # verify job; put it back in the list once that line is wrapped.
       - name: Lint the workflows and the dev-servers compose files
         shell: bash
         run: |
-          mapfile -t files < <(
-            git ls-files '.github/workflows/*.yml' 'dev-servers/compose/*.yml' |
-              grep -v '^.github/workflows/connector-release.yml$'
-          )
+          mapfile -t files < <(git ls-files '.github/workflows/*.yml' 'dev-servers/compose/*.yml')
           uvx yamllint@1.38.0 --no-warnings -f github "${files[@]}"
 
   actionlint:
@@ -125,7 +120,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: The release guard and the packaging library behave as documented
+      - name: The release guard, the packaging library and the publish wrapper behave as documented
         run: |
           bash maintenance/tests/test_release_guard.sh
           bash maintenance/tests/test_package_determinism.sh
+          bash maintenance/tests/test_publish_release.sh

@@ -123,8 +123,8 @@ def _check_input_kinds(result: ValidationResult, target: Target) -> None:
             continue
         schema_name = f"inputs/{kind}.schema.json"
         if not schema.has_schema(schema_name):
-            # The target schema no longer lists the kinds, so this is the only gate on them:
-            # an unknown kind must fail here rather than pass unchecked.
+            # The target schema does not enumerate input kinds, so this is the only gate on
+            # them: an unknown kind must fail here rather than pass unchecked.
             result.add(
                 "input-kind-schema",
                 False,

@@ -129,7 +129,8 @@ class GitHub:
     def upload_asset(self, release_id: int, file: Path, *, content_type: str = "application/octet-stream") -> Any:
         url = f"https://uploads.github.com/repos/{self.repo}/releases/{release_id}/assets?name={file.name}"
         request = urllib.request.Request(url, data=file.read_bytes(), method="POST")
-        request.add_header("Authorization", f"Bearer {self.token}")
+        # Unredirected, so a redirect off the API host never carries the bearer token.
+        request.add_unredirected_header("Authorization", f"Bearer {self.token}")
         request.add_header("Content-Type", content_type)
         request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
         try:
@@ -143,7 +144,8 @@ class GitHub:
     def download_asset(self, asset_id: int, dest: Path) -> Path:
         url = f"{self.api_url}/repos/{self.repo}/releases/assets/{asset_id}"
         request = urllib.request.Request(url, method="GET")
-        request.add_header("Authorization", f"Bearer {self.token}")
+        # An asset download is a 302 to a signed CDN URL; it must never see the token.
+        request.add_unredirected_header("Authorization", f"Bearer {self.token}")
         request.add_header("Accept", "application/octet-stream")
         request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
         try:

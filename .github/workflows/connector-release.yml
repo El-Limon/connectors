@@ -43,7 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          # Stable releases build the tag; everything else builds the exact commit that started the run,
+          # never a branch tip that may have moved while earlier jobs ran.
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       # Before anything is built: the tag, the version, the manifest and the checked-out
@@ -79,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -159,7 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       - name: Set up Java 25
@@ -195,7 +197,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -247,7 +249,12 @@ jobs:
           {
             echo "### verify ${{ inputs.connector }}/${{ matrix.target.id }}"
             if [ -f "$report" ]; then
-              jq -r '"level **\(.level)** · outcome **\(.outcome)** · source `\(.source.revision[0:12])` · fingerprint `\(.target.fingerprint[0:16])` · image `\(.runtime.image.digest)` · runtime \(.runtime.loader) \(.runtime.loaderVersion) / \(.runtime.gameVersion)\n\n| check | status | ms |\n|---|---|---|"' "$report"
+              jq -r '
+                "level **\(.level)** · outcome **\(.outcome)** · source `\(.source.revision[0:12])`"
+                + " · fingerprint `\(.target.fingerprint[0:16])` · image `\(.runtime.image.digest)`"
+                + " · runtime \(.runtime.loader) \(.runtime.loaderVersion) / \(.runtime.gameVersion)"
+                + "\n\n| check | status | ms |\n|---|---|---|"
+              ' "$report"
               jq -r '.checks[] | "| \(.id) | \(.status) | \(.durationMs) |"' "$report"
             else
               echo "no report was written (the run failed before verification started)"
@@ -282,7 +289,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       # All release/comment operations act as takaro-ci-bot[bot] (not github-actions[bot]).
