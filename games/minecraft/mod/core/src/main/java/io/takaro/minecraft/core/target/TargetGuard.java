@@ -61,10 +61,12 @@ public final class TargetGuard {
             reasons.add("built for game version " + expectedGameVersion + ", this server runs "
                     + identity.gameVersion());
         }
-        if (!target.loaderMin().isEmpty() && identity.loaderVersion() != null
-                && compareVersions(identity.loaderVersion(), target.loaderMin()) < 0) {
+        String loaderVersion = identity.loaderVersion();
+        boolean loaderKnown = loaderVersion != null && !loaderVersion.isBlank();
+        if (!target.loaderMin().isEmpty() && loaderKnown
+                && compareVersions(loaderVersion, target.loaderMin()) < 0) {
             reasons.add("needs loader " + target.loaderMin() + " or newer, this server runs "
-                    + identity.loaderVersion());
+                    + loaderVersion);
         }
         if (target.javaMin() > 0 && identity.javaMajor() > 0 && identity.javaMajor() < target.javaMin()) {
             reasons.add("needs Java " + target.javaMin() + " or newer, this server runs Java "

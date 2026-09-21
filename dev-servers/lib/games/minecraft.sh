@@ -13,13 +13,15 @@ install_minecraft() {
     local platform="$1"
     mkdir -p "$DATA"
 
-    if [ -n "$(ds_target "$GAME")" ]; then
+    local target
+    target="$(ds_target "$GAME")" || ds_target_failed "$GAME"
+    if [ -n "$target" ]; then
         # Catalog-driven: the exact server jar, loader launcher and API jar the
         # connector was built against, verified by hash and recorded in a ledger.
         ds_info "Resolving the catalog target for ${GAME}..."
         ds_write_target_env "$GAME"
         ds_info "Installing pinned server files into ${DATA}..."
-        ds_maint install --game minecraft --target "$(ds_target "$GAME")" --dest "$DATA"
+        ds_maint install --game minecraft --target "$target" --dest "$DATA"
     fi
 
     ds_info "Pulling the Minecraft server image..."
@@ -36,9 +38,9 @@ install_minecraft_fabric() { install_minecraft fabric; }
 install_minecraft_fabric_26_1_2() { install_minecraft fabric-26-1-2; }
 
 deploy_minecraft() {
-    local platform="$1" dest jar subdir target tmp toolchain
+    local platform="$1" target tmp toolchain
 
-    target="$(ds_target "minecraft-${platform}")"
+    target="$(ds_target "minecraft-${platform}")" || ds_target_failed "minecraft-${platform}"
     if [ -n "$target" ]; then
         # Catalog-driven: build the target's artifact and deploy it by manifest row, so
         # the jar in mods/ is the one the ledger records and nothing else is guessed at.
@@ -59,30 +61,7 @@ deploy_minecraft() {
         return 0
     fi
 
-    # TODO(#151): paper and neoforge keep the old gradle+copy path until they
-    # become catalog targets.
-    ds_info "Building Minecraft ${platform} module (gradle)..."
-    # Minecraft 26.2 (fabric) needs a JDK 25 toolchain; paper/neoforge still
-    # target Java 21 class files but build fine on the same JDK 25.
-    if ds_have java && java -version 2>&1 | grep -qE '"(2[5-9]|[3-9][0-9])'; then
-        ( cd "${REPO_ROOT}/games/minecraft/mod" && ./gradlew ":${platform}:build" )
-    else
-        ds_info "No host JDK 25+ — building in eclipse-temurin:25-jdk"
-        ds_toolchain_run eclipse-temurin:25-jdk "${REPO_ROOT}/games/minecraft/mod" \
-            ./gradlew ":${platform}:build" --no-daemon
-    fi
-
-    jar="$(find "${REPO_ROOT}/games/minecraft/mod/${platform}/build/libs" \
-        -name "takaro-${platform}-*.jar" \
-        -not -name '*-dev-shadow*' -not -name '*-sources*' 2>/dev/null | head -1)"
-    [ -n "$jar" ] || ds_die "no JAR built for ${platform}"
-
-    # Paper loads plugins/, the mod loaders load mods/.
-    [ "$platform" = "paper" ] && subdir="plugins" || subdir="mods"
-    dest="$(ds_data_dir "minecraft-${platform}")/${subdir}"
-    mkdir -p "$dest"
-    cp "$jar" "${dest}/TakaroMinecraft.jar"
-    ds_ok "${dest}/TakaroMinecraft.jar"
+    ds_die "no catalog target drives rig game minecraft-${platform}; add one under catalog/minecraft/targets (see catalog/README.md)"
 }
 
 deploy_minecraft_paper() { deploy_minecraft paper; }

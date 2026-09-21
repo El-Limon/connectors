@@ -51,6 +51,33 @@ class TargetGuardTest {
     }
 
     @Test
+    void anUnknownLoaderVersionSkipsOnlyTheLoaderCheck() {
+        for (String unknown : new String[] {null, ""}) {
+            RuntimeIdentity noBuild = new RuntimeIdentity("26.2", "fabric", unknown, 25);
+
+            TargetGuard.Decision decision =
+                    TargetGuard.evaluate(Optional.of(fabric262()), noBuild, TargetGuard.Policy.ENFORCE);
+
+            assertEquals("ok", decision.result(), String.valueOf(unknown));
+            assertTrue(decision.connect());
+            assertTrue(decision.reasons().isEmpty());
+        }
+    }
+
+    @Test
+    void anUnknownLoaderVersionStillRefusesTheWrongGameVersion() {
+        RuntimeIdentity wrong = new RuntimeIdentity("26.1.2", "fabric", "", 25);
+
+        TargetGuard.Decision decision =
+                TargetGuard.evaluate(Optional.of(fabric262()), wrong, TargetGuard.Policy.ENFORCE);
+
+        assertEquals("refuse", decision.result());
+        assertEquals(1, decision.reasons().size());
+        assertTrue(decision.reasons().get(0).contains("26.1.2"));
+        assertFalse(decision.reasons().get(0).contains("loader"));
+    }
+
+    @Test
     void loaderAboveTheMinimumIsAccepted() {
         RuntimeIdentity newer = new RuntimeIdentity("26.2", "fabric", "0.20.0", 25);
 

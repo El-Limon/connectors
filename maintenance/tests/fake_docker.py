@@ -8,8 +8,11 @@ jar that was actually deployed, so a mismatched jar is refused the way Fabric Lo
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import shlex
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,7 +22,7 @@ import pytest
 from conftest import make_jar, sha256
 
 DOCKER_STUB = r"""
-import json, os, shutil, subprocess, sys, time
+import json, os, shutil, signal, subprocess, sys, time
 
 state = os.environ["STUB_STATE"]
 argv = sys.argv[1:]
@@ -62,8 +65,11 @@ if argv[:1] == ["run"]:
     child = dict(os.environ)
     child.update(values)
     child["STUB_BOX"] = box
-    subprocess.Popen([sys.executable, os.environ["STUB_SERVER"]], env=child,
-                     stdout=open(box + "/server.out", "w"), stderr=subprocess.STDOUT)
+    process = subprocess.Popen([sys.executable, os.environ["STUB_SERVER"]], env=child,
+                               stdout=open(box + "/server.out", "w"), stderr=subprocess.STDOUT)
+    # `rm` needs this to stop the process the way a real `docker rm` stops a container.
+    with open(box + "/pid", "w") as handle:
+        handle.write(str(process.pid))
     print("stub-container-" + name)
     sys.exit(0)
 
@@ -102,6 +108,34 @@ if argv[:1] == ["ps"]:
     sys.exit(0)
 
 if argv[:1] == ["rm"]:
+    for name in [item for item in argv[1:] if not item.startswith("-")]:
+        box = os.path.join(state, name)
+        # An orphan sweep names containers this stub never started; there is nothing to stop.
+        if not os.path.exists(box + "/pid"):
+            continue
+        with open(box + "/pid") as handle:
+            pid = int(handle.read().strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pid = 0
+        deadline = time.time() + 5
+        while pid and time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pid = 0
+                break
+            time.sleep(0.05)
+        if pid:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        # A `logs -f` follower waits for this marker; without it, it never drains and ends.
+        if not os.path.exists(box + "/exited"):
+            with open(box + "/exited", "w") as handle:
+                handle.write("137")
     with open(state + "/removed", "a") as handle:
         handle.write(" ".join(argv) + "\n")
     sys.exit(0)
@@ -233,7 +267,22 @@ asyncio.run(main())
 """
 
 
-def install_docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def process_is_gone(pid: int) -> bool:
+    """True when ``pid`` no longer runs, a reaped zombie counting as gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[-1].split()
+    except OSError:
+        return True
+    return fields[0] == "Z"
+
+
+def install_docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Path:
     """Point ``TAKARO_MAINT_DOCKER`` at the stub and return its state directory.
 
     Each test module declares its own ``docker_stub`` fixture around this, so the stub is
@@ -249,6 +298,14 @@ def install_docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setenv("STUB_SERVER", str(server))
     monkeypatch.setenv("STUB_RUN_ID", "t1")
     monkeypatch.setenv("TAKARO_MAINT_DOCKER", f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}")
+
+    def _kill_survivors() -> None:
+        # The safety net for a test that dies before the runner's `finally` runs its `rm`.
+        for marker in state.glob("*/pid"):
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(marker.read_text().strip()), signal.SIGKILL)
+
+    request.addfinalizer(_kill_survivors)
     return state
 
 

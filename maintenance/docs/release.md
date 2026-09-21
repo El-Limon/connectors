@@ -101,7 +101,7 @@ jar do I want, and was it actually tested?" without the repository at hand.
 |---|---|
 | `connector`, `version`, `channel`, `tag`, `mode` | Which release this is. |
 | `generatedAt`, `tool` | When it was written, and by which version of this command. The stamp comes from `SOURCE_DATE_EPOCH`, else the commit time of `source.commit` — never from the clock, so two assemblies of one commit are byte-identical. |
-| `source.repo`, `source.commit`, `source.tag`, `source.dirty` | The repository and commit every artifact was built from; `tag` is set for stable releases only. `dirty` is true if the checkout that assembled **or** any build that produced an artifact had uncommitted changes. |
+| `source.repo`, `source.commit`, `source.tag`, `source.dirty` | The repository and commit every artifact was built from; `tag` is set for stable releases only. `dirty` is true if the checkout that assembled, any build that produced an artifact, **or any verification report shipped with the set** had uncommitted changes under the connector's paths. |
 | `source.catalogSha256` | One hash over `game.json` and every non-retired target record, canonicalised the way a fingerprint is, so a checkout can recompute it. |
 | `catalog` | `{game, targetIds}`, or `null` in legacy mode. |
 | `targets.<id>.platform`, `.revision`, `.status`, `.fingerprint` | Which server this target is, and the fingerprint the artifacts carry. |
@@ -137,7 +137,7 @@ jar do I want, and was it actually tested?" without the repository at hand.
 |---|---|
 | 2 | Usage: `--out` is not empty, no compatibility record in `--assembled`, `--allow-dirty` on a stable channel, positional files outside legacy mode, or a `legacyAssetAliases` key that is not a plain file name. |
 | 5 | Bytes disagree with a hash that was already written down — a built file against its build manifest, or a file in the assembled set against `SHA256SUMS`. Nothing is uploaded. |
-| 7 | The set is wrong: a missing (target, role), two different builds of the same one, a fingerprint the catalog no longer has, a file name the catalog does not predict, two assets wanting one name, a build manifest from another commit or from a dirty tree, a report that describes different bytes, a dirty tree, an assembled set built for another repository or commit, a record that does not claim the tag it sits on, a tag that points somewhere else, or an asset already on the release with different bytes. |
+| 7 | The set is wrong: a missing (target, role), two different builds of the same one, a fingerprint the catalog no longer has, a file name the catalog does not predict, two assets wanting one name, a build manifest from another commit or from a dirty tree, a verification report from a dirty tree, a report that describes different bytes, a dirty tree, an assembled set built for another repository or commit, a record that does not claim the tag it sits on, a tag that points somewhere else, or an asset already on the release with different bytes. |
 | 8 | The evidence is missing or negative: no report for a target that requires one, `outcome: fail`, a level below what the target requires, or a target requiring `gameplay` — which this harness does not produce. |
 | 9 | GitHub: no token, or a failed request. |
 
@@ -157,18 +157,34 @@ The run checks out `minecraft-v0.1.2`, so the artifacts are rebuilt from the sou
 names rather than from whatever main has become since. It re-runs `release assemble` as well, and
 that re-assembly has to produce the same bytes as the interrupted one did — otherwise the retry
 would conflict with whatever the first run managed to upload. Nothing in the set is allowed to
-depend on when it was built: the archives are packaged through `scripts/lib/package.sh` and the
-compatibility record is stamped from the source commit's own time. Then:
+depend on when it was built: for a catalog connector the archives are packaged through
+`scripts/lib/package.sh` (or by the Gradle build's reproducible-jar settings, proven twice per
+build leg) and the compatibility record is stamped from the source commit's own time. Then:
 
 * an asset that is already there with **identical** bytes is `skipped-identical` — no upload,
   no delete;
-* an asset that is there with **different** bytes is a conflict: exit 7, and nothing after it in
-  the sorted asset list is attempted;
+* an asset that is there with **different** bytes is a conflict: exit 7, and nothing is
+  uploaded — every remote asset is compared before the first upload, so a release that is
+  already public is left exactly as it was;
 * a release that is already published stays published (`alreadyPublished: true`), and no
   published release or tag is ever deleted on the stable path.
 
 A tag created before this machinery existed cannot be recovered this way: its tree has no
 `catalog/` or `maintenance/` to build from.
+
+**Legacy-mode connectors** (`--mode legacy`: 7d2d, rust, zomboid, valheim, conan-exiles,
+terraria, enshrouded, dragonwilds) do not yet package through `scripts/lib/package.sh`, and their
+builds have not been proven byte-reproducible, so a recovery rebuild of one of them can produce
+different bytes from the interrupted run's. The publisher then stops with exit 7 and uploads
+nothing, exactly as above. Because a stable release is still a draft until the publisher
+finishes it, the way forward is to delete the draft's partial assets and dispatch again:
+
+    gh release view 7d2d-v1.2.3 --json assets -q '.assets[].name'
+    gh release delete-asset 7d2d-v1.2.3 <name> --yes      # once per listed asset
+    gh workflow run 7d2d.yml --ref main -f tag=7d2d-v1.2.3 -f version=1.2.3
+
+Never delete assets from a release that is no longer a draft. Each connector adopts the
+deterministic packaging in its own maintenance issue; until then this is the recovery path.
 
 ## Rolling and PR builds
 
@@ -208,7 +224,9 @@ pkg_sha256sums dist
 `maintenance/tests/test_package_determinism.sh` builds the same content in two different paths,
 in the opposite order, with different mtimes and permissions, and requires identical bytes — and
 requires a one-byte content change to change them. The library is available to the game build
-scripts; adopting it belongs to each game's own issue.
+scripts; adopting it — and proving the build itself reproducible by building twice and comparing,
+as the Minecraft legs do — belongs to each game's own maintenance issue. Until a connector has
+done both, its stable recovery is the manual path described under Recovery.
 
 The Minecraft build legs prove the same thing for the Gradle build directly, by building each
 target twice with `--rerun-tasks` and comparing the jars.

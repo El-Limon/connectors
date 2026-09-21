@@ -15,6 +15,7 @@ Monorepo for connector plugins that implement the [Takaro Generic Connector Prot
 | Valheim | [`games/valheim/`](games/valheim/) | C# / .NET | BepInEx dedicated-server plugin and graphical-client companion |
 | Enshrouded | [`games/enshrouded/`](games/enshrouded/) | C++ (`dbghelp.dll` proxy) + TypeScript sidecar | zig cross-compile + Node.js |
 | RuneScape: Dragonwilds | [`games/dragonwilds/`](games/dragonwilds/) | C++ (`LD_PRELOAD` native plugin) + TypeScript sidecar | `debian:bookworm` g++ + Node.js |
+| VEIN | [`games/vein/`](games/vein/) | C++ (`LD_PRELOAD` native plugin) + TypeScript sidecar | `debian:bookworm` g++ + Node.js |
 
 Each connector is self-contained with its own Docker dev environment, build system, and scripts. See each connector's README for details.
 
@@ -49,7 +50,7 @@ environments under `games/rust/`, `games/minecraft/` and `games/7d2d/` are unaff
 
 Connectors are versioned and released independently through Release Please. Merging a connector's release PR is the only human gate. Release Please then creates the version tag and the GitHub release **as a draft**, the connector's workflow builds and verifies every target from that tag's source, attaches the whole set, reads it back from GitHub, and only then publishes the release. Nothing is downloadable until the complete set is there. To force a specific version, add a `Release-As: X.Y.Z` footer to a commit on `main`.
 
-Every release carries, besides its artifacts: `SHA256SUMS`, a compatibility record (`takaro-<connector>-<version>.compat.json`) naming the exact inputs, source commit, target fingerprint, verification level and hash of everything in it, and one verification report per target. Connectors with several server targets name their artifacts per target (`takaro-minecraft-mod-fabric-26.2-0.1.2.jar`) and ship byte-identical copies under the old names for two releases.
+Every release carries, besides its artifacts: `SHA256SUMS`, a compatibility record (`takaro-<connector>-<version>.compat.json`) naming the exact inputs, source commit, target fingerprint, verification level and hash of everything in it, and one verification report per target. Connectors with several server targets name their artifacts per target (`takaro-minecraft-mod-fabric-26.2-0.1.2.jar`). A connector whose earlier releases used unversioned asset names ships byte-identical copies under those names for two stable releases after it moves to the catalog (`legacyAssetAliases` in its `game.json`). Minecraft's earlier names (`takaro-fabric-<version>.jar`, `takaro-paper-<version>.jar`, `takaro-neoforge-<version>.jar`) are carried this way too, each an alias of its platform's default target; `games/minecraft/README.md` maps old to new.
 
 If a release ends up missing its assets, re-run the connector's workflow against the existing tag — it rebuilds from that tag's source, skips anything already there with identical bytes, and refuses to overwrite anything that differs:
 

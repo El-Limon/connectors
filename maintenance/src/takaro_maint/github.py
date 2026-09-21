@@ -1,4 +1,4 @@
-"""A small GitHub client the maintenance issues share. No #149 command calls it yet."""
+"""A small GitHub client the maintenance commands share."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import __version__, output
+from . import __version__, output, redact
 from .exit_codes import TrackerError
 
 DEFAULT_API_URL = "https://api.github.com"
@@ -60,6 +60,8 @@ class GitHub:
     """Only the endpoints the maintenance commands actually use."""
 
     def __init__(self, repo: str, token: str, api_url: str | None = None) -> None:
+        # Whatever resolve_token found — --token, GH_TOKEN or gh auth token — is now a secret to hide.
+        redact.remember(token)
         self.repo = repo
         self.token = token
         self.api_url = (api_url or os.environ.get("TAKARO_MAINT_GITHUB_API_URL") or DEFAULT_API_URL).rstrip("/")
@@ -69,7 +71,9 @@ class GitHub:
         url = path if path.startswith("http") else f"{self.api_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("Authorization", f"Bearer {self.token}")
+        # Unredirected: urllib copies ordinary headers onto a redirected request, cross-host
+        # included, so a redirect off the API host would otherwise be handed the bearer token.
+        request.add_unredirected_header("Authorization", f"Bearer {self.token}")
         request.add_header("Accept", "application/vnd.github+json")
         request.add_header("X-GitHub-Api-Version", "2022-11-28")
         request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
@@ -117,44 +121,16 @@ class GitHub:
                 items.append(payload)
             match = _LINK_NEXT.search(link or "")
             next_path = match.group(1) if match else None
+            if next_path is not None and not next_path.startswith(f"{self.api_url}/"):
+                raise TrackerError(f"refusing to follow a pagination link off {self.api_url}: {next_path}")
         return items
 
     # -- releases -------------------------------------------------------------
     def release_by_tag(self, tag: str) -> dict[str, Any]:
-        return self.get(f"/repos/{self.repo}/releases/tags/{urllib.parse.quote(tag)}")  # type: ignore[no-any-return]
+        return self.get(f"/repos/{self.repo}/releases/tags/{urllib.parse.quote(tag)}")
 
     def assets(self, release_id: int) -> list[dict[str, Any]]:
         return self.paginate(f"/repos/{self.repo}/releases/{release_id}/assets?per_page=100")
-
-    def upload_asset(self, release_id: int, file: Path, *, content_type: str = "application/octet-stream") -> Any:
-        url = f"https://uploads.github.com/repos/{self.repo}/releases/{release_id}/assets?name={file.name}"
-        request = urllib.request.Request(url, data=file.read_bytes(), method="POST")
-        request.add_header("Authorization", f"Bearer {self.token}")
-        request.add_header("Content-Type", content_type)
-        request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
-        try:
-            with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310
-                return json.loads(response.read() or b"null")
-        except urllib.error.HTTPError as exc:
-            raise TrackerError(f"uploading {file.name} -> HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise TrackerError(f"uploading {file.name} failed: {exc.reason}") from exc
-
-    def download_asset(self, asset_id: int, dest: Path) -> Path:
-        url = f"{self.api_url}/repos/{self.repo}/releases/assets/{asset_id}"
-        request = urllib.request.Request(url, method="GET")
-        request.add_header("Authorization", f"Bearer {self.token}")
-        request.add_header("Accept", "application/octet-stream")
-        request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
-        try:
-            with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(response.read())
-        except urllib.error.HTTPError as exc:
-            raise TrackerError(f"downloading asset {asset_id} -> HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise TrackerError(f"downloading asset {asset_id} failed: {exc.reason}") from exc
-        return dest
 
     def delete_asset(self, asset_id: int) -> None:
         self.delete(f"/repos/{self.repo}/releases/assets/{asset_id}")
@@ -172,16 +148,16 @@ class GitHub:
         return [item for item in self.paginate(path) if "pull_request" not in item]
 
     def issue_get(self, number: int) -> dict[str, Any]:
-        return self.get(f"/repos/{self.repo}/issues/{number}")  # type: ignore[no-any-return]
+        return self.get(f"/repos/{self.repo}/issues/{number}")
 
     def issue_create(self, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
-        return self.post(f"/repos/{self.repo}/issues", payload)  # type: ignore[no-any-return]
+        return self.post(f"/repos/{self.repo}/issues", payload)
 
     def issue_update(self, number: int, **fields: Any) -> dict[str, Any]:
-        return self.patch(f"/repos/{self.repo}/issues/{number}", fields)  # type: ignore[no-any-return]
+        return self.patch(f"/repos/{self.repo}/issues/{number}", fields)
 
     def issue_close(self, number: int, reason: str = "completed") -> dict[str, Any]:
         return self.issue_update(number, state="closed", state_reason=reason)
@@ -193,7 +169,7 @@ class GitHub:
 
     def contents(self, path: str, ref: str | None = None) -> dict[str, Any]:
         suffix = f"?ref={urllib.parse.quote(ref)}" if ref else ""
-        return self.get(f"/repos/{self.repo}/contents/{urllib.parse.quote(path)}{suffix}")  # type: ignore[no-any-return]
+        return self.get(f"/repos/{self.repo}/contents/{urllib.parse.quote(path)}{suffix}")
 
 
 def client(repo: str | None, token: str | None, api_url: str | None, repo_root: Path) -> GitHub:

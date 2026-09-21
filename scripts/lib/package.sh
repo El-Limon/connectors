@@ -44,6 +44,19 @@ pkg_epoch() {
   printf '%s\n' "$PKG_MIN_EPOCH"
 }
 
+pkg_require() {
+  # The archivers are assumed everywhere below. A missing one otherwise surfaces as
+  # "zip: command not found" from inside a subshell whose status is easy to lose, so name
+  # the tool and the function that wanted it while there is still something to say.
+  local tool
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || {
+      printf 'error: %s needs %s, which is not on PATH\n' "${FUNCNAME[1]}" "$tool" >&2
+      return 1
+    }
+  done
+}
+
 pkg_normalize() {
   # One permission per kind and one timestamp for everything, so neither the builder's umask
   # nor the moment of checkout can reach the archive.
@@ -59,6 +72,7 @@ pkg_zip() {
   # entry order; feeding only files keeps directory entries (and their own mtimes) out.
   local stage="${1:?pkg_zip <stage> <folder> <out.zip>}" folder="${2:?}" out
   out="$(pkg_abs "${3:?}")"
+  pkg_require zip || return 1
   pkg_normalize "$stage/$folder"
   mkdir -p "$(dirname "$out")"
   rm -f "$out.tmp.$$"
@@ -71,6 +85,7 @@ pkg_tar_gz() {
   # --mtime cannot reach.
   local stage="${1:?pkg_tar_gz <stage> <folder> <out.tar.gz>}" folder="${2:?}" out epoch
   out="$(pkg_abs "${3:?}")"
+  pkg_require tar gzip || return 1
   epoch="$(pkg_epoch)"
   pkg_normalize "$stage/$folder"
   mkdir -p "$(dirname "$out")"
