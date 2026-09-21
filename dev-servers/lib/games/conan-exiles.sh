@@ -1,42 +1,55 @@
 #!/usr/bin/env bash
-# Conan Exiles: a TypeScript sidecar beside the dedicated server.
+# Conan Exiles: an exactly pinned Steam build plus the Takaro TypeScript sidecar.
 #
 # Sourced by dev-servers/lib/common.sh. It registers the game in the shared registry and
 # defines the steps install.sh, deploy-connector.sh and verify-connectors.sh dispatch to.
 
 ds_register 120 'conan-exiles|conan-exiles.yml|-|conan-exiles conan-bridge|12|6|sidecar|Conan Exiles + Takaro TypeScript sidecar|conan-exiles'
 
+# The compose file mounts the install at /conan from here, and that is what the ledger
+# describes; the rendered bridge config lives beside it under bridge/.
+ds_target_dest_conan_exiles() { printf '%s/server' "$(ds_data_dir conan-exiles)"; }
+
 install_conan_exiles() {
-    ds_info "Building the Conan Exiles server image..."
-    ds_compose conan-exiles build conan-exiles
-    mkdir -p "${DATA}/server" "${DATA}/bridge" "${DATA}/logs"
+    local target dest
+    target="$(ds_target conan-exiles)"
+    dest="$(ds_target_dest conan-exiles)"
 
-    ds_info "Downloading Conan Exiles game files (~35 GB, this takes a long time)..."
-    # CONAN_INSTALL_ONLY makes the entrypoint exit after SteamCMD instead of
-    # launching the server, so install stays a foreground, one-shot step.
-    ds_compose conan-exiles run --rm \
-        -e CONAN_INSTALL_ONLY=1 --no-deps conan-exiles
-    ds_fix_ownership "$DATA"
+    ds_info "Resolving the catalog target for conan-exiles..."
+    ds_write_target_env conan-exiles
+    mkdir -p "$dest" "${DATA}/bridge"
 
+    # The exact pinned build, by depot manifest: the game's Linux content and the
+    # Steamworks redistributable it needs. No Steam client, no updater, no branch head.
+    ds_info "Installing the pinned Conan Exiles build (${target}) into ${dest}..."
+    ds_maint install --game conan-exiles --target "$target" --dest "$dest"
+
+    # One image serves both containers, and the catalog pins it by digest.
+    ds_info "Pulling the pinned image..."
+    ds_compose conan-exiles pull
+
+    # The sidecar is configured by a file; the server reads Game.ini, which the
+    # entrypoint writes on first boot.
     ds_render_config conan-exiles
+    mkdir -p "${dest}/ConanSandbox/Saved/Logs"
 
-    mkdir -p "${DATA}/server/ConanSandbox/Saved/Logs"
     "${DS_DIR}/scripts/deploy-connector.sh" conan-exiles
 }
 
 deploy_conan_exiles() {
-    # The sidecar runs straight from the connector directory, which compose
-    # bind-mounts read-only. Building here is the whole deploy.
-    ds_info "Building Conan Exiles sidecar (npm)..."
-    if ds_have npm; then
-        ( cd "${REPO_ROOT}/games/conan-exiles/bridge" && npm ci && npm run build )
-    else
-        ds_info "No host Node — building in node:22-slim"
-        ds_toolchain_run node:22-slim "${REPO_ROOT}/games/conan-exiles/bridge" \
-            sh -c "npm ci && npm run build"
-    fi
-    [ -f "${REPO_ROOT}/games/conan-exiles/bridge/dist/index.js" ] || ds_die "games/conan-exiles/bridge/dist/index.js missing after build"
-    ds_ok "${REPO_ROOT}/games/conan-exiles/bridge/dist (mounted read-only into the bridge container)"
+    local target tmp
+    target="$(ds_target conan-exiles)"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+
+    ds_info "Building the Conan Exiles sidecar for ${target} (Node in the pinned image)..."
+    ds_maint build --game conan-exiles --target "$target" \
+        --version "$("${REPO_ROOT}/scripts/dev-version.sh" conan-exiles)" \
+        --out "$tmp"
+    ds_maint deploy --game conan-exiles --target "$target" \
+        --dest "$(ds_target_dest conan-exiles)" \
+        --from "${tmp}/build-manifest.json"
+    ds_ok "$(ds_target_dest conan-exiles)/TakaroBridge/TakaroConanExiles"
 }
 
 ds_source_paths_conan_exiles() { echo "games/conan-exiles/bridge/src games/conan-exiles/bridge/package.json games/conan-exiles/bridge/tsconfig.json"; }

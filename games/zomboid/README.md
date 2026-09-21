@@ -22,16 +22,23 @@ You need:
 
 ### 2. Download the connector
 
-Download **`TakaroConnector-1.0.0.jar`** from the latest `zomboid-vX.Y.Z` release on the
-releases page:
+Download **`takaro-zomboid-agent-linux-42.20.4-<version>.jar`** from the latest
+`zomboid-vX.Y.Z` release on the releases page:
 
 > https://github.com/gettakaro/connectors/releases
 
 Direct link pattern:
-`https://github.com/gettakaro/connectors/releases/download/zomboid-v<version>/TakaroConnector-<version>.jar`
+`https://github.com/gettakaro/connectors/releases/download/zomboid-v<version>/takaro-zomboid-agent-linux-42.20.4-<version>.jar`
+
+The old name `TakaroConnector-<version>.jar` is published beside it as a byte-identical copy and
+will be kept for two more releases.
 
 Use `zomboid-v1.0.0` or newer. The results in the table below were proven on the code that
 shipped in 1.0.0. Do not use the `zomboid-dev` pre-release; that is an untested rolling build.
+
+**Supported server build:** Project Zomboid 42.20.4, Steam build 24909836. The connector checks
+the server jar when it starts and refuses to hook another build unless you set
+`TAKARO_TARGET_POLICY=warn` on the server process.
 
 The download is a **single self-contained jar** — everything it needs (ByteBuddy, the WebSocket
 client, Gson) is already inside it. There is nothing to unzip.
@@ -100,6 +107,7 @@ it to the server console. In order, you should see:
 
 ```
 premain: Takaro Project Zomboid connector (M2)
+target-check: {"result":"ok", ...}
 config: loaded /home/steam/Zomboid/Takaro/TakaroConfig.txt
 premain: hooks installed
 first tick reached — starting Takaro connector
@@ -108,6 +116,10 @@ WebSocket connected, sending identify...
 
 If you see `config: /home/steam/Zomboid/Takaro/TakaroConfig.txt not present, using env only`,
 the connector did not find your config file — check the path and the file name.
+
+If the `target-check` line says `"result":"refuse"`, your server is a different Project Zomboid
+build from the one this jar was built for and no hooks were installed. Use the release built for
+your build, or set `TAKARO_TARGET_POLICY=warn` to run it anyway (the hooks may bind nothing).
 
 And in Takaro, the game server shows as **online**. If it stays offline, the registration token
 is the first thing to re-check.

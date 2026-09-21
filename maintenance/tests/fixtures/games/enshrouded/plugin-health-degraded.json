@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "version": "0.4.2",
+  "bootId": "6f1a2c0b",
+  "gameBuild": "1024233",
+  "capabilities": {
+    "logEvents": "ok",
+    "players": "ok",
+    "gameThread": "ok",
+    "kick": "ok",
+    "ban": "ok",
+    "unban": "ok",
+    "listBans": "ok",
+    "shutdown": "ok",
+    "playerLocation": "ok",
+    "playerInventory": "ok",
+    "teleport": "degraded",
+    "giveItem": "ok",
+    "sendMessage": "ok",
+    "chatEvents": "ok",
+    "deathEvents": "ok",
+    "killEvents": "ok",
+    "listItems": "ok",
+    "listEntities": "ok",
+    "listLocations": "ok",
+    "executeCommand": "ok"
+  },
+  "capabilityDetails": {
+    "players": "log-derived (online peer + login lines)",
+    "teleport": "signature 'addComponent' did not resolve; the hook was not installed"
+  },
+  "diagnostics": {
+    "tickCount": 2278,
+    "tickThreadId": 204,
+    "tickThreadChanges": 0,
+    "logLines": 290,
+    "imageTimestamp": "0x69fdecc9",
+    "resolved": [
+      {
+        "name": "logSink",
+        "rva": "0x4df6b0",
+        "hooked": true,
+        "how": "signature"
+      }
+    ]
+  }
+}

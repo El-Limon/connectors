@@ -1,0 +1,3 @@
+../_data/zomboid/server:/home/steam/ZomboidDedicatedServer
+../_data/zomboid/config:/home/steam/Zomboid
+../_data/zomboid/server/.takaro/steamcmd-stub:/home/root/.local/steamcmd:ro

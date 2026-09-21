@@ -7,4 +7,4 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 EXE_MOUNT=()
 if [ -n "${ENSHROUDED_EXE:-}" ]; then EXE_MOUNT=(-v "$(realpath "$ENSHROUDED_EXE")":/exe/enshrouded_server.exe:ro -e ENSHROUDED_EXE=/exe/enshrouded_server.exe); fi
-docker run --rm -v "$PWD":/p "${EXE_MOUNT[@]}" gcc:14 sh -c 'cd /p && g++ -std=c++17 -Itests/shim -Isrc -include cstdarg tests/state_test.cpp src/state.cpp src/common.cpp -o /tmp/t && /tmp/t && g++ -std=c++17 -Isrc tests/moderation_test.cpp -o /tmp/m && /tmp/m'
+docker run --rm -v "$PWD":/p "${EXE_MOUNT[@]}" gcc:14@sha256:cb57ac6c7917425c057c736fe3a240df25bce310418d61cd223bc8e411364876 sh -c 'cd /p && g++ -std=c++17 -Itests/shim -Isrc -include cstdarg tests/state_test.cpp src/state.cpp src/common.cpp -o /tmp/t && /tmp/t && g++ -std=c++17 -Isrc tests/moderation_test.cpp -o /tmp/m && /tmp/m'

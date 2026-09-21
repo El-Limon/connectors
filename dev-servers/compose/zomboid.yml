@@ -1,7 +1,11 @@
+---
 name: takaro-dev-zomboid
+
 services:
   zomboid:
-    image: renegademaster/zomboid-dedicated-server:latest
+    # Resolved from the catalog into _data/.targets/zomboid.env by install.sh: image, tag
+    # and digest all come from catalog/zomboid/targets/<id>.json.
+    image: "${ZOMBOID_IMAGE:-target-not-resolved}"
     container_name: takaro-dev-zomboid
     restart: unless-stopped
     stop_grace_period: 2m
@@ -18,14 +22,19 @@ services:
       RCON_PORT: "27015"
       MAX_RAM: 8192m
       MAX_PLAYERS: "16"
+      # Documentation of the branch the pinned build was published on. The image would
+      # pass it to `app_update 380870 -beta $GAME_VERSION validate`, which never runs: the
+      # steamcmd-stub mount below takes that step out.
       GAME_VERSION: public
       UDP_PORT: "16262"
       TZ: Europe/Brussels
       # Takaro connector: injected into the PZ server JVM. The native launcher
-      # (ProjectZomboid64 -> JNI_CreateJavaVM) has no JAVA_OPTS knob, and the
-      # install dir is reverted by SteamCMD validate on every start, so the
-      # agent lives in the persistent cache-dir mount and is injected here.
-      JAVA_TOOL_OPTIONS: "-javaagent:/home/steam/Zomboid/Takaro/TakaroConnector.jar"
+      # (ProjectZomboid64 -> JNI_CreateJavaVM) has no JAVA_OPTS knob. The agent now lives
+      # in the install directory, which the stubbed updater can no longer revert.
+      JAVA_TOOL_OPTIONS: "-javaagent:/home/steam/ZomboidDedicatedServer/Takaro/TakaroConnector.jar"
+      # enforce: the agent refuses to install its hooks in a server that is not the build
+      # the catalog target pins. warn to run it against another build anyway.
+      TAKARO_TARGET_POLICY: "${TAKARO_TARGET_POLICY:-enforce}"
       # Connector config. The agent's ConfigLoader reads these env vars and lets
       # them OVERRIDE any Zomboid/Takaro/TakaroConfig.txt, so this is the single
       # source of truth (env-var connector, like Minecraft/Rust).
@@ -34,8 +43,13 @@ services:
       TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:-}"
       TAKARO_DEBUG: "${TAKARO_DEBUG:-false}"
     volumes:
-      - ../_data/zomboid/config:/home/steam/Zomboid
       - ../_data/zomboid/server:/home/steam/ZomboidDedicatedServer
+      - ../_data/zomboid/config:/home/steam/Zomboid
+      # The image's entrypoint runs `steamcmd.sh +runscript install_server.scmd`
+      # (app_update 380870 … validate) on every start and exposes no knob to disable it.
+      # takaro-maint install writes a stub steamcmd.sh here; mounting it over the image's
+      # own steamcmd directory is what keeps the pinned bytes pinned.
+      - ../_data/zomboid/server/.takaro/steamcmd-stub:/home/root/.local/steamcmd:ro
     logging:
       driver: json-file
       options:
