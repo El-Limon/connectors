@@ -26,7 +26,9 @@ REFERENCES="./_data/7dtd-binaries/${SEVEND2D_FP16}"
     --game 7d2d --target "${SEVEND2D_TARGET}" --dest "${REFERENCES}"
 
 # The pinned third-party dependencies, verified against the catalog before they are used.
-docker compose run --rm deps
+# --build keeps the toolchain image in step with Dockerfile.builder; the layers are cached,
+# so an unchanged Dockerfile costs a second.
+docker compose run --rm --build --user "$(id -u):$(id -g)" -e HOME=/tmp deps
 
 # The one assembly whose hash decides whether this mod can be built at all. The catalog
 # says what it must be; there is no override, because an override asserts nothing about

@@ -45,8 +45,16 @@ echo "Building websocket-sharp from the pinned commit..."
 fetch "${SEVEND2D_DEP_WEBSOCKET_SHARP_URL}" "${SEVEND2D_DEP_WEBSOCKET_SHARP_SHA256}" "${work}/websocket-sharp.tar.gz"
 mkdir -p "${work}/websocket-sharp"
 tar -xzf "${work}/websocket-sharp.tar.gz" -C "${work}/websocket-sharp" --strip-components=1
-( cd "${work}/websocket-sharp" && msbuild websocket-sharp.sln /p:Configuration=Release /p:Deterministic=true )
-ws_dll="$(find "${work}/websocket-sharp" -name websocket-sharp.dll -path '*Release*' | head -1)"
+# The library project, not the 2008-era solution (which also holds three example apps
+# msbuild refuses to load). Its AssemblyVersion ends in `.*`, which asks the compiler to
+# stamp the build date into the assembly and makes determinism impossible; pinning that
+# last field is what lets the same commit produce the same DLL twice.
+sed -i -E 's/AssemblyVersion\("([0-9]+\.[0-9]+\.[0-9]+)\.\*"\)/AssemblyVersion("\1.0")/' \
+    "${work}/websocket-sharp/websocket-sharp/AssemblyInfo.cs"
+( cd "${work}/websocket-sharp" \
+    && msbuild websocket-sharp/websocket-sharp.csproj \
+        /p:Configuration=Release /p:Deterministic=true /p:DebugType=none )
+ws_dll="$(find "${work}/websocket-sharp" -path '*bin/Release*' -name websocket-sharp.dll | head -1)"
 [ -n "$ws_dll" ] || { echo "error: websocket-sharp.dll was not built" >&2; exit 6; }
 
 echo "Unpacking the pinned NuGet packages..."

@@ -25,6 +25,10 @@ sevend2d_resolve_target "${TARGET}"
 
 cd "${PROJECT_ROOT}"
 echo "Building the Takaro mod for ${SEVEND2D_TARGET} (${SEVEND2D_FP16})..."
-docker compose run --rm builder bash -c \
+# As the calling user, so the build output in _data/ stays manageable without sudo.
+docker compose run --rm --build \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
+    builder bash -c \
     "msbuild mod/Takaro.sln /p:Configuration=Release /p:Deterministic=true /p:DebugType=none"
 echo "Build completed successfully."

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -23,6 +24,22 @@ from ..steam.install import SteamInput
 from . import add_selection_arguments, select_one
 
 REFERENCES_MARKER = Path(".takaro") / "references.json"
+
+
+def selects(relative: str, selectors: list[str]) -> bool:
+    """Does one of this target's ``build.references`` selectors name this file?
+
+    DepotDownloader writes its own bookkeeping (the depot manifest and its checksum) into
+    the download directory alongside the files it fetched, so what came out of it is
+    filtered by the same selectors that went in rather than taken wholesale.
+    """
+    for selector in selectors:
+        if selector.startswith("regex:"):
+            if re.search(selector[len("regex:") :], relative):
+                return True
+        elif relative == selector or relative.startswith(selector.rstrip("/") + "/"):
+            return True
+    return False
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -271,6 +288,8 @@ def _references(args: Any) -> int:
         seen: dict[str, str] = {}
         for source in sorted(path for path in subset.rglob("*") if path.is_file()):
             relative = source.relative_to(subset).as_posix()
+            if not selects(relative, selectors):
+                continue
             if source.name in seen:
                 raise ConflictError(
                     f"the reference subset holds two files called {source.name} "

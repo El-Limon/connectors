@@ -35,7 +35,7 @@ sed -i "s|<Version value=\"[^\"]*\" />|<Version value=\"${VERSION}\" />|" "${STA
 
 # Packaged inside the toolchain image: the host has no zip, and the archive has to be
 # byte-identical wherever it is built.
-docker compose run --rm \
+docker compose run --rm --build \
     --user "$(id -u):$(id -g)" \
     -e SOURCE_DATE_EPOCH \
     -e HOME=/tmp \

@@ -110,7 +110,10 @@ def main(argv: list[str]) -> int:
             "          Size Chunks File SHA                                 Flags Name",
         ]
         lines += [f"{size:>14} {1:>6} {sha1} {0:>5} {name}" for name, size, sha1 in rows]
-        Path.cwd().joinpath(f"manifest_{depot}_{manifest}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Where the real tool puts it: under its install directory, not next to the process.
+        listing = Path(_flag(argv, "-dir") or Path.cwd() / "depots" / depot / manifest)
+        listing.mkdir(parents=True, exist_ok=True)
+        (listing / f"manifest_{depot}_{manifest}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
         print("\n".join(lines))
         return 0
 
@@ -131,6 +134,10 @@ def main(argv: list[str]) -> int:
         if corrupt and name == corrupt:
             destination.write_bytes(source.read_bytes() + b"tampered")
         copied += 1
+    # The real tool leaves its own bookkeeping in the download directory; anything that
+    # reads the result has to tell those files apart from the depot's.
+    (target / f"{depot}_{manifest}.manifest").write_bytes(b"depot manifest bookkeeping")
+    (target / f"{depot}_{manifest}.manifest.sha").write_text("0" * 40 + "\n", encoding="utf-8")
     print(f"Downloaded {copied} files from depot {depot} manifest {manifest}")
     return 0
 

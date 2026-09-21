@@ -257,11 +257,14 @@ def manifest_only(
     if manifest:
         args += ["-manifest", str(manifest)]
     secrets = _apply_credentials(args, credentials)
-    before = {path.name for path in out.glob("manifest_*.txt")}
+    # DepotDownloader writes the listing under its own install directory
+    # (``depots/<depot>/<manifest>/``) rather than next to the process, so the whole
+    # output directory is searched rather than only its top level.
+    before = {path for path in out.rglob("manifest_*.txt")}
     run(args, cwd=out, log=log, cache=cache, secrets=secrets)
-    produced = sorted(path for path in out.glob(f"manifest_{depot}_*.txt") if path.name not in before)
+    produced = sorted(path for path in out.rglob(f"manifest_{depot}_*.txt") if path not in before)
     if not produced:
-        produced = sorted(out.glob(f"manifest_{depot}_*.txt"))
+        produced = sorted(out.rglob(f"manifest_{depot}_*.txt"))
     if not produced:
         raise UpstreamUnavailable(
             f"DepotDownloader wrote no manifest listing for depot {depot}; {NO_FALLBACK}",
