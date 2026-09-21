@@ -84,13 +84,19 @@ pkg_tar_gz() {
 
 pkg_sha256sums() {
   # GNU sha256sum format, sorted by name, covering every regular file in the directory but
-  # the checksum file itself.
-  local dir="${1:?pkg_sha256sums <dir>}"
-  (
+  # the checksum file itself. The listing is built first and written afterwards: a redirection
+  # into the directory being listed would put the half-written file into its own listing.
+  local dir="${1:?pkg_sha256sums <dir>}" listing
+  listing="$(
     cd "$dir" &&
       find . -maxdepth 1 -type f ! -name SHA256SUMS |
       sed 's|^\./||' |
       LC_ALL=C sort |
-      xargs -r sha256sum >SHA256SUMS
-  )
+      xargs -r sha256sum
+  )"
+  if [ -n "$listing" ]; then
+    printf '%s\n' "$listing" >"$dir/SHA256SUMS"
+  else
+    : >"$dir/SHA256SUMS"
+  fi
 }
