@@ -107,3 +107,20 @@ def test_the_plan_matrix_lists_the_four_minecraft_targets(run: Any) -> None:
     for row in rows:
         assert row["id"] and row["fp16"] and row["status"]
         assert len(row["fp16"]) == 16
+
+
+def test_every_job_checks_out_the_commit_that_started_the_run() -> None:
+    """A branch tip can move while earlier jobs run; `github.sha` cannot."""
+    text = WORKFLOW.read_text()
+    expected = "ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}"
+
+    names = [match.group("name") for match in JOB.finditer(text)]
+    assert names, "the workflow has no jobs"
+    for name in names:
+        block = job(name)
+        if "actions/checkout" not in block:
+            continue
+        assert expected in step(block, "actions/checkout"), name
+
+    assert "github.ref" not in text, "a release job would check out a moving branch tip"
+
