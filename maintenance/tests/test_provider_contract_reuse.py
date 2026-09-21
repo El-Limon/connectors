@@ -432,3 +432,76 @@ def test_the_dummy_game_needs_no_adapter_and_no_mention_in_the_source() -> None:
         if DUMMY_GAME in path.read_text(encoding="utf-8")
     ]
     assert named == [], f"the provider contract is generic, but these modules name the game: {named}"
+
+
+# -- T-C9 a Steam game that exists only in the catalog --------------------------
+DUMMY_APP = 999
+DUMMY_DEPOT = "9991"
+
+
+def dummy_app_info() -> dict[str, Any]:
+    """One branch, one depot: the smallest app a Steam watch block can describe."""
+    return {
+        "common": {"name": "Dummy Steam Dedicated Server", "type": "Tool", "oslist": "linux"},
+        "depots": {
+            DUMMY_DEPOT: {
+                "config": {"oslist": "linux"},
+                "manifests": {"public": {"gid": "5500000000000000001", "size": "2048", "download": "1024"}},
+            },
+            "branches": {"public": {"buildid": "1", "timeupdated": "1788200000"}},
+            "privatebranches": "0",
+        },
+    }
+
+
+def test_a_dummy_steam_game_scans_with_no_game_specific_code(
+    run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Steam game reaches the tracker by adding catalog data and nothing else."""
+    import fake_steamcmd
+    from fake_github import FakeGitHub
+
+    root = tmp_path / "steam-root"
+    fake_steamcmd.serve(root, DUMMY_APP, dummy_app_info())
+    for name, value in fake_steamcmd.environment(root, tmp_path / "steam-argv.jsonl").items():
+        monkeypatch.setenv(name, value)
+
+    with FakeGitHub() as fake:
+        dummy_game(
+            catalog_copy,
+            {
+                "id": "steam",
+                "provider": "steam",
+                "baseUrl": "https://store.steampowered.com",
+                "watch": {
+                    "kind": "game",
+                    "component": DUMMY_GAME,
+                    "app": DUMMY_APP,
+                    "os": "linux",
+                    "depots": [DUMMY_DEPOT],
+                    "channels": {"public": {"branch": "public"}},
+                },
+            },
+        )
+        monkeypatch.setenv("GH_TOKEN", "token-for-tests")
+
+        code, payload, err = run(
+            "scan",
+            "--game",
+            DUMMY_GAME,
+            "--bootstrap",
+            "--publish",
+            "--repo",
+            "gettakaro/connectors",
+            "--api-url",
+            fake.api_url,
+            repo=catalog_copy,
+        )
+
+        assert code == 0, err
+        assert payload["sources"]["dummy/steam"]["history"] == "heads-only"
+        assert [observation["component"] for observation in payload["observations"]] == [DUMMY_GAME]
+        filed = [issue for issue in fake.issues if "Dummy" in str(issue["title"])]
+        assert [issue["title"] for issue in filed] == ["Dummy Release Game public: build 1 needs a target"]
+        assert f"component={DUMMY_GAME}" in str(filed[0]["body"]).splitlines()[0]
+        assert "| Depot 9991 manifest | `5500000000000000001` (2048 bytes) |" in str(filed[0]["body"])
