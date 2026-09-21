@@ -157,33 +157,34 @@ upgrade. Start the server, then the bridge.
 
 ## What works, what doesn't
 
-No live end-to-end test of this connector has been recorded. The statuses below come from the
-connector's own capability record and its automated tests, so almost everything is marked
-"not verified in a live test" rather than confirmed working.
+On 2026-09-21 the connector was run against a real TShock 6.1.0 server (the pinned image, the
+built plugin and bridge): once against a stand-in Takaro, which drove every action below that is
+marked proven, and once against Takaro itself, which identified the server and answered. The rows
+still marked "not verified in a live test" need a connected player, which that run did not have.
 ✅ = proven, ⚠️ = works with a caveat or unproven, ❌ = does not work.
 
 | What | | Notes |
 |---|---|---|
-| Connection & heartbeat | ⚠️ | The bridge connects outbound to Takaro and checks TShock on startup; proven only against a fake TShock, not verified in a live test. |
-| Server restart / reconnect | ⚠️ | The bridge reconnects and re-follows the new TShock log after a restart; not verified in a live test. |
-| Player list | ⚠️ | Read from the TShock REST API. Not verified in a live test. |
+| Connection & heartbeat | ✅ | Proven 2026-09-21: the bridge identified to Takaro itself and stayed answering its requests, with TShock reachable. |
+| Server restart / reconnect | ✅ | Proven 2026-09-21: the connection was cut and the bridge identified again ~3 s later, then answered normally. |
+| Player list | ⚠️ | Read from the TShock REST API. Proven 2026-09-21 on an empty server (an empty list, live); never checked with a player on it. |
 | Single player lookup | ⚠️ | Read from the TShock REST API. Not verified in a live test. |
 | Player location | ⚠️ | Uses the plugin's `/takaropos` command; checked against a connected player on a local server, but never end to end through Takaro. |
 | Player inventory | ⚠️ | The plugin's `/takaroinv` reports inventory, armour, dyes, trash, piggy bank/safe/forge/void vault and stored loadouts. The capability record still lists inventory as returning an empty list, so which behaviour you get is unconfirmed — not verified in a live test. |
-| Item catalogue | ⚠️ | 6147 items extracted from the server assemblies, so a name like `Wood` resolves to the code `/give` wants. Not verified in a live test. |
+| Item catalogue | ✅ | 6147 items extracted from the server assemblies, so a name like `Wood` resolves to the code `/give` wants. Proven 2026-09-21: returned in full to a live request. |
 | Entity catalogue | ❌ | Terraria NPCs spawn from world state; there is no registry to list, so Takaro gets an empty list. |
 | Locations / points of interest | ❌ | Terraria has no named-location concept for Takaro to list; Takaro gets an empty list. |
 | Chat messages from players | ⚠️ | Parsed out of the TShock log, which is best-effort text matching. Not verified in a live test. |
-| Broadcast a message | ⚠️ | Uses the TShock broadcast endpoint. Not verified in a live test. |
+| Broadcast a message | ✅ | Runs TShock's `/broadcast`, so it reaches the players and the server console. Proven 2026-09-21 against a live server. |
 | Whisper a player | ⚠️ | Sent per recipient through the same path. Not verified in a live test. |
 | Give an item | ⚠️ | Goes through the plugin so a full inventory is refused rather than dropping items on the floor. Not verified in a live test. |
 | Teleport a player | ⚠️ | Uses the plugin's `/takarotp` with world X/Y coordinates. Not verified in a live test. |
-| Run a console command | ⚠️ | Only commands you allowlist run — by default `help` and anything starting with `say` or `time`. Not verified in a live test. |
+| Run a console command | ✅ | Only commands you allowlist run — by default `help` and anything starting with `say` or `time`. Proven 2026-09-21 against a live server. |
 | Kick | ⚠️ | Runs the TShock kick command. Not verified in a live test. |
 | Ban (timed and permanent) | ⚠️ | The plugin bans the player's UUID **and** their IP and tags the reason `[takaro:<name>]`, because a TShock name ban does not hold against an unauthenticated player. Without the plugin the bridge falls back to the old name ban. Not verified in a live test. |
 | Unban | ⚠️ | The plugin finds the ban by its `[takaro:<name>]` tag and clears every identifier. Not verified in a live test. |
 | Ban list | ⚠️ | Read from the TShock REST API. Not verified in a live test. |
-| Shut the server down | ⚠️ | Off by default; needs `enableShutdown=true`. Not verified in a live test. |
+| Shut the server down | ✅ | Off by default; needs `enableShutdown=true`. Proven 2026-09-21: the server saved and exited cleanly on request. |
 | Player joined event | ⚠️ | Derived by polling the player list, so it arrives up to `pollIntervalMs` (default 10 s) late. Not verified in a live test. |
 | Player left event | ⚠️ | Same polling as above, same delay. Not verified in a live test. |
 | Player chat event | ⚠️ | See "Chat messages from players". |
@@ -197,8 +198,9 @@ connector's own capability record and its automated tests, so almost everything 
 
 ### Known issues
 
-- **Nothing here has been proven on a live server end to end** except the death and NPC-kill
-  events. Treat every ⚠️ row as untested rather than working.
+- **The 2026-09-21 run had no player on the server**, so joining, chat, give, teleport, kick
+  and ban are still unproven; the death and NPC-kill events were proven earlier, with a player.
+  Treat every ⚠️ row as untested rather than working.
 - **Kill weapons can be wrong.** Terraria records no damage source on NPC death, so the weapon is
   whatever the killer was holding when the kill fired — minion, sentry, damage-over-time and
   late-landing projectile kills can credit an item that dealt none of the damage, and it reports
