@@ -27,20 +27,9 @@ done
 ds_load_env
 ds_require_token
 
-# Log line proving the connector reached Takaro. Takaro sending real requests is
-# stronger evidence than a local "connected", so those come first.
-ds_success_pattern() {
-    case "$1" in
-        rust)          echo "Identified and connected|Identified successfully" ;;
-        minecraft-*)   echo "Identified successfully" ;;
-        valheim)       echo "Takaro Valheim request received|Takaro Valheim response frame written" ;;
-        7d2d)          echo "Received WebSocket request" ;;
-        conan-exiles)  echo "Identified with Takaro as gameServerId=" ;;
-        palworld)      echo "identify response from Takaro|Successfully identified with Takaro" ;;
-        terraria)      echo "__NO_CONNECTOR__" ;;
-        *)             echo "__NO_CONNECTOR__" ;;
-    esac
-}
+# Log line proving the connector reached Takaro; each game defines its own in
+# lib/games/<game>.sh. A game that defines none has no Takaro connector to prove.
+ds_success_pattern() { ds_dispatch_or __NO_CONNECTOR__ ds_success_pattern "$1"; }
 
 ds_failure_pattern() {
     # A socket that opens and immediately closes is a failure, not a pass.
