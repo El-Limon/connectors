@@ -190,10 +190,6 @@ jobs:
           name: dist-${{ inputs.connector }}-${{ matrix.target.id }}
           path: dist
 
-      - name: Negative proof (temporary) — alter every manifest row's target
-        run: |
-          jq '.artifacts |= map(.target = "fabric-0.0.0")' dist/build-manifest.json > m.json && mv m.json dist/build-manifest.json
-
       - name: Boot the target against a local fake Takaro and run every check
         # `shell: bash` is what turns on `-o pipefail`; the implicit shell does not, so the
         # `tee` below would swallow a failing verification and let `publish` run anyway.
