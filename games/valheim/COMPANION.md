@@ -20,8 +20,12 @@ Inventory, chat, death, and kill contents are client-reported and therefore untr
 
 ## Packages and Process Roles
 
-- `takaro-valheim-plugin.zip` contains `TakaroValheim`, the dedicated-server connector with Takaro cloud transport and server configuration.
-- `takaro-valheim-companion.zip` contains `TakaroValheimCompanion`, the graphical-client companion with no cloud transport or credentials.
+- `takaro-valheim-plugin-<target>-<version>.zip` contains `TakaroValheim`, the dedicated-server connector with Takaro cloud transport and server configuration.
+- `takaro-valheim-companion-<target>-<version>.zip` contains `TakaroValheimCompanion`, the graphical-client companion with no cloud transport or credentials.
+
+Both are published per maintained target, named after the server build they were made for (for example `takaro-valheim-plugin-linux-1.0.15-3.0.3.zip`). Every release also carries `takaro-valheim-plugin.zip` and `takaro-valheim-companion.zip` as byte-identical aliases of the default target; those names are kept for two more releases and the steps below use them interchangeably with the target-named files.
+
+Nothing in the maintenance harness exercises the companion: `takaro-maint verify` boots a dedicated server, where the companion never loads. Companion behaviour is claimed only from the recorded graphical-client runs under "Observed Mode Behaviour" below and in the evidence boundary of [DEVELOPMENT.md](DEVELOPMENT.md).
 
 Never copy `TakaroValheim.dll` into the client. Never copy `Takaro.Valheim.Companion.dll` into the dedicated server. Each plugin disables itself before Harmony setup when it detects the wrong process role.
 

@@ -1,0 +1,20 @@
+---
+name: takaro-terraria
+
+# Nothing about a TShock build is named here. The builder image is the catalog target's
+# `build.toolchain` (Dockerfile.builder pins it by tag and digest), and the reference
+# assemblies the plugin compiles against are extracted from the target's server image by
+# scripts/setup-environment.sh into _data/refs/<fp16>.
+
+services:
+  # Packages both release roles deterministically (scripts/lib/package.sh needs `zip`,
+  # which the host does not have, and the archive bytes must not depend on who built it).
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.builder
+    volumes:
+      - ./:/app
+      # Read-only, for scripts/lib/package.sh.
+      - ../..:/repo:ro
+    command: ["bash", "-c", "echo 'Builder container ready' && tail -f /dev/null"]

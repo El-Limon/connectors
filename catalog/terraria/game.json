@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "id": "terraria",
+  "name": "Terraria (TShock)",
+  "connector": "terraria",
+  "platforms": ["tshock"],
+  "sources": {
+    "tshock-releases": {
+      "provider": "github-release",
+      "baseUrl": "https://api.github.com",
+      "watch": {
+        "kind": "game",
+        "component": "terraria",
+        "repo": "Pryaxis/TShock",
+        "window": 10,
+        "channels": {
+          "release": {
+            "branch": "release",
+            "tag": "regex:^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+            "prerelease": false,
+            "asset": "^TShock-[0-9][0-9.]*-for-Terraria-[0-9][0-9.]*-linux-(x64|amd64)-Release\\.zip$"
+          },
+          "pre": {
+            "branch": "pre",
+            "tag": "regex:^v[0-9]+\\.[0-9]+\\.[0-9]+-pre[0-9]+$",
+            "prerelease": true,
+            "asset": "^TShock-Beta-linux-x64-Release\\.zip$",
+            "enabled": false
+          }
+        }
+      }
+    },
+    "tshock-download": {"provider": "github-release", "baseUrl": "https://github.com"},
+    "tshock-image": {
+      "provider": "oci-registry",
+      "baseUrl": "https://ghcr.io",
+      "watch": {
+        "kind": "framework",
+        "component": "tshock",
+        "game": {"provider": "github-release", "component": "terraria"},
+        "repository": "pryaxis/tshock",
+        "platform": {"os": "linux", "architecture": "amd64"},
+        "window": 6,
+        "channels": {
+          "release": {"branch": "release", "tag": "regex:^[0-9]+\\.[0-9]+\\.[0-9]+$", "gameRevision": "v{tag}"},
+          "pre": {
+            "branch": "pre",
+            "tag": "regex:^[0-9]+\\.[0-9]+\\.[0-9]+-pre[0-9]+$",
+            "gameRevision": "v{tag}",
+            "enabled": false
+          }
+        }
+      }
+    }
+  },
+  "build": {"system": "script", "projectDir": "games/terraria"},
+  "componentRoles": {
+    "plugin": {
+      "description": "Server-side TShock plugin (TakaroTerrariaEvents.dll) loaded from the additional-plugins directory",
+      "artifactPattern": "takaro-terraria-plugin-{target}-{version}.zip"
+    },
+    "bridge": {
+      "description": "Node bridge that connects outbound to Takaro and drives TShock over its REST API",
+      "artifactPattern": "takaro-terraria-bridge-{target}-{version}.zip"
+    }
+  },
+  "legacyAssetAliases": {
+    "takaro-terraria-plugin.zip": "tshock-v6.1.0/plugin",
+    "takaro-terraria-bridge.zip": "tshock-v6.1.0/bridge"
+  },
+  "devServers": {"composeFile": "terraria.yml"}
+}
