@@ -20,7 +20,7 @@ LEGACY_NAMES = ("TakaroMinecraft.jar",)
 LEGACY_PREFIXES = ("takaro-minecraft-mod-", "takaro-fabric-", "takaro-paper-", "takaro-neoforge-")
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("deploy", help="deploy a built artifact into an installed game directory")
     add_selection_arguments(parser)
     parser.add_argument("--dest", required=True, help="the installed game directory")

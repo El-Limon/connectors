@@ -171,7 +171,7 @@ def read(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise ConflictError(f"{path.name}: not a readable compatibility record ({exc})") from exc
     validate(record)
-    return record  # type: ignore[no-any-return]
+    return record
 
 
 def loads(name: str, payload: bytes) -> dict[str, Any]:
@@ -181,4 +181,4 @@ def loads(name: str, payload: bytes) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ConflictError(f"{name}: not a readable compatibility record ({exc})") from exc
     validate(record)
-    return record  # type: ignore[no-any-return]
+    return record

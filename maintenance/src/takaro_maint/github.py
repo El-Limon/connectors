@@ -127,7 +127,7 @@ class GitHub:
 
     # -- releases -------------------------------------------------------------
     def release_by_tag(self, tag: str) -> dict[str, Any]:
-        return self.get(f"/repos/{self.repo}/releases/tags/{urllib.parse.quote(tag)}")  # type: ignore[no-any-return]
+        return self.get(f"/repos/{self.repo}/releases/tags/{urllib.parse.quote(tag)}")
 
     def assets(self, release_id: int) -> list[dict[str, Any]]:
         return self.paginate(f"/repos/{self.repo}/releases/{release_id}/assets?per_page=100")
@@ -180,16 +180,16 @@ class GitHub:
         return [item for item in self.paginate(path) if "pull_request" not in item]
 
     def issue_get(self, number: int) -> dict[str, Any]:
-        return self.get(f"/repos/{self.repo}/issues/{number}")  # type: ignore[no-any-return]
+        return self.get(f"/repos/{self.repo}/issues/{number}")
 
     def issue_create(self, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
-        return self.post(f"/repos/{self.repo}/issues", payload)  # type: ignore[no-any-return]
+        return self.post(f"/repos/{self.repo}/issues", payload)
 
     def issue_update(self, number: int, **fields: Any) -> dict[str, Any]:
-        return self.patch(f"/repos/{self.repo}/issues/{number}", fields)  # type: ignore[no-any-return]
+        return self.patch(f"/repos/{self.repo}/issues/{number}", fields)
 
     def issue_close(self, number: int, reason: str = "completed") -> dict[str, Any]:
         return self.issue_update(number, state="closed", state_reason=reason)
@@ -201,7 +201,7 @@ class GitHub:
 
     def contents(self, path: str, ref: str | None = None) -> dict[str, Any]:
         suffix = f"?ref={urllib.parse.quote(ref)}" if ref else ""
-        return self.get(f"/repos/{self.repo}/contents/{urllib.parse.quote(path)}{suffix}")  # type: ignore[no-any-return]
+        return self.get(f"/repos/{self.repo}/contents/{urllib.parse.quote(path)}{suffix}")
 
 
 def client(repo: str | None, token: str | None, api_url: str | None, repo_root: Path) -> GitHub:

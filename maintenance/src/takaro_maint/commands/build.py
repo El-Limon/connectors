@@ -16,7 +16,7 @@ from . import add_selection_arguments, select_many
 from .artifact import validate_file
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("build", help="build a target's artifacts and write a build manifest")
     add_selection_arguments(parser, multiple=True)
     parser.add_argument("--version", required=True, help="connector version to stamp into the artifacts")

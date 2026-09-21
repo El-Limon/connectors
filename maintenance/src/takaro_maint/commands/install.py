@@ -19,7 +19,7 @@ from ..install.staging import StagedInstall, is_protected
 from . import add_selection_arguments, select_one
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("install", help="install a target's pinned inputs into a game directory")
     add_selection_arguments(parser)
     parser.add_argument("--dest", required=True, help="the game directory to install into")

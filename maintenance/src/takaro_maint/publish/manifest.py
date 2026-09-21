@@ -101,4 +101,4 @@ def read_manifest(path: Path) -> dict[str, Any]:
     errors = schema.errors_for("build-manifest.schema.json", manifest)
     if errors:
         raise ConflictError(f"{path} is not a valid build manifest: " + "; ".join(errors))
-    return manifest  # type: ignore[no-any-return]
+    return manifest

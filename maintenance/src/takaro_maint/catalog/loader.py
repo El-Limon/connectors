@@ -140,7 +140,7 @@ class Catalog:
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise UsageError(f"{path}: invalid JSON ({exc})") from exc
 

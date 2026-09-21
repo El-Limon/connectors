@@ -23,7 +23,7 @@ HOSTED_ENV = (
 )
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("verify", help="run a target's verification checks against a real server")
     add_selection_arguments(parser, multiple=True)
     parser.add_argument("--artifacts", required=True, help="a build output directory with a build-manifest.json")
