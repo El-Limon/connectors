@@ -23,19 +23,32 @@ mkdir -p "${CONFIG_DIR}" "${INSTALL_DIR}/ConanSandbox/Saved/Logs"
 # RCON is what the Takaro sidecar drives. RconMaxKarma is raised because Conan throttles
 # repeated RCON and the sidecar polls; see games/conan-exiles/README.md. The password
 # lives here and never on the command line, which is logged and inspectable.
+#
+# The section is rewritten on every start rather than written once: RCON_PASSWORD comes
+# from dev-servers/.env, and a Game.ini left alone would keep the server on the old secret
+# while the sidecar is configured with the new one, failing RCON auth with nothing saying why.
 GAME_INI="${CONFIG_DIR}/Game.ini"
-if ! grep -q '^\[RconPlugin\]' "${GAME_INI}" 2>/dev/null; then
-    echo "[conan] Writing [RconPlugin] settings to ${GAME_INI}"
-    cat >> "${GAME_INI}" <<INI
-
+echo "[conan] Writing [RconPlugin] settings to ${GAME_INI}"
+GAME_INI_NEW="${GAME_INI}.takaro-new"
+REST=""
+if [ -f "${GAME_INI}" ]; then
+    # Everything except the [RconPlugin] section; the substitution drops trailing blank
+    # lines, so restarting does not grow the file.
+    REST="$(awk '/^\[RconPlugin\]/ { skip = 1; next } /^\[/ { skip = 0 } !skip' "${GAME_INI}")"
+fi
+: > "${GAME_INI_NEW}"
+if [ -n "${REST}" ]; then
+    printf '%s\n\n' "${REST}" > "${GAME_INI_NEW}"
+fi
+cat >> "${GAME_INI_NEW}" <<INI
 [RconPlugin]
 RconEnabled=1
 RconPassword=${RCON_PASSWORD}
 RconPort=${CONAN_RCON_PORT:-25575}
 RconMaxKarma=1000
 INI
-    chmod 600 "${GAME_INI}"
-fi
+chmod 600 "${GAME_INI_NEW}"
+mv "${GAME_INI_NEW}" "${GAME_INI}"
 
 echo "[conan] Starting the pinned Conan Exiles dedicated server..."
 cd "${INSTALL_DIR}"

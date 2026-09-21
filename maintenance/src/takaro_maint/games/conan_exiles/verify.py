@@ -66,7 +66,8 @@ GAME_INI_RELATIVE = Path("ConanSandbox") / "Saved" / "Config" / "LinuxServer" / 
 RCON_PASSWORD_RELATIVE = Path(".takaro") / "runtime" / "rcon-password"
 BRIDGE_CONFIG_RELATIVE = Path(".takaro") / "runtime" / "bridge" / "TakaroConfig.txt"
 
-RCON_SECTION = "[RconPlugin]"
+#: An existing ``[RconPlugin]`` block, up to the next section header or the end of the file.
+RCON_SECTION_BLOCK = re.compile(r"^\[RconPlugin\]\r?\n.*?(?=^\[|\Z)", re.MULTILINE | re.DOTALL)
 GAME_INI_TEMPLATE = """
 [RconPlugin]
 RconEnabled=1
@@ -98,12 +99,18 @@ logFiles=/bridge/logs/ConanSandbox.log
 
 
 def write_game_ini(data_dir: Path, password: str, *, port: int = 25575) -> Path:
-    """The server's only RCON configuration, appended the way the rig's entrypoint does."""
+    """The server's only RCON configuration, written the way the rig's entrypoint does.
+
+    A ``[RconPlugin]`` section already in the file is replaced rather than left alone.
+    ``ConanSandbox/Saved/`` survives an install, so a second verify run finds the previous
+    run's section there; keeping it would leave the server on the old password while the
+    sidecar is handed the new one, and every RCON check would fail at authentication.
+    """
     path = data_dir / GAME_INI_RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-    if RCON_SECTION not in existing:
-        path.write_text(existing + GAME_INI_TEMPLATE.format(password=password, port=port), encoding="utf-8")
+    body = RCON_SECTION_BLOCK.sub("", existing).rstrip("\n")
+    path.write_text(body + GAME_INI_TEMPLATE.format(password=password, port=port), encoding="utf-8")
     os.chmod(path, 0o600)
     return path
 

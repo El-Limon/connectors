@@ -46,7 +46,6 @@ concurrency:
 
 jobs:
   test:
-    if: ${{ !inputs.tag }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,6 +54,13 @@ jobs:
         working-directory: games/conan-exiles/bridge
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # The same commit the release job builds: a recovery run for an older tag is
+          # gated on that tag's sources, never on whatever main has become. The job is
+          # not gated on `!inputs.tag` -- `release` needs it, and a skipped dependency
+          # would skip the release with it.
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-tags: true
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:

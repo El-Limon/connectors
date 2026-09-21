@@ -609,6 +609,33 @@ def test_deploy_unpacks_the_bridge_folder_and_removes_older_zips(
     assert ledger["artifact"]["path"] == f"{INSTALL_DIR}/{ZIP_NAME}"
 
 
+def test_deploy_keeps_the_operators_config_and_drops_the_previous_release(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    """``TakaroConfig.txt`` is the operator's, is never in the zip, and README promises it survives."""
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    unpacked = dest / INSTALL_DIR / BRIDGE_FOLDER
+    unpacked.mkdir(parents=True, exist_ok=True)
+    config = unpacked / "TakaroConfig.txt"
+    config.write_text("registrationToken=the-operators-own\nrconPassword=theirs\n")
+    config.chmod(0o600)
+    (unpacked / "dist").mkdir(parents=True, exist_ok=True)
+    stale_code = unpacked / "dist" / "removed-in-the-new-release.js"
+    stale_code.write_text("// from the previous version")
+    directory = tmp_path / "dist"
+    bridge_zip(directory / ZIP_NAME)
+    manifest = manifest_for(run, repo, directory, directory / ZIP_NAME)
+
+    code, payload, err = deploy(run, repo, dest, manifest)
+
+    assert code == 0, f"{err}\n{payload}"
+    assert config.read_text() == "registrationToken=the-operators-own\nrconPassword=theirs\n"
+    assert oct(config.stat().st_mode)[-3:] == "600"
+    assert not stale_code.exists(), "everything the new artifact does not carry is still replaced"
+    assert (unpacked / "dist" / "index.js").is_file()
+
+
 def test_a_zip_that_escapes_the_bridge_folder_is_refused(run: Any, repo: Path, dd_log: Path, tmp_path: Path) -> None:
     dest = tmp_path / "server"
     assert install(run, repo, dest)[0] == 0
@@ -721,9 +748,33 @@ def test_before_boot_writes_the_rcon_settings_the_server_reads(tmp_path: Path) -
     assert hooks.rcon_password(tmp_path) == password.group(1)
     assert (tmp_path / ".takaro" / "home").is_dir()
 
-    # Run twice: an existing [RconPlugin] section is left exactly as it was.
+    # Run twice on the same (preserved) data directory: the existing section is rewritten,
+    # so the password the sidecar is handed is the one the server actually reads.
     hooks.before_boot(run, {"TAKARO_WS_URL": "ws://host.docker.internal:34567/"})
-    assert ini.read_text() == body
+    second = ini.read_text()
+    assert second.count("[RconPlugin]") == 1
+    rewritten = re.search(r"RconPassword=(\S+)", second)
+    assert rewritten and rewritten.group(1) != password.group(1)
+    assert hooks.rcon_password(tmp_path) == rewritten.group(1)
+    assert oct(ini.stat().st_mode)[-3:] == "600"
+
+
+def test_before_boot_leaves_the_servers_other_ini_sections_alone(tmp_path: Path) -> None:
+    class Run:
+        data_dir = tmp_path
+        ws_url = ""
+
+    ini = tmp_path / "ConanSandbox" / "Saved" / "Config" / "LinuxServer" / "Game.ini"
+    ini.parent.mkdir(parents=True, exist_ok=True)
+    ini.write_text("[ServerSettings]\nMaxNudity=0\n\n[RconPlugin]\nRconPassword=the-previous-run\n")
+
+    hooks.before_boot(Run(), {"TAKARO_WS_URL": "ws://host.docker.internal:34567/"})
+
+    body = ini.read_text()
+    assert "[ServerSettings]" in body and "MaxNudity=0" in body
+    assert "the-previous-run" not in body
+    assert body.count("[RconPlugin]") == 1
+    assert "RconMaxKarma=1000" in body
 
 
 def test_the_bridge_config_names_the_game_container_and_carries_both_tokens(tmp_path: Path) -> None:

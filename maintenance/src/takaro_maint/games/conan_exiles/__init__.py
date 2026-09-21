@@ -31,6 +31,12 @@ BUILD_SCRIPT = "games/conan-exiles/scripts/build-release.sh"
 
 #: The one folder an artifact zip may write to, and the folder the operator ends up running.
 BRIDGE_FOLDER = "TakaroConanExiles"
+
+#: Operator state that lives inside that folder and never inside the zip. The bridge folder
+#: is emptied before a new artifact is unpacked so a removed file cannot survive an upgrade,
+#: which would take the operator's own configuration -- registration token, RCON password --
+#: with it; README.md's upgrade section promises it survives, so it is carried across.
+DEPLOY_PRESERVED = ("TakaroConfig.txt",)
 LAUNCHER = "ConanSandboxServer.sh"
 SERVER_BINARY = "ConanSandbox/Binaries/Linux/ConanSandboxServer-Linux-Shipping"
 
@@ -265,8 +271,21 @@ class ConanExilesAdapter:
                         "nothing was extracted"
                     )
                 paths.safe_relative(relative, field="artifact zip entry")
+            preserved = []
+            for name in DEPLOY_PRESERVED:
+                kept = folder / name
+                if kept.is_file():
+                    preserved.append((name, kept.read_bytes(), kept.stat().st_mode & 0o777))
             shutil.rmtree(folder, ignore_errors=True)
             archive.extractall(install_dir)
+        for name, body, mode in preserved:
+            restored = folder / name
+            if restored.exists():
+                continue
+            restored.parent.mkdir(parents=True, exist_ok=True)
+            restored.write_bytes(body)
+            os.chmod(restored, mode)
+            output.info(f"kept the existing {BRIDGE_FOLDER}/{name}")
         for stale in sorted(install_dir.glob("takaro-conan-exiles-bridge-*.zip")):
             if stale.name != artifact.name:
                 stale.unlink()
