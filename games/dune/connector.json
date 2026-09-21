@@ -1,0 +1,27 @@
+{
+  "name": "Dune: Awakening",
+  "tagline": "Sidecar for a self-hosted Dune: Awakening battlegroup, with an optional native plugin.",
+  "assetMode": "pick-one",
+  "requirements": [
+    "Takaro registration token",
+    "Self-hosted battlegroup with a Funcom self-hosting token",
+    "AVX2 CPU and ~16 GB RAM for one map server",
+    "Docker Compose or Node.js 22 with access to the battlegroup's Postgres and game RabbitMQ"
+  ],
+  "assets": [
+    {
+      "pattern": "takaro-dune-sidecar-*.tar.gz",
+      "label": "Sidecar",
+      "requires": "Docker Compose · Node.js 22",
+      "hint": "Required. Run it on the battlegroup's network; needs the two GM gates on every map server.",
+      "required": true
+    },
+    {
+      "pattern": "takaro-dune-plugin-*.tar.gz",
+      "label": "Plugin (optional)",
+      "requires": "Self-hosted Dune: Awakening Linux map server",
+      "hint": "Optional. LD_PRELOAD on the map server process only; adds kill events and live positions.",
+      "required": false
+    }
+  ]
+}

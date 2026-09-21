@@ -1,0 +1,8 @@
+{
+  "source": "test fixture",
+  "note": "Hand-written by us. Shapes only — the real entity catalogue is produced by scripts/gen-catalogue.mjs and is deliberately tiny (see data/SOURCES.md).",
+  "rows": [
+    { "code": "Sandworm", "name": "Sandworm", "type": "hostile" },
+    { "code": "Buggy", "name": "Scout Buggy", "type": "vehicle" }
+  ]
+}

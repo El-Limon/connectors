@@ -28,7 +28,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CATALOG_GAMES = ("7d2d", "conan-exiles", "enshrouded", "minecraft", "rust", "terraria", "valheim", "zomboid")
+CATALOG_GAMES = (
+    "7d2d",
+    "conan-exiles",
+    "dune",
+    "enshrouded",
+    "minecraft",
+    "rust",
+    "terraria",
+    "valheim",
+    "zomboid",
+)
 
 #: The floating-selector grammar, plus the JSON spelling of a floating image tag.
 SELECTOR = re.compile(
@@ -77,12 +87,12 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow(
         "games/dragonwilds/**",
         r".",
-        "Dragonwilds is outside the eight catalog connectors; onboarding is the milestone-2 follow-up (D2)",
+        "Dragonwilds is outside the catalog connectors; onboarding is the milestone-2 follow-up (D2)",
     ),
     Allow(
         "games/vein/**",
         r".",
-        "VEIN is outside the eight catalog connectors; onboarding is the milestone-2 follow-up (D2)",
+        "VEIN is outside the catalog connectors; onboarding is the milestone-2 follow-up (D2)",
     ),
     Allow(
         "dev-servers/compose/{dayz,dragonwilds,vein,palworld}.yml",
@@ -409,7 +419,7 @@ def test_an_undigested_rig_image_and_a_typed_version_default_are_reported(tmp_pa
     assert [(hit.line_no, hit.rule) for hit in hits] == [(3, "rig-image"), (5, "rig-version")], explain(hits)
 
 
-def test_the_eight_rigs_take_their_images_from_the_resolved_target() -> None:
+def test_the_catalog_rigs_take_their_images_from_the_resolved_target() -> None:
     """Only the known dead Minecraft anchor names an image and a version of its own (D3)."""
     rig_hits = [hit for hit in audit(REPO_ROOT) if hit.rule in ("rig-image", "rig-version")]
 

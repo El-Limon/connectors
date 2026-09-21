@@ -16,6 +16,7 @@ Monorepo for connector plugins that implement the [Takaro Generic Connector Prot
 | Enshrouded | [`games/enshrouded/`](games/enshrouded/) | C++ (`dbghelp.dll` proxy) + TypeScript sidecar | zig cross-compile + Node.js |
 | RuneScape: Dragonwilds | [`games/dragonwilds/`](games/dragonwilds/) | C++ (`LD_PRELOAD` native plugin) + TypeScript sidecar | `debian:bookworm` g++ + Node.js |
 | VEIN | [`games/vein/`](games/vein/) | C++ (`LD_PRELOAD` native plugin) + TypeScript sidecar | `debian:bookworm` g++ + Node.js |
+| Dune: Awakening | [`games/dune/`](games/dune/) | TypeScript sidecar + optional C++ (`LD_PRELOAD` native plugin) | Node.js + `debian:bookworm` g++ |
 
 Each connector is self-contained with its own Docker dev environment, build system, and scripts. See each connector's README for details.
 

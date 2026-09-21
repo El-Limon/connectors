@@ -24,6 +24,7 @@ for connector, Takaro API and Takaro module testing with a handful of human play
 | DayZ | `dayz` | `@TakaroIntegration` Enforce mod → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 6 GB | 4 GB² |
 | RuneScape: Dragonwilds | `dragonwilds` | `libtakaro-dragonwilds.so` `LD_PRELOAD` plugin → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 4 GB | 8 GB³ |
 | VEIN | `vein` | `libtakaro-vein.so` `LD_PRELOAD` plugin → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 4 GB | 20 GB |
+| Dune: Awakening | `dune` | Takaro TypeScript sidecar → the battlegroup's **RabbitMQ** (GM commands + chat) and **Postgres** (state); optional `libtakaro-dune.so` `LD_PRELOAD` plugin for kills/live location | 24 GB | 60 GB⁴ |
 | Rust | `rust` | `TakaroConnector.cs` Carbon plugin (WebSocket) | 8 GB | 12 GB |
 | 7 Days to Die | `7d2d` | Takaro mod (WebSocket) | 8 GB | 32 GB¹ |
 | Project Zomboid | `zomboid` | Takaro `-javaagent` inside the PZ server JVM (WebSocket) | 8 GB | 16 GB |
@@ -31,6 +32,23 @@ for connector, Takaro API and Takaro module testing with a handful of human play
 | Conan Exiles | `conan-exiles` | Takaro TypeScript sidecar → Conan RCON | 12 GB | 35 GB |
 
 ³ `dragonwilds` runs as `takaro-dev-dragonwilds` with its data in `_data/dragonwilds-dev`.
+
+⁴ `dune` (`takaro-dev-dune`, data `_data/dune-dev`) is our own Compose expansion of Funcom's self-hosted
+battlegroup, which they ship as an Alpine + k3s VM. Nothing is downloaded from a game registry: `install.sh dune`
+fetches Steam **tool** app 4754530 (linux depot 4754532, manifest pinned) with DepotDownloader — anonymously;
+plain `steamcmd` refuses it with `missing license for depot` — and `docker load`s the seven image tarballs inside
+it. Boot order is `postgres → db-init → {admin-rmq, game-rmq} → text-router → director → gateway → survival`.
+Two things to know before debugging it:
+
+* **text-router IS the brokers' `rabbitmq_auth_backend_http` backend** (`/v0/auth/{user,vhost,resource,topic}`
+  on :8080) while itself being a client of both brokers, so ~30 s of authentication failures at cold start is
+  normal and nothing gates on it.
+* **A Funcom self-hosting token (`DUNE_FLS_SECRET`, from account.duneawakening.com) is a hard dependency for
+  joinability.** Postgres, the schema, both brokers and text-router come up fine without it, but the gateway
+  cannot register the world with FLS, and Dune clients find worlds only through FLS — there is no direct connect.
+* The rig's brokers put `auth_backends.1 = internal` ahead of Funcom's cached HTTP backend. That one line is what
+  lets `install.sh` create a broker user literally named **`fls`**, which is what the map process requires as the
+  AMQP `user_id` of a GM command — so the sidecar publishes over plain AMQPS and needs **no Docker socket**.
 
 ² DayZ server files are **not** downloaded by the image: Steam app 223350 refuses
 `login anonymous` (Bohemia T179224), so the Linux depot is fetched elsewhere with an
@@ -213,6 +231,7 @@ bind to `127.0.0.1` only** — reach them over an SSH tunnel or a private VPN, e
 
 | Game | Game ports (public) | Admin ports (localhost only) |
 |---|---|---|
+| Dune: Awakening | 7817/udp game, 7928/udp IGW (cross-map travel), **31982/tcp game RabbitMQ (AMQPS)** — clients reach the world through the broker | 15673 game-RMQ management API, bound to EXTERNAL_ADDRESS only (the gateway must reach the broker at the address it advertises to FLS); Postgres 5432, admin-RMQ 5672, admin management 15672, text-router 8080, sidecar health 18891 all stay on the private compose network |
 | Rust | 28015/udp | 28016 RCON (WebSocket) |
 | Minecraft Paper | 25565/tcp | 25575 RCON |
 | Minecraft NeoForge | 25566/tcp | 25576 RCON |

@@ -1,0 +1,129 @@
+{
+ "placeholder": true,
+ "source": "Takaro Dune connector \u2014 hand-written rows only",
+ "sourceUrl": "",
+ "license": "same as this repository",
+ "note": "Placeholder catalogue. These are the only item rows written by us, from template ids observed in a live battlegroup database. The full ~2200-row catalogue is NOT redistributed here because its display names come from a CC BY-NC-SA source; run `npm run catalogue` (the sidecar's Docker image does it for you) to generate it locally. See ATTRIBUTION.md.",
+ "rows": [
+  {
+   "code": "Emote_Bow_01",
+   "name": "Emote: Bow",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_Clap_01",
+   "name": "Emote: Clap",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_Follow_01",
+   "name": "Emote: Follow Me",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_IxianSecret_01",
+   "name": "Emote: Ixian Secret",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_No_01",
+   "name": "Emote: No",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_Point_01",
+   "name": "Emote: Point",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_ShakeOffSand_01",
+   "name": "Emote: Shake Off Sand",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_Sit_01",
+   "name": "Emote: Sit",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_Threaten_01",
+   "name": "Emote: Threaten",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Emote_Yes_01",
+   "name": "Emote: Yes",
+   "description": "An unlocked emote animation. Not a carryable item; excluded from item lists and grants.",
+   "category": "emote",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Social_Choam_MaulaCastOffs01_Shoes",
+   "name": "Maula Cast-Offs Boots",
+   "description": "A cosmetic outfit piece from the CHOAM social wardrobe.",
+   "category": "cosmetic",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Social_Choam_MaulaCastOffs01_Top_Fremkit",
+   "name": "Maula Cast-Offs Fremkit Top",
+   "description": "A cosmetic outfit piece from the CHOAM social wardrobe.",
+   "category": "cosmetic",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Social_Choam_MaulaCastOffs01_Gloves",
+   "name": "Maula Cast-Offs Gloves",
+   "description": "A cosmetic outfit piece from the CHOAM social wardrobe.",
+   "category": "cosmetic",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "Social_Choam_MaulaCastOffs01_Bottom",
+   "name": "Maula Cast-Offs Trousers",
+   "description": "A cosmetic outfit piece from the CHOAM social wardrobe.",
+   "category": "cosmetic",
+   "giveable": false,
+   "derived": true
+  },
+  {
+   "code": "SolarisCoin",
+   "name": "Solari",
+   "description": "The currency of the Imperium. Stored as a single stack in the backpack.",
+   "category": "currency",
+   "giveable": true,
+   "derived": true
+  }
+ ]
+}

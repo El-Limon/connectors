@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "dune",
+  "name": "Dune: Awakening",
+  "connector": "dune",
+  "platforms": ["linux"],
+  "sources": {
+    "steam": {
+      "provider": "steam",
+      "baseUrl": "https://store.steampowered.com",
+      "watch": {
+        "kind": "game",
+        "component": "dune",
+        "app": 4754530,
+        "os": "linux",
+        "depots": ["4754532"],
+        "channels": {
+          "public": {"branch": "public"}
+        },
+        "knownBranches": []
+      }
+    }
+  },
+  "build": {"system": "script", "projectDir": "games/dune"},
+  "componentRoles": {
+    "sidecar": {
+      "description": "The Node.js sidecar that runs beside the battlegroup and speaks to its RabbitMQ (chat + GM commands) and Postgres (state); the connector itself, and the only required artifact",
+      "artifactPattern": "takaro-dune-sidecar-{target}-{version}.tar.gz"
+    },
+    "plugin": {
+      "description": "The optional LD_PRELOAD plugin for the map server process; adds kill attribution, live position and precise connect/disconnect, and is pinned to the map binary's build",
+      "artifactPattern": "takaro-dune-plugin-{target}-{version}.tar.gz"
+    }
+  },
+  "legacyAssetAliases": {},
+  "devServers": {"composeFile": "dune.yml"}
+}

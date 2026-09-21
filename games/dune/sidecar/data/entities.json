@@ -1,0 +1,13 @@
+{
+ "source": "server ELF RTTI (hand-named by us)",
+ "sourceUrl": "",
+ "license": "same as this repository",
+ "rows": [
+  {
+   "code": "ASandwormPawn",
+   "name": "Sandworm",
+   "type": "hostile",
+   "description": "Shai-Hulud. Draws on ground vibration and destroys anything it reaches."
+  }
+ ]
+}

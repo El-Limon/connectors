@@ -1,0 +1,130 @@
+# Attaching the Takaro sidecar to a Dune: Awakening battlegroup.
+#
+# A self-hosted Dune server is not one process: it is a "battlegroup" of Postgres, a GAME RabbitMQ,
+# an ADMIN RabbitMQ, a text-router, a bg-director, a gateway, and one map server per map. The
+# connector talks to exactly three of them: Postgres (read-only), the GAME broker, and — if you
+# load the optional plugin — the map process over loopback.
+#
+# There are two kinds of install, and they differ only in how the sidecar reaches the broker and
+# which GM publisher works:
+#
+#   A. Docker Compose (this file). Merge the service below into the compose project that already
+#      runs your battlegroup so `postgres` and `game-rmq` resolve by name.
+#      GM publisher: `amqp` — but ONLY if your broker can authenticate a plain `fls` user. Funcom's
+#      broker config authenticates over HTTP against text-router, which has no such account, so put
+#      RabbitMQ's `internal` backend FIRST in the game broker's config and create the user:
+#         auth_backends.1 = internal
+#         auth_backends.2 = http
+#         rabbitmqctl add_user fls <password>
+#         rabbitmqctl set_permissions -p / fls '.*' '.*' '.*'
+#      Without that, use `docker-exec` (needs the Docker socket — see the commented volume).
+#
+#   B. Stock Funcom k3s (their Alpine VM expanding a `BattleGroup` custom resource). Run the
+#      sidecar wherever it can reach the broker and Postgres and set
+#         DUNE_GM_PUBLISHER=kubectl-exec
+#         DUNE_K8S_NAMESPACE=<namespace>   DUNE_K8S_POD=<the game-rmq pod>
+#      which publishes from inside the broker pod and needs no broker account at all.
+#
+# ---------------------------------------------------------------------------------------------
+# TWO GATES ON EVERY MAP SERVER PROCESS. Without both, no GM command has any effect and the
+# connector can read but not write.
+#
+#   -ini:engine:[ConsoleVariables]:server.NotificationSystem.Enabled=true
+#   -ini:engine:[FuncomLiveServices]:ServerCommandsAuthToken=<same value as DUNE_GM_AUTH_TOKEN>
+#
+# AND: `KickPlayer` and `ServiceBroadcast` are real commands that are NOT in the allow-list the
+# game ships. Extend it in the map server's UserGame.ini (Saved/Config/LinuxServer/UserGame.ini):
+#
+#   [AdminSetting.Global]
+#   +Allowed_GM_Commands=KickPlayer
+#   +Allowed_GM_Commands=ServiceBroadcast
+#
+# Without those two entries, `kickPlayer`, bans and on-screen broadcasts do not work.
+# ---------------------------------------------------------------------------------------------
+services:
+  takaro-dune:
+    # Build the unpacked release tarball locally.
+    build: ./sidecar
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      game-rmq:
+        condition: service_started
+    environment:
+      TAKARO_REGISTRATION_TOKEN: ${TAKARO_REGISTRATION_TOKEN}
+      TAKARO_IDENTITY_TOKEN: ${TAKARO_IDENTITY_TOKEN:-dune}
+      TAKARO_SERVER_NAME: ${TAKARO_SERVER_NAME:-Dune}
+      # Must match your Takaro game server's `serverChatName` setting, or Takaro's chat bridge
+      # echoes the connector's own messages back into the game.
+      TAKARO_SENDER_NAME: ${TAKARO_SENDER_NAME:-Server}
+
+      # Read-only. The database NAME is build-specific: check it with `\l`.
+      DUNE_PG_URL: postgres://dune:${POSTGRES_DUNE_PASSWORD}@postgres:5432/${DUNE_DB_NAME:-dune}
+
+      # The GAME broker (not the admin one), AMQP over TLS with the shipped self-signed cert.
+      DUNE_RMQ_URL: amqps://${DUNE_GM_AMQP_USER:-fls}:${DUNE_GM_AMQP_PASS}@game-rmq:5672/
+      DUNE_RMQ_TLS_INSECURE: "true"
+
+      # The write path. Must equal the map process's ServerCommandsAuthToken exactly.
+      DUNE_GM_AUTH_TOKEN: ${DUNE_SERVER_COMMANDS_AUTH_TOKEN}
+      DUNE_GM_PUBLISHER: ${DUNE_GM_PUBLISHER:-amqp}
+      DUNE_GM_AMQP_USER: ${DUNE_GM_AMQP_USER:-fls}
+      DUNE_GM_AMQP_PASS: ${DUNE_GM_AMQP_PASS}
+      # Install type B (stock Funcom k3s): publisher kubectl-exec instead of the two above.
+      # DUNE_K8S_NAMESPACE: default
+      # DUNE_K8S_POD: game-rmq-0
+
+      # Global messages: `chat` (a chat line, sender renders as `[]`), `broadcast` (an on-screen
+      # panel titled with TAKARO_SENDER_NAME), or `both`.
+      DUNE_GLOBAL_MESSAGE_MODE: ${DUNE_GLOBAL_MESSAGE_MODE:-both}
+
+      # OPTIONAL plugin. Only set these if you preloaded libtakaro-dune.so into the map process
+      # (see README.md). The sidecar must be able to reach the plugin's loopback API, so with the
+      # plugin it belongs in the map container's network namespace or on its host.
+      # DUNE_PLUGIN_URL: http://127.0.0.1:18890
+      # DUNE_PLUGIN_TOKEN: ${DUNE_PLUGIN_TOKEN}
+
+      # OPTIONAL: forward the map server's log to Takaro as `log` events.
+      # DUNE_LOG_FILE: /gamelogs/Logs/DuneSandbox_PIDX-1.log
+      # DUNE_LOG_EVENTS: filtered
+
+      # OPTIONAL: your own stop hook for Takaro's `shutdown` action. Dune's ServerShutdown GM
+      # command only announces a countdown — nothing in the battlegroup halts the map process.
+      # The connector is deliberately given no Docker socket, so the hook is yours. Without it
+      # `shutdown` broadcasts the countdown and then reports that it cannot stop the server.
+      # DUNE_SHUTDOWN_CMD: /bin/sh /opt/takaro-shutdown/request-shutdown.sh
+      # DUNE_SHUTDOWN_NOTICE_SECONDS: "60"
+
+      SIDECAR_HEALTH_HOST: 0.0.0.0
+      SIDECAR_HEALTH_PORT: "18891"
+      TAKARO_DATA_DIR: /data
+    volumes:
+      # Bans, the online set, the known-player cache and the event cursor. Losing it loses the bans.
+      - takaro-dune-data:/data
+      # Only for DUNE_LOG_FILE — the map server's Saved/ directory, read-only.
+      # - ./data/dune/DuneSandbox/Saved:/gamelogs:ro
+      # Only for DUNE_GM_PUBLISHER=docker-exec. It grants full control of the Docker daemon, so
+      # prefer the amqp publisher when the broker lets you authenticate as `fls`.
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+  # ---------------------------------------------------------------------------------------------
+  # OPTIONAL: loading the plugin. Add these to the map server service you already have — do not
+  # copy this block as a new service.
+  #
+  # survival:
+  #   environment:
+  #     # Preload the plugin into the MAP PROCESS ONLY, never globally for the container, the user
+  #     # or a service: SteamCMD and the other battlegroup services must not inherit it.
+  #     LD_PRELOAD: /opt/takaro/libtakaro-dune.so
+  #     TAKARO_PLUGIN_TOKEN: ${DUNE_PLUGIN_TOKEN}   # required; without it every route answers 401
+  #     TAKARO_PLUGIN_PORT: "18890"
+  #     TAKARO_PLUGIN_BIND: 127.0.0.1               # keep it on loopback
+  #   volumes:
+  #     # Mount the DIRECTORY read-only, not the .so itself, and keep it OUTSIDE the game tree:
+  #     # a SteamCMD `validate` deletes files it does not know about.
+  #     - ./data/dune-plugin:/opt/takaro:ro
+  # ---------------------------------------------------------------------------------------------
+
+volumes:
+  takaro-dune-data:
