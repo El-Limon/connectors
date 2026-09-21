@@ -1,0 +1,43 @@
+#!/bin/bash
+# The Takaro replacement for the image's `enshrouded-updater` supervisord program.
+#
+# The upstream image runs that program at every container start. It asks
+# api.steamcmd.net what the branch head is and, when it differs from the installed build,
+# runs `steamcmd +app_update` over the install directory. On a takaro-maint install that is
+# the one thing that must never happen: the native plugin hooks the server by code
+# signatures derived on one exact game build, so an update underneath it silently degrades
+# every capability the signatures reach.
+#
+# Bind this file read-only over /usr/local/etc/enshrouded/enshrouded-updater. It keeps the
+# program's contract -- be the thing supervisord starts, then start the server -- and
+# drops the update path entirely. It deliberately contains no steamcmd, no app_update and
+# no call to any Steam API.
+#
+# To move to another game build deliberately: re-pin the catalog target
+# (`takaro-maint steam pin --game enshrouded --metadata --record-files ... --write`),
+# re-derive the plugin's signatures, prove it with `takaro-maint verify --game enshrouded`
+# and reinstall. Never `supervisorctl start enshrouded-force-update` on a pinned install.
+. "$(dirname "$0")/common"
+. "$(dirname "$0")/defaults"
+
+main() {
+  # Deliberately says nothing an update would say: the drift guard greps a boot log for
+  # exactly those words and an explanation here would make the guard unfalsifiable.
+  info "Running enshrouded-updater (takaro-maint pinned install: the update path is disabled)"
+
+  # `proton runinprefix` does not create a Wine prefix, and the server program expects the
+  # compatdata directory to exist. The install lays it down; this is the belt-and-braces
+  # for a data directory that predates it.
+  mkdir -p "$install_path/steamapps/compatdata/$steam_app_id"
+
+  if checkRunning "enshrouded-server"; then
+    info "Enshrouded server is already running - nothing to do"
+  else
+    info "Starting the Enshrouded server on the pinned build"
+    supervisorctl start enshrouded-server
+  fi
+
+  info "enshrouded-updater complete"
+}
+
+main
