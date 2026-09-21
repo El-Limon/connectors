@@ -10,6 +10,7 @@ from typing import Any
 
 from .. import net, output, paths
 from ..exit_codes import OK, ConflictError
+from ..games import adapter_for
 from ..install.ledger import read_ledger, write_ledger
 from ..publish import read_manifest
 from . import add_selection_arguments, select_one
@@ -76,6 +77,11 @@ def _deploy(args: Any) -> int:
         staged = install_dir / (row["file"] + ".tmp")
         shutil.copy2(source, staged)
         os.replace(staged, install_dir / row["file"])
+        # A game whose artifact is not loaded as it lands -- an archive the server expects
+        # unpacked, say -- unpacks it here, once the file itself is in place.
+        after_deploy = getattr(adapter_for(target.game), "after_deploy", None)
+        if after_deploy is not None:
+            after_deploy(dest, component, install_dir / row["file"])
         relative = f"{component['installDir']}/{row['file']}"
         deployed.append({"role": role, "path": relative, "sha256": row["sha256"]})
         output.info(f"deployed {relative} ({row['sha256'][:16]}…)")

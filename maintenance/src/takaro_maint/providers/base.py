@@ -45,5 +45,16 @@ class Provider:
     ) -> Path:
         raise NotImplementedError(f"provider '{self.id}' cannot fetch {input_spec.get('kind')} inputs")
 
+    def input_url(self, input_spec: dict[str, Any], source: dict[str, Any]) -> str | None:
+        """The URL this input names, for the inputs that are not one plain download.
+
+        Inputs that carry a ``path`` never reach here. A provider whose inputs name a set
+        of files rather than a single URL answers with the identifier that pins that set,
+        so reports and compat records can record what was installed; ``None`` means the
+        mechanism has no URL to record.
+        """
+        del input_spec, source
+        return None
+
     def observe(self, source: dict[str, Any]) -> ProviderResult:
         raise NotImplementedError(f"provider '{self.id}' does not observe upstream yet (release tracking: #153/#154)")
