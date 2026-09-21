@@ -68,7 +68,8 @@ public class TakaroPaperPlugin extends JavaPlugin implements GameAdapter {
     @Override
     public RuntimeIdentity getRuntimeIdentity() {
         ServerBuildInfo info = ServerBuildInfo.buildInfo();
-        String build = info.buildNumber().isPresent() ? Integer.toString(info.buildNumber().getAsInt()) : "";
+        // A locally built Paper jar carries no build number; null says "unknown" where "" said "0".
+        String build = info.buildNumber().isPresent() ? Integer.toString(info.buildNumber().getAsInt()) : null;
         return new RuntimeIdentity(info.minecraftVersionId(), "paper", build, Runtime.version().feature());
     }
 
