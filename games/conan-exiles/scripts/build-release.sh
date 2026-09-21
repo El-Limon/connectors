@@ -37,6 +37,17 @@ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${REPO_ROOT}" log -1 --
 # builder's zone unless it is pinned here.
 export TZ=UTC
 
+# Every dependency the resolved target declares, discovered rather than listed here: a
+# dependency added to the catalog must not be able to slip past the check below because
+# somebody forgot to add a line to this script.
+DEP_ARGS=()
+while IFS='=' read -r key _; do
+    case "$key" in
+        CONAN_EXILES_DEP_*) DEP_ARGS+=(-e "$key") ;;
+    esac
+done < <(env)
+[ ${#DEP_ARGS[@]} -gt 0 ] || { echo "the resolved target declares no build dependencies" >&2; exit 2; }
+
 # Built in the pinned toolchain image, mounted at its own path so every path inside the
 # container is the path outside it. The dependency check runs first: `npm ci` would
 # otherwise install whatever the lockfile points at, recorded or not.
@@ -44,9 +55,7 @@ docker run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e npm_config_cache=/tmp/npm-cache \
-    -e CONAN_EXILES_DEP_WS_URL -e CONAN_EXILES_DEP_WS_SHA256 \
-    -e CONAN_EXILES_DEP_EXPRESS_URL -e CONAN_EXILES_DEP_EXPRESS_SHA256 \
-    -e CONAN_EXILES_DEP_WINSTON_URL -e CONAN_EXILES_DEP_WINSTON_SHA256 \
+    "${DEP_ARGS[@]}" \
     -v "${REPO_ROOT}:${REPO_ROOT}" \
     -w "${REPO_ROOT}/games/conan-exiles/bridge" \
     "${CONAN_EXILES_TOOLCHAIN}" \

@@ -11,6 +11,7 @@ toolchain, and the server is started by a command rather than by an entrypoint.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -271,8 +272,6 @@ class ConanExilesAdapter:
                 stale.unlink()
         stamp = folder / "takaro-target.json"
         if stamp.is_file():
-            import json
-
             try:
                 data = json.loads(stamp.read_text(encoding="utf-8"))
             except json.JSONDecodeError:

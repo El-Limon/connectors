@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import net, output
+from ...exit_codes import UpstreamUnavailable
 from ...verify import checks, checks_lifecycle
 from ...verify.runner import Container, docker_command
 from . import BRIDGE_FOLDER
@@ -197,7 +198,14 @@ def game_container_ip(name: str) -> str:
         text=True,
         check=False,
     )
-    return completed.stdout.strip()
+    address = completed.stdout.strip()
+    if not address:
+        # Without it the rendered config has no rconHost and the sidecar dies on a
+        # "missing required config" that says nothing about why.
+        raise UpstreamUnavailable(
+            f"could not read the address of container {name}: {completed.stderr.strip() or 'no output'}"
+        )
+    return address
 
 
 def start_bridge(run: Any, ws_url: str) -> Container:
@@ -299,6 +307,12 @@ def _wait_for_rcon_command(data_dir: Path, command: str, timeout: float, alive: 
 
 
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
+    # The sidecar is this game's connector, so it is started only when something is going
+    # to ask it a question; a `--checks build,startup` run has no use for it.
+    if not any(run.wanted(check_id) for check_id in CHECK_IDS):
+        for check_id in CHECK_IDS:
+            run.skip(check_id, "not selected by --checks")
+        return
     bridge = await asyncio.to_thread(start_bridge, run, run.ws_url)
     bridge_alive = bridge.alive
     for check_id, coroutine in (
