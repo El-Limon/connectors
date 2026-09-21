@@ -123,18 +123,20 @@ def fetch_depot(
     filelist: list[str] | None = None,
     force: bool = False,
 ) -> Path:
-    """The cache directory holding exactly this depot manifest, downloading it if needed."""
+    """The cache directory holding exactly this depot manifest, downloading it if needed.
+
+    A cache hit is checked against what the download recorded, never against what the
+    catalog says today. The two are different questions: "are these still the bytes that
+    arrived?" is corruption and costs a re-download, while "are these the bytes the record
+    declares?" is a disagreement between the record and Steam, which no amount of
+    re-downloading fixes — that one is answered by the caller, before anything is deleted.
+    """
     manifest = str(spec.depots[depot]["manifest"])
     destination = depot_cache(cache, spec.app, depot, manifest)
-    # Only the declared files that this depot actually carries are re-hashed on a hit;
-    # the full tree is checked once, in staging, where the whole install is assembled.
-    in_depot = {
-        relative: expected
-        for relative, expected in spec.files.items()
-        if _safe_join(destination, relative, field="inputs.files key").is_file()
-    }
-    if not force and _complete(destination) is not None:
-        problems = _verify_declared(destination, in_depot, required=False)
+    marker = _complete(destination)
+    if not force and marker is not None:
+        recorded = {path: entry for path, entry in (marker.get("files") or {}).items()}
+        problems = _verify_declared(destination, recorded, required=True)
         if not problems:
             output.info(f"depot {depot} manifest {manifest} is already in the cache")
             return destination
@@ -157,9 +159,16 @@ def fetch_depot(
             validate=True,
             credentials=spec.credentials,
         )
-        marker = staging / COMPLETE_MARKER
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(
+        marker_path = staging / COMPLETE_MARKER
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        # What arrived, so a later run can tell corruption from a re-pinned record.
+        arrived: dict[str, Any] = {}
+        for relative in spec.declared_paths():
+            path = _safe_join(staging, relative, field="inputs.files key")
+            if path.is_file():
+                digests = net.hash_file(path)
+                arrived[relative] = {"sha256": digests["sha256"], "size": int(digests["size"])}
+        marker_path.write_text(
             json.dumps(
                 {
                     "app": spec.app,
@@ -167,6 +176,7 @@ def fetch_depot(
                     "manifest": manifest,
                     "downloadedAt": _now(),
                     "tool": f"depotdownloader/{dd.read_lock().version}",
+                    "files": arrived,
                 },
                 indent=2,
             )
@@ -321,6 +331,22 @@ def install_exact(
         staging.mkdir(parents=True, exist_ok=True)
         for depot in sorted(spec.depots):
             cached = fetch_depot(spec, depot, cache=cache, log=log)
+            # Checked here, on the download itself: bytes that disagree with the record are
+            # refused before a single one is copied, and the cache is kept — re-downloading
+            # a depot cannot change what the record declares.
+            in_depot = {
+                relative: expected
+                for relative, expected in spec.files.items()
+                if _safe_join(cached, relative, field="inputs.files key").is_file()
+            }
+            problems = _verify_declared(cached, in_depot, required=True)
+            if problems:
+                raise IntegrityError(
+                    f"depot {depot} manifest {spec.depots[depot]['manifest']} does not match the pinned target: "
+                    + "; ".join(problems)
+                    + f"; the existing install at {dest} is untouched",
+                    target=target.id,
+                )
             output.info(f"staging depot {depot} into {staging.name}")
             _copy_tree(cached, staging)
         shutil.rmtree(staging / COMPLETE_MARKER.parent, ignore_errors=True)

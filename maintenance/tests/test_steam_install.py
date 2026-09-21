@@ -148,12 +148,19 @@ def test_a_wrong_reference_hash_exits_five_and_preserves_the_existing_install(
     record["inputs"]["server"]["files"][DECLARED]["sha256"] = "0" * 64
     fake.write_target(repo, record)
 
+    calls = len(fake.argv_log(dd_log))
+    cached = paths.cache_dir() / "steam" / str(fake.APP) / fake.DEPOT / fake.PINNED_MANIFEST
+
     code, payload, _ = install(run, repo, dest)
 
     assert code == 5, payload
     assert "the existing install at" in payload["error"]
     assert tree_state(dest) == before
     assert not list(tmp_path.glob("ServerFiles.staging-*"))
+    # A record that disagrees with the depot is not a corrupt cache: nothing was
+    # re-downloaded and the 17 GB already on disk is still there.
+    assert len(fake.argv_log(dd_log)) == calls
+    assert (cached / ".takaro" / "complete.json").is_file()
 
 
 def test_a_stale_depot_cache_is_rejected_by_hash_and_refetched_once(
