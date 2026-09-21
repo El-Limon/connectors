@@ -69,14 +69,29 @@ def scan_runtime_identity(adapter: Any, log_file: Path) -> dict[str, Any]:
     return identity
 
 
+#: Oxide's ``VersionNumber`` -- which Carbon uses for ``[Info]`` -- parses a version as
+#: three integers, so the build stamps the numeric head of the connector version into the
+#: attribute ("0.0.5-dev.abc1234" -> "0.0.5") and a dev build is loadable at all. The check
+#: compares like with like by reducing the recorded version the same way.
+_NUMERIC_HEAD = re.compile(r"^[0-9]+(?:\.[0-9]+)*")
+
+
+def plugin_version(connector_version: str) -> str:
+    """What ``[Info]`` can carry for this connector version: three integers, or 0.0.0."""
+    found = _NUMERIC_HEAD.match(connector_version)
+    parts = found.group(0).split(".") if found else []
+    parts = (parts + ["0", "0", "0"])[:3]
+    return ".".join(parts)
+
+
 def _deployed_version(run: Any) -> str | None:
-    """The connector version `deploy` recorded, which is what Carbon must have compiled."""
+    """The plugin version `deploy`'s record implies, which is what Carbon must have loaded."""
     ledger = read_ledger(run.data_dir)
     if ledger is None:
         return None
     artifact = ledger.data.get("artifact") or {}
     version = artifact.get("connectorVersion")
-    return str(version) if version else None
+    return plugin_version(str(version)) if version else None
 
 
 # --------------------------------------------------------------------------- local hooks
@@ -112,7 +127,9 @@ async def _check_carbon_compile(run: Any, alive: Any) -> checks.CheckResult:
                 compile_ms = int(found.group("ms"))
         expected = _deployed_version(run)
         if version is not None and expected is not None and version != expected:
-            problems.append(f"the server loaded TakaroConnector v{version}, the build manifest says {expected}")
+            problems.append(
+                f"the server loaded TakaroConnector v{version}, the build manifest implies {expected}"
+            )
         failed = await asyncio.to_thread(checks.find_line, run.server_log, COMPILE_FAILED)
         if failed:
             problems.append(f"a compile error is in the log: {failed[1].strip()[:200]}")

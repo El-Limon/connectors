@@ -34,6 +34,22 @@ mkdir -p "${OUT_DIR}"
 OUT_DIR=$(cd -- "${OUT_DIR}" && pwd)
 ARTIFACT="${RUST_ARTIFACT/\{version\}/${VERSION}}"
 
+# What goes into [Info(...)]. Oxide's VersionNumber -- which Carbon uses -- parses that
+# string as three integers, so a dev or PR version ("0.0.5-dev.abc1234") throws inside the
+# attribute's constructor and Carbon refuses the whole file with
+# "Invalid plugin format in 'TakaroConnector.cs'". The numeric head is what the attribute
+# gets; the exact build is in the artifact's name, its header and its .meta.json, none of
+# which any framework parses.
+INFO_VERSION=$(printf '%s' "${VERSION}" | sed -E 's/^([0-9]+(\.[0-9]+)*).*$/\1/')
+case "${INFO_VERSION}" in
+  ''|*[!0-9.]*) INFO_VERSION="0.0.0" ;;
+esac
+# ... and it wants exactly three of them.
+while [ "$(printf '%s' "${INFO_VERSION}" | tr -cd '.' | wc -c)" -lt 2 ]; do
+    INFO_VERSION="${INFO_VERSION}.0"
+done
+INFO_VERSION=$(printf '%s' "${INFO_VERSION}" | cut -d. -f1-3)
+
 cd "${PROJECT_ROOT}"
 "${SCRIPT_DIR}/setup-environment.sh" --target "${RUST_TARGET}"
 "${SCRIPT_DIR}/compile-check.sh" --target "${RUST_TARGET}"
@@ -43,11 +59,11 @@ SOURCE_REVISION="${TAKARO_SOURCE_REVISION:-$(git -C "${REPO_ROOT}" rev-parse HEA
 # The identity the source itself carries, for anyone reading the file on a server. No
 # timestamps: two builds of one commit have to be byte-identical.
 {
-    printf '// takaro-rust-plugin %s built for catalog target %s (Rust build %s, Carbon %s)\n' \
-        "${VERSION}" "${RUST_TARGET}" "${RUST_STEAM_BUILDID}" "${RUST_CARBON_SHA256:0:16}"
+    printf '// takaro-rust-plugin %s (plugin version %s) built for catalog target %s (Rust build %s, Carbon %s)\n' \
+        "${VERSION}" "${INFO_VERSION}" "${RUST_TARGET}" "${RUST_STEAM_BUILDID}" "${RUST_CARBON_SHA256:0:16}"
     printf '// fingerprint %s | source %s | Assembly-CSharp %s | depots %s\n' \
         "${RUST_FINGERPRINT}" "${SOURCE_REVISION}" "${RUST_ASSEMBLY_CSHARP_SHA256}" "${RUST_STEAM_DEPOTS}"
-    sed "s/\[Info(\"TakaroConnector\", \"Takaro\", \"[^\"]*\")\]/[Info(\"TakaroConnector\", \"Takaro\", \"${VERSION}\")]/" \
+    sed "s/\[Info(\"TakaroConnector\", \"Takaro\", \"[^\"]*\")\]/[Info(\"TakaroConnector\", \"Takaro\", \"${INFO_VERSION}\")]/" \
         mod/TakaroConnector.cs
 } > "${OUT_DIR}/${ARTIFACT}"
 
@@ -57,6 +73,7 @@ cat > "${OUT_DIR}/${ARTIFACT}.meta.json" <<JSON
   "target": "${RUST_TARGET}",
   "fingerprint": "${RUST_FINGERPRINT}",
   "connectorVersion": "${VERSION}",
+  "pluginVersion": "${INFO_VERSION}",
   "sourceRevision": "${SOURCE_REVISION}",
   "game": "rust",
   "platform": "carbon",

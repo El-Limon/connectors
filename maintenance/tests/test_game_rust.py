@@ -615,6 +615,13 @@ def test_verify_hooks_patterns_identity_and_container_shape(tmp_path: Path) -> N
         "loaderVersion": "2.0.259",
     }
 
+    # Oxide's VersionNumber parses [Info]'s version as three integers, so the build stamps
+    # the numeric head of the connector version and the check compares like with like.
+    assert hooks.plugin_version("0.0.5-dev.abc1234") == "0.0.5"
+    assert hooks.plugin_version("1.2.3") == "1.2.3"
+    assert hooks.plugin_version("2.0") == "2.0.0"
+    assert hooks.plugin_version("not-a-version") == "0.0.0"
+
     from takaro_maint.verify.runner import check_ids
 
     assert set(hooks.CHECK_IDS) <= set(check_ids(GAME))
