@@ -531,6 +531,8 @@ def test_deploy_places_the_dll_and_the_sidecar_folder_and_refuses_escapes(
     # not the record-supplied install paths whose first character has to be alphanumeric.
     assert (unpacked / ".dockerignore").is_file()
     assert (unpacked / ".env.example").is_file()
+    # The unpack stages beside the live folder and swaps; no staging is left behind.
+    assert not [p.name for p in unpacked.parent.iterdir() if p.name.startswith(".")]
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
     # The known core gap: `deploy` records only the last role it placed.
     assert ledger["artifact"]["role"] == "sidecar"
@@ -587,6 +589,42 @@ def test_verify_hooks_classify_plugin_health() -> None:
 
     assert hooks.classify_health(_health("plugin-health-ok.json"), "1024233", "9.9.9")["ok"] is False
     assert hooks.classify_health("not a document", "1024233")["ok"] is False
+
+
+def test_the_plugin_is_held_to_the_release_part_of_the_built_version(tmp_path: Path) -> None:
+    """A dev build of 0.4.2 still stamps 0.4.2 into the DLL, so that is what is compared."""
+
+    class Options:
+        artifacts = tmp_path
+
+    class Run:
+        options = Options()
+
+    assert hooks.connector_version(Run()) is None, "no manifest, nothing to hold the plugin to"
+
+    (tmp_path / "build-manifest.json").write_text(json.dumps({"version": "0.4.2-dev.abc1234"}), encoding="utf-8")
+    assert hooks.connector_version(Run()) == "0.4.2"
+
+    (tmp_path / "build-manifest.json").write_text(json.dumps({"version": "0.4.3"}), encoding="utf-8")
+    assert hooks.connector_version(Run()) == "0.4.3"
+
+    # An older DLL left behind by an earlier deploy is still caught.
+    stale = hooks.classify_health(_health("plugin-health-ok.json"), "1024233", "0.4.3")
+    assert stale["ok"] is False
+    assert any("0.4.2" in problem for problem in stale["problems"])
+
+
+def test_a_health_document_that_is_not_shaped_like_one_fails_rather_than_raises() -> None:
+    """A malformed answer is a failed compatibility claim, not a crashed verification run."""
+    for broken in ({"status": "ok", "gameBuild": "1024233", "capabilities": []}, "not a document", None):
+        verdict = hooks.classify_health(broken, "1024233")
+        assert verdict["ok"] is False, broken
+        assert verdict["problems"], broken
+
+    # No capabilities at all is a failure too: nothing was self-checked.
+    empty = hooks.classify_health({"status": "ok", "gameBuild": "1024233", "capabilities": {}}, "1024233")
+    assert empty["ok"] is False
+    assert any("no capabilities" in problem for problem in empty["problems"])
 
 
 def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Path) -> None:

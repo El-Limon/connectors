@@ -261,12 +261,33 @@ class EnshroudedAdapter:
             if role == "server-plugin":
                 self._place_dll(archive, artifact, install_dir, names)
             else:
-                shutil.rmtree(install_dir / folder, ignore_errors=True)
-                archive.extractall(install_dir)
+                self._place_folder(archive, install_dir, folder)
         stale_prefix = f"takaro-enshrouded-{'plugin' if role == 'server-plugin' else 'sidecar'}-"
         for stale in sorted(install_dir.glob(f"{stale_prefix}*.zip")):
             if stale.name != artifact.name:
                 stale.unlink()
+
+    def _place_folder(self, archive: zipfile.ZipFile, install_dir: Path, folder: str) -> None:
+        """Unpack beside the live folder and swap, so a failure leaves the old one in service.
+
+        Extracting over the folder the rig and ``verify`` build their sidecar image from
+        would turn a half-written zip into a half-written deployment: the old sidecar is
+        already gone by the time extraction fails.
+        """
+        install_dir.mkdir(parents=True, exist_ok=True)
+        staging = install_dir / f".{folder}.incoming"
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            archive.extractall(staging)
+            destination = install_dir / folder
+            previous = install_dir / f".{folder}.previous"
+            shutil.rmtree(previous, ignore_errors=True)
+            if destination.exists():
+                os.replace(destination, previous)
+            os.replace(staging / folder, destination)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(install_dir / f".{folder}.previous", ignore_errors=True)
 
     def _checked_names(self, archive: zipfile.ZipFile, artifact: Path, folder: str) -> list[str]:
         """Every entry, refused unless it lives inside the single expected top-level folder.

@@ -149,8 +149,18 @@ proven by `build` (which validates every artifact against the target) and by the
 ```bash
 maintenance/bin/takaro-maint verify --game enshrouded --artifacts <dir> --out <reports> \
     --checks build,startup,plugin-health,sidecar-identify,sidecar-players,sidecar-catalog,\
-sidecar-console,action,reconnect,event,stop --negative
+sidecar-console,action,reconnect,event,stop,negative-degraded-hooks --negative
 ```
+
+`--checks` is not optional here. The generic runner's `identify`, `heartbeat`, `players`,
+`catalog-*` and `console` checks watch the *game* server, which in Enshrouded never speaks
+to Takaro, and they run before the sidecar exists -- so a bare `verify --game enshrouded`
+fails on checks that could not have passed. Name the list above. `negative-degraded-hooks`
+has to be in it as well as `--negative`: the flag decides whether the degraded boot runs,
+`--checks` decides whether the check is selected at all.
+
+`--label tm.run=...` and `--label tm.ttl=...` are refused: the harness sets both itself
+(`tm.run` from `--run-id`). Pass only your own keys.
 
 It boots the pinned image on the exact install with the deployed DLL and the updater
 override, starts a second container built from the **shipped** sidecar zip in the game

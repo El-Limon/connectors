@@ -197,14 +197,22 @@ def start_sidecar(run: Any, fake: Any, *, suffix: str = "") -> Container:
 
 
 def connector_version(run: Any) -> str | None:
-    """The version this run built, read from the build manifest the artifacts came with."""
+    """The version the loaded plugin should report, from the manifest the artifacts came with.
+
+    The DLL stamps the version release-please writes into ``mod/src/common.h``, so a dev
+    build of ``0.4.2`` still says ``0.4.2`` while the run itself is versioned
+    ``0.4.2-dev.<sha>``. The release part is what the plugin can honestly be held to, and
+    holding it to that still catches the failure that matters: an older DLL left behind by
+    an earlier deploy.
+    """
     manifest = run.options.artifacts / "build-manifest.json"
     if not manifest.is_file():
         return None
     try:
-        return str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
+        version = str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
     except (json.JSONDecodeError, KeyError):
         return None
+    return version.split("-", 1)[0]
 
 
 def _exec_json(container_name: str, argv: list[str]) -> Any:
@@ -253,6 +261,19 @@ def classify_health(health: Any, expected_build: str, expected_version: str | No
     if build != str(expected_build):
         problems.append(f"the server reports game build {build}, the pinned target is {expected_build}")
     capabilities = health.get("capabilities") or {}
+    if not isinstance(capabilities, dict):
+        # A health document that is JSON but not shaped like one is a failed claim, not a
+        # crashed run: it means nothing readable can be said about the hooks.
+        return {
+            "ok": False,
+            "problems": [f"the plugin reported capabilities as {type(capabilities).__name__}, expected an object"],
+            "pluginVersion": str(health.get("version") or "") or None,
+            "gameBuild": str(health.get("gameBuild")),
+            "expectedBuild": str(expected_build),
+            "capabilities": {},
+            "degraded": [],
+            "unimplemented": [],
+        }
     degraded = sorted(name for name, value in capabilities.items() if str(value) == "degraded")
     unimplemented = sorted(name for name, value in capabilities.items() if str(value) == "unimplemented")
     known_states = ("ok", "degraded", "unimplemented")
@@ -603,9 +624,22 @@ async def _check_reconnect(run: Any, fake: Any, sidecar: Container | None, alive
 
 
 async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[dict[str, Any]]) -> None:
+    """Ask the server to shut down, then read what that produced.
+
+    The request is made here rather than inside one of the checks, because both of them
+    read its consequences: ``event`` waits for the log line the plugin forwards, ``stop``
+    waits for the save and the respawn. Selecting one without the other used to mean
+    waiting out three budgets for a shutdown nobody had asked for.
+    """
     del ws_url
+    note = "shutdown requested"
+    if run.wanted("event") or run.wanted("stop"):
+        try:
+            await fake.request("shutdown", {}, timeout=30)
+        except Exception as exc:  # noqa: BLE001 - the socket closing first is normal here
+            note = f"the connection closed before the shutdown response arrived ({exc})"
     if run.wanted("event"):
-        run.record(await _check_event(run, fake))
+        run.record(await _check_event(run, fake, note))
     else:
         run.skip("event", "not selected by --checks")
     if run.wanted("stop"):
@@ -614,19 +648,14 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
         run.skip("stop", "not selected by --checks")
 
 
-async def _check_event(run: Any, fake: Any) -> checks.CheckResult:
+async def _check_event(run: Any, fake: Any, note: str) -> checks.CheckResult:
     """The game speaks: a log line the plugin emits reaches Takaro as a gameEvent.
 
-    The shutdown request is what makes the server write something worth forwarding, so the
-    two are one check: asking for the shutdown and then waiting for the event it produces.
+    The shutdown ``after_shutdown`` already requested is what makes the server write
+    something worth forwarding; this waits for that line to arrive as a ``gameEvent``.
     """
     with checks._Timer() as timer:
         problems: list[str] = []
-        note = "shutdown response received"
-        try:
-            await fake.request("shutdown", {}, timeout=30)
-        except Exception as exc:  # noqa: BLE001 - the socket closing first is normal here
-            note = f"the connection closed before the response arrived ({exc}); the forwarded event is the gate"
         matched: dict[str, Any] | None = None
         deadline = time.monotonic() + EVENT_BUDGET
         while time.monotonic() < deadline and matched is None:
@@ -667,11 +696,21 @@ async def _check_stop(run: Any, ledger_inputs: list[dict[str, Any]]) -> checks.C
         container = run.container
         alive = container.alive if container is not None else (lambda: False)
         stages: dict[str, bool] = {}
-        for name, pattern in (("shutdown", SHUTDOWN_LINE), ("saved", SAVED_LINE), ("respawned", RESPAWN_LINE)):
+        for name, pattern in (("shutdown", SHUTDOWN_LINE), ("saved", SAVED_LINE)):
             found = checks.wait_for_line(run.server_log, pattern, STOP_BUDGET, alive)
             stages[name] = bool(found)
             if not found:
                 problems.append(f"the server log never showed the '{name}' line within {STOP_BUDGET:.0f} s")
+        # The image spawns the server once at boot, so the *first* spawn line proves nothing
+        # about a respawn. supervisord's `autorestart=true` is the contract under test, and
+        # what shows it is a second one after the save.
+        spawns = checks_lifecycle.wait_for_count(run.server_log, RESPAWN_LINE, 2, STOP_BUDGET, alive)
+        stages["respawned"] = spawns >= 2
+        if spawns < 2:
+            problems.append(
+                f"the server was spawned {spawns} time(s); supervisord should have respawned it "
+                f"after the save, within {STOP_BUDGET:.0f} s"
+            )
         drift = checks.find_line(run.server_log, DRIFT_LINE)
         if drift:
             problems.append(f"the boot ran an update path: {run.server_log.name}:{drift[0]} {drift[1][:120]}")
@@ -786,6 +825,7 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
             )
             if not ready:
                 problems.append("the server never reached HostOnline with the degraded plugin")
+            before = fake.identify_count
             sidecar = await asyncio.to_thread(start_sidecar, run, fake, suffix="-degraded")
             await asyncio.to_thread(
                 checks.wait_for_line,
@@ -794,6 +834,11 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
                 PLUGIN_BUDGET,
                 container.alive,
             )
+            # The first run's sidecar was torn down with the first container, so the fake has
+            # nobody to ask until this one has identified. Without the wait, every request
+            # below answers "no connector is connected" and says nothing about the plugin.
+            if await checks_lifecycle.identify_within(fake, before + 1, IDENTIFY_BUDGET, container.alive) is None:
+                problems.append(f"the degraded run's sidecar never identified within {IDENTIFY_BUDGET:.0f} s")
             health = await asyncio.to_thread(_plugin_health, sidecar.name, plugin_token(run.takaro_env("")))
             verdict = classify_health(health, str(run.target.record["revision"]), None)
             if verdict["ok"]:
@@ -804,8 +849,12 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
                 reachable = await fake.request("testReachability", {})
             except Exception as exc:  # noqa: BLE001 - reported as a check failure
                 problems.append(f"testReachability failed against the degraded plugin: {exc}")
-            if not isinstance(reachable, dict) or reachable.get("connectable") is not False:
-                problems.append(f"testReachability returned {reachable!r}, expected connectable false")
+            # The sidecar deliberately still reports the server connectable when the plugin's
+            # overall status is ok and only some capabilities self-checked as degraded --
+            # the server IS reachable, those actions are not. The reason is what has to name
+            # them, so the reason is what this asserts.
+            if not isinstance(reachable, dict):
+                problems.append(f"testReachability returned {reachable!r}, expected a reachability document")
             elif "degraded" not in str(reachable.get("reason") or ""):
                 reason = reachable.get("reason")
                 problems.append(f"the reachability reason {reason!r} names no degraded capability")
