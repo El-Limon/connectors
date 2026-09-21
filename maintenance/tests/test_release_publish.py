@@ -538,6 +538,42 @@ def test_the_token_never_appears_in_any_output(
     assert TOKEN not in stderr
 
 
+def test_an_explicit_token_never_appears_in_any_output(
+    run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory, _, built = assembled
+    stable_draft(fake, built.commit)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    # ``--verbose`` is a global flag, so this one call cannot go through ``publish()``.
+    code, payload, stderr = run(
+        "--verbose",
+        "release",
+        "publish",
+        "--connector",
+        CONNECTOR,
+        "--channel",
+        "stable",
+        "--tag",
+        TAG,
+        "--assembled",
+        str(directory),
+        "--repo",
+        REPO,
+        "--api-url",
+        fake.api_url,
+        "--target-commit",
+        built.commit,
+        "--token",
+        "explicit-token-value",
+        repo=built.root,
+    )
+
+    assert code == 0, stderr
+    assert "explicit-token-value" not in json.dumps(payload)
+    assert "explicit-token-value" not in stderr
+
+
 def test_every_published_asset_hashes_to_what_the_record_says(
     run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs]
 ) -> None:

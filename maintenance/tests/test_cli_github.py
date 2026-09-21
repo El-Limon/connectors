@@ -47,6 +47,24 @@ def test_the_gh_cli_is_the_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_token() == "from-gh-cli"
 
 
+def test_a_token_from_the_gh_cli_is_redacted_from_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from takaro_maint import output
+
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr("takaro_maint.github.shutil.which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        "takaro_maint.github.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "from-gh-cli-token-value\n", ""),
+    )
+    GitHub("gettakaro/connectors", resolve_token(), "http://127.0.0.1:9")
+
+    output.error("the token is from-gh-cli-token-value")
+
+    assert "from-gh-cli-token-value" not in capsys.readouterr().err
+
+
 def test_no_token_anywhere_exits_nine(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.setattr("takaro_maint.github.shutil.which", lambda name: None)

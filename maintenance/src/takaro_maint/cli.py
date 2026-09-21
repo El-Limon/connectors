@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
     except Exception:  # noqa: BLE001 - the documented "unexpected" exit
-        traceback.print_exc()
+        output.error(traceback.format_exc().rstrip("\n"))
         return exit_codes.UNEXPECTED
 
 

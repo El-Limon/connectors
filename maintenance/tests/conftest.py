@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from takaro_maint import net, paths  # noqa: E402
+from takaro_maint import net, paths, redact  # noqa: E402
 from takaro_maint.cli import main  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,8 +32,10 @@ def _isolated_environment(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     monkeypatch.setenv("TAKARO_MAINT_CACHE", str(tmp_path_factory.mktemp("cache")))
     monkeypatch.delenv("GH_TOKEN", raising=False)
     paths.set_repo_root(None)
+    redact.forget()
     yield
     paths.set_repo_root(None)
+    redact.forget()
 
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
