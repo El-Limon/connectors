@@ -1,0 +1,5 @@
+# branch head, newer than the pinned build
+<?xml version="1.0"?>
+<ServerSettings>
+  <property name="ServerName" value="takaro" />
+</ServerSettings>
