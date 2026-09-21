@@ -310,9 +310,9 @@ def decide(facts: Facts) -> Decision:
             reasons.append(facts.catalog_note)
         return _decided(facts, IMPLEMENTATION_PR, reasons, counting, ignored, None)
 
-    # Nothing later holds, so readiness is free to recompute from its own rows. ``current`` is
-    # deliberately None: walking back from a pull request that was closed without merging is
-    # the correct answer, not a regression to be guarded against.
+    # Nothing later holds, so readiness recomputes from its own rows. ``current`` is None on
+    # purpose: a pull request closed without merging walks the state back, which is the
+    # intended outcome.
     state = (
         readiness.state_for(facts.readiness_rows, branch=facts.marker.get("branch", "release"), current=None)
         if facts.readiness_rows is not None

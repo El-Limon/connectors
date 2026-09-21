@@ -57,7 +57,9 @@ class Tracker:
     ``fake_github`` cannot serve asset bytes and ``fake_github_releases`` cannot serve issues,
     and a lifecycle run needs both from the same base URL. Rather than teach either fake the
     other's half, this forwards each request to whichever one owns that path and relays the
-    status, body, ``Content-Type`` and ``Link`` back unchanged.
+    status, body and ``Content-Type`` back unchanged. ``Link`` is rewritten to this server's
+    own base, as any proxy must: the client refuses a pagination link off the API host it was
+    given, and the backend writes its own address into the header.
     """
 
     github: FakeGitHub
@@ -107,7 +109,7 @@ class Tracker:
                 self.send_header("Content-Length", str(len(payload)))
                 link = headers.get("Link")
                 if link:
-                    self.send_header("Link", link)
+                    self.send_header("Link", link.replace(base, front.api_url))
                 self.end_headers()
                 self.wfile.write(payload)
 

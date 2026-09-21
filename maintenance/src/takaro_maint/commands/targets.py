@@ -14,7 +14,7 @@ from ..exit_codes import OK
 from . import load_catalog, select_one
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("targets", help="list and resolve catalog targets")
     inner = parser.add_subparsers(dest="targets_command", metavar="<subcommand>")
 

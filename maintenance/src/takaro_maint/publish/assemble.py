@@ -245,7 +245,8 @@ def evidence_for(
     reports: dict[str, tuple[Path, dict[str, Any]]],
     *,
     source_commit: str,
-) -> tuple[dict[str, Any], Path | None]:
+    allow_dirty: bool,
+) -> tuple[dict[str, Any], Path | None, bool]:
     """What this target's verification proves, or the reason it does not prove enough."""
     required = str(target.record["verification"]["required"])
     if required == "gameplay":
@@ -261,7 +262,7 @@ def evidence_for(
                 target=target.id,
                 required=required,
             )
-        return {"required": required, "executed": None, "report": None, "outcome": None, "takaro": None}, None
+        return {"required": required, "executed": None, "report": None, "outcome": None, "takaro": None}, None, False
 
     path, report = found
     outcome = str(report["outcome"])
@@ -287,6 +288,13 @@ def evidence_for(
             f"this assembly is for {source_commit}",
             target=target.id,
         )
+    verified_dirty = bool(report["source"].get("dirty"))
+    if verified_dirty and not allow_dirty:
+        raise ConflictError(
+            f"{target.id}: the verification report was made from a dirty tree, so it cannot attest to "
+            f"{source_commit}; verify from a clean checkout",
+            target=target.id,
+        )
     verified = {str(item["role"]): str(item["sha256"]) for item in report["artifacts"]}
     for component in target.record.get("components", []):
         role = str(component["role"])
@@ -307,6 +315,7 @@ def evidence_for(
             "takaro": str(report["takaro"]),
         },
         path,
+        verified_dirty,
     )
 
 
@@ -382,8 +391,13 @@ def assemble_catalog(
     report_index = read_reports(reports)
 
     evidence: dict[str, tuple[dict[str, Any], Path | None]] = {}
+    verified_dirty = False
     for target in targets:
-        evidence[target.id] = evidence_for(target, index, report_index, source_commit=source_commit)
+        verification, report_path, dirty_flag = evidence_for(
+            target, index, report_index, source_commit=source_commit, allow_dirty=allow_dirty
+        )
+        evidence[target.id] = (verification, report_path)
+        verified_dirty = verified_dirty or dirty_flag
 
     prepare_out(out)
     names = Names(["SHA256SUMS", compat_record.record_name(connector, version)])
@@ -437,7 +451,7 @@ def assemble_catalog(
         repo=repo,
         source_commit=source_commit,
         source_tag=tag if channel == "stable" else None,
-        dirty=dirty or built_dirty,
+        dirty=dirty or built_dirty or verified_dirty,
         stamp=stamp,
         catalog={"game": game.id, "targetIds": [target.id for target in targets]},
         catalog_hash=compat_record.catalog_sha256(game.record, {target.id: target.record for target in targets}),

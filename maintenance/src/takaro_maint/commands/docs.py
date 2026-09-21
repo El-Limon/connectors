@@ -14,7 +14,7 @@ BEGIN = "<!-- takaro-maint:targets:begin -->"
 END = "<!-- takaro-maint:targets:end -->"
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("docs", help="render generated documentation blocks")
     inner = parser.add_subparsers(dest="docs_command", metavar="<subcommand>")
     render = inner.add_parser("render", help="render the target table for a game README")

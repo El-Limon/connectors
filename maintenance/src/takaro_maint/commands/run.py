@@ -25,7 +25,7 @@ from . import scan as scan_command
 SCHEMA = "takaro-maint-run/1"
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("run", help="scan, then reconcile, as one command and one report")
     parser.add_argument("--publish", action="store_true", help="actually write to the tracker (default: read-only)")
     parser.add_argument(

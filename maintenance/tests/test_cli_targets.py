@@ -140,6 +140,18 @@ def test_two_defaults_exit_three(run: Any, catalog_copy: Path) -> None:
     assert "2 default targets" in payload["error"]
 
 
+def test_a_game_with_a_default_per_platform_needs_a_platform_or_a_target(run: Any) -> None:
+    """The shipped catalog: three platforms, one default each, no game-wide default."""
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft")
+    assert code == 3
+    assert "3 default targets" in payload["error"]
+    assert "--platform" in payload["error"]
+
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric")
+    assert code == 0
+    assert payload["id"] == "fabric-26.2"
+
+
 def test_zero_defaults_exit_three(run: Any, catalog_copy: Path) -> None:
     record = read_target(catalog_copy)
     record["default"] = False

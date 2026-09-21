@@ -85,7 +85,7 @@ def test_the_fake_takaro_log_redacts_the_tokens_it_receives(tmp_path: Path) -> N
 
 
 def test_an_unexpected_traceback_is_redacted(run: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The traceback path is the one stderr write that used to bypass redaction."""
+    """The unexpected-traceback path writes to stderr directly, so it needs its own redaction."""
 
     def explode(text: str) -> None:
         raise RuntimeError(f"upload to https://example.invalid/?token={SECRET} failed")

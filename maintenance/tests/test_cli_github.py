@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +106,37 @@ def test_every_request_carries_the_token(client: GitHub, fake: Any) -> None:
     client.issue_get(1)
 
     assert fake.authorizations[-1] == "Bearer token-for-tests"
+
+
+def test_the_token_is_never_a_redirectable_header(client: GitHub, monkeypatch: pytest.MonkeyPatch) -> None:
+    """urllib copies ``headers`` onto a redirect; ``unredirected_hdrs`` stay on the original host."""
+    seen: list[urllib.request.Request] = []
+
+    def capture(request: urllib.request.Request, timeout: float = 0) -> None:
+        seen.append(request)
+        raise urllib.error.URLError("captured")
+
+    monkeypatch.setattr("takaro_maint.github.urllib.request.urlopen", capture)
+
+    with pytest.raises(TrackerError):
+        client.get("/repos/o/r")
+
+    (request,) = seen
+    assert "Authorization" not in request.headers
+    assert request.unredirected_hdrs["Authorization"] == "Bearer token-for-tests"
+
+
+def test_pagination_never_leaves_the_api_host(client: GitHub, monkeypatch: pytest.MonkeyPatch) -> None:
+    answers = iter(
+        [
+            ([{"number": 1}], '<https://elsewhere.invalid/next>; rel="next"'),
+            ([{"number": 2}], ""),
+        ]
+    )
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: next(answers))
+
+    with pytest.raises(TrackerError, match="elsewhere.invalid"):
+        client.paginate("/repos/o/r/issues")
 
 
 def test_issues_are_created_updated_and_closed(client: GitHub, fake: Any) -> None:

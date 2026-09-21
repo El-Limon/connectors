@@ -37,7 +37,7 @@ CLOSED_BEFORE_RELEASE = "closed-before-release"
 CLOSED_OTHER = "closed-other"
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "reconcile",
         help="recompute every maintenance issue's lifecycle state from pull requests, the catalog and releases",

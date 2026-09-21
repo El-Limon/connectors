@@ -11,6 +11,7 @@ from typing import Any
 from .. import __version__, net
 from ..catalog import ids, schema
 from ..exit_codes import VerificationFailed
+from ..publish.manifest import source_revision, watched_paths
 
 LEVELS = ("build", "contract", "startup", "protocol")
 LEVEL_CHECKS: dict[str, tuple[str, ...]] = {
@@ -59,8 +60,8 @@ def outcome_for(checks: list[dict[str, Any]]) -> str:
     return "pass"
 
 
-def repo_identity(repo_root: Path) -> tuple[str, str, bool]:
-    """``owner/repo`` from the origin remote, plus HEAD and whether the tree is dirty."""
+def repo_identity(repo_root: Path, watched: list[str]) -> tuple[str, str, bool]:
+    """``owner/repo`` from the origin remote, HEAD, and whether any watched path is dirty."""
 
     def git(*args: str) -> str:
         try:
@@ -78,7 +79,8 @@ def repo_identity(repo_root: Path) -> tuple[str, str, bool]:
             repo = cleaned.split(":", 1)[1]
         else:
             repo = "/".join(cleaned.rstrip("/").split("/")[-2:])
-    return repo, git("rev-parse", "HEAD") or "unknown", bool(git("status", "--porcelain"))
+    revision, dirty = source_revision(repo_root, watched)
+    return repo, revision, dirty
 
 
 def build_report(
@@ -94,7 +96,7 @@ def build_report(
     repo_root: Path,
     takaro: str = "local",
 ) -> dict[str, Any]:
-    repo, revision, dirty = repo_identity(repo_root)
+    repo, revision, dirty = repo_identity(repo_root, watched_paths(target.game))
     inputs: dict[str, Any] = {}
     for name, spec in target.record["inputs"].items():
         if spec["kind"] == "mojang-version":
