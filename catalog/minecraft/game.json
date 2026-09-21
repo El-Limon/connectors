@@ -4,6 +4,7 @@
   "name": "Minecraft",
   "connector": "minecraft",
   "platforms": ["fabric", "paper", "neoforge"],
+  "defaultPlatform": "fabric",
   "sources": {
     "mojang-meta": {
       "provider": "mojang",
@@ -88,6 +89,10 @@
       "artifactPattern": "takaro-minecraft-mod-{target}-{version}.jar"
     }
   },
-  "legacyAssetAliases": {},
+  "legacyAssetAliases": {
+    "takaro-fabric-{version}.jar": "fabric-26.2/server-mod",
+    "takaro-neoforge-{version}.jar": "neoforge-1.21.11/server-mod",
+    "takaro-paper-{version}.jar": "paper-1.21.11/server-mod"
+  },
   "devServers": {"composeFile": "minecraft.yml"}
 }

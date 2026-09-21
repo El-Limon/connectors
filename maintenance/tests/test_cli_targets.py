@@ -140,14 +140,19 @@ def test_two_defaults_exit_three(run: Any, catalog_copy: Path) -> None:
     assert "2 default targets" in payload["error"]
 
 
-def test_a_game_with_a_default_per_platform_needs_a_platform_or_a_target(run: Any) -> None:
-    """The shipped catalog: three platforms, one default each, no game-wide default."""
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft")
+def test_a_default_per_platform_and_no_default_platform_is_ambiguous(run: Any, catalog_copy: Path) -> None:
+    """Without ``defaultPlatform`` there is nothing to choose with, and the error names the options."""
+    game_file = catalog_copy / "catalog" / "minecraft" / "game.json"
+    game = json.loads(game_file.read_text())
+    del game["defaultPlatform"]
+    game_file.write_text(json.dumps(game, indent=2))
+
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", repo=catalog_copy)
     assert code == 3
     assert "3 default targets" in payload["error"]
-    assert "--platform" in payload["error"]
+    assert "--platform (fabric, neoforge, paper)" in payload["error"]
 
-    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric")
+    code, payload, _ = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", repo=catalog_copy)
     assert code == 0
     assert payload["id"] == "fabric-26.2"
 
@@ -245,3 +250,31 @@ def test_the_fingerprint_matches_the_shared_fixture(run: Any, repo_root: Path) -
 
     assert code == 0
     assert payload["fingerprint"] == real["fingerprint"]
+
+
+def test_game_alone_resolves_the_declared_default_platform(run: Any) -> None:
+    """Three platforms each declare a default; ``defaultPlatform`` says which one ``--game`` means."""
+    code, payload, err = run("targets", "resolve", "--game", "minecraft")
+
+    assert code == 0, err
+    assert payload["id"] == "fabric-26.2"
+    assert payload["platform"] == "fabric"
+
+
+def test_platform_still_takes_that_platforms_default(run: Any) -> None:
+    code, payload, err = run("targets", "resolve", "--game", "minecraft", "--platform", "paper")
+
+    assert code == 0, err
+    assert payload["id"] == "paper-1.21.11"
+
+
+def test_a_default_platform_that_names_no_platform_fails_validation(run: Any, catalog_copy: Path) -> None:
+    game_file = catalog_copy / "catalog" / "minecraft" / "game.json"
+    game = json.loads(game_file.read_text())
+    game["defaultPlatform"] = "forge"
+    game_file.write_text(json.dumps(game, indent=2))
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code != 0
+    assert any(failure["id"] == "default-platform" for failure in payload["failures"])

@@ -17,9 +17,9 @@ maintenance/bin/takaro-maint verify --game minecraft --target fabric-26.2 --arti
 
 `just maint <args>` is the same thing from the repository root.
 
-A game has one default target per platform (`catalog/README.md`), so a Minecraft command names
-its `--target`, or `--platform fabric|paper|neoforge` to take that platform's default; `--game`
-alone is ambiguous and exits 3 saying so.
+A game has one default target per platform (`catalog/README.md`). `--target` names one exactly,
+`--platform fabric|paper|neoforge` takes that platform's default, and `--game` alone takes the
+default of the game's `defaultPlatform` (`fabric` for Minecraft).
 
 ## Requirements
 

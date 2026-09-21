@@ -25,7 +25,7 @@ deploy_rust() {
 deploy_minecraft() {
     local platform="$1" target tmp toolchain
 
-    target="$(ds_target "minecraft-${platform}")"
+    target="$(ds_target "minecraft-${platform}")" || ds_target_failed "minecraft-${platform}"
     if [ -n "$target" ]; then
         # Catalog-driven: build the target's artifact and deploy it by manifest row, so
         # the jar in mods/ is the one the ledger records and nothing else is guessed at.

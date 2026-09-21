@@ -1,4 +1,4 @@
-"""A small GitHub client the maintenance issues share. No #149 command calls it yet."""
+"""A small GitHub client the maintenance commands share."""
 
 from __future__ import annotations
 
@@ -131,38 +131,6 @@ class GitHub:
 
     def assets(self, release_id: int) -> list[dict[str, Any]]:
         return self.paginate(f"/repos/{self.repo}/releases/{release_id}/assets?per_page=100")
-
-    def upload_asset(self, release_id: int, file: Path, *, content_type: str = "application/octet-stream") -> Any:
-        url = f"https://uploads.github.com/repos/{self.repo}/releases/{release_id}/assets?name={file.name}"
-        request = urllib.request.Request(url, data=file.read_bytes(), method="POST")
-        # Unredirected, so a redirect off the API host never carries the bearer token.
-        request.add_unredirected_header("Authorization", f"Bearer {self.token}")
-        request.add_header("Content-Type", content_type)
-        request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
-        try:
-            with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310
-                return json.loads(response.read() or b"null")
-        except urllib.error.HTTPError as exc:
-            raise TrackerError(f"uploading {file.name} -> HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise TrackerError(f"uploading {file.name} failed: {exc.reason}") from exc
-
-    def download_asset(self, asset_id: int, dest: Path) -> Path:
-        url = f"{self.api_url}/repos/{self.repo}/releases/assets/{asset_id}"
-        request = urllib.request.Request(url, method="GET")
-        # An asset download is a 302 to a signed CDN URL; it must never see the token.
-        request.add_unredirected_header("Authorization", f"Bearer {self.token}")
-        request.add_header("Accept", "application/octet-stream")
-        request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
-        try:
-            with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(response.read())
-        except urllib.error.HTTPError as exc:
-            raise TrackerError(f"downloading asset {asset_id} -> HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise TrackerError(f"downloading asset {asset_id} failed: {exc.reason}") from exc
-        return dest
 
     def delete_asset(self, asset_id: int) -> None:
         self.delete(f"/repos/{self.repo}/releases/assets/{asset_id}")
