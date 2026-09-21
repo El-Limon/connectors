@@ -76,7 +76,9 @@ deploy_terraria() {
     local target tmp
     target="$(ds_target terraria)"
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    # "${tmp:-}", not "$tmp": bash runs this trap again when the *caller* returns, in a
+    # scope where the local is gone, and under `set -u` that aborts the run.
+    trap 'rm -rf "${tmp:-}"' RETURN
 
     ds_info "Building the Terraria plugin and bridge for ${target} (pinned .NET SDK and Node images)..."
     ds_maint build --game terraria --target "$target" \
