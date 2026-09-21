@@ -80,6 +80,7 @@ line behaves the same from anywhere.
 | `TAKARO_MAINT_GRADLE` | Override the build command (tests use a stub). |
 | `TAKARO_MAINT_DOCKER` | Override the docker binary (tests use a stub). |
 | `TAKARO_MAINT_DEPOTDOWNLOADER` | Override the pinned DepotDownloader executable (tests use a stub). |
+| `TAKARO_MAINT_STEAMCMD` | Override the steamcmd command line — a command line, so it can be a `docker run …` (tests use a stub). |
 | `TAKARO_MAINT_REPO` | Repository for GitHub operations. Also `--repo`. |
 | `TAKARO_MAINT_GITHUB_API_URL` | GitHub API base. Also `--api-url`. |
 | `GH_TOKEN` | GitHub token; otherwise `gh auth token` is tried. |
@@ -106,4 +107,6 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [Discovery](docs/discovery.md) — how `scan` turns upstream releases into deduplicated maintenance issues.
 - [Runtime verification](docs/verify.md) — what `verify` boots, checks and reports, locally and in CI.
 - [Steam exact install](docs/steam-install.md) — pinned DepotDownloader, depot manifests, staged swap and rollback for Steam-delivered servers.
+- [Steam discovery](docs/steam-discovery.md) — reading Steam branch heads and depot manifests through `app_info_print`.
+- [Adding a game](docs/adding-a-game.md) — the provider contract: what a new connector adds to the catalog and what it never touches.
 - [Releases](docs/release.md) — the release channels, the asset names, the compatibility record and how a release is recovered.
