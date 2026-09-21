@@ -157,8 +157,9 @@ The run checks out `minecraft-v0.1.2`, so the artifacts are rebuilt from the sou
 names rather than from whatever main has become since. It re-runs `release assemble` as well, and
 that re-assembly has to produce the same bytes as the interrupted one did — otherwise the retry
 would conflict with whatever the first run managed to upload. Nothing in the set is allowed to
-depend on when it was built: the archives are packaged through `scripts/lib/package.sh` and the
-compatibility record is stamped from the source commit's own time. Then:
+depend on when it was built: for a catalog connector the archives are packaged through
+`scripts/lib/package.sh` (or by the Gradle build's reproducible-jar settings, proven twice per
+build leg) and the compatibility record is stamped from the source commit's own time. Then:
 
 * an asset that is already there with **identical** bytes is `skipped-identical` — no upload,
   no delete;
@@ -170,6 +171,20 @@ compatibility record is stamped from the source commit's own time. Then:
 
 A tag created before this machinery existed cannot be recovered this way: its tree has no
 `catalog/` or `maintenance/` to build from.
+
+**Legacy-mode connectors** (`--mode legacy`: 7d2d, rust, zomboid, valheim, conan-exiles,
+terraria, enshrouded, dragonwilds) do not yet package through `scripts/lib/package.sh`, and their
+builds have not been proven byte-reproducible, so a recovery rebuild of one of them can produce
+different bytes from the interrupted run's. The publisher then stops with exit 7 and uploads
+nothing, exactly as above. Because a stable release is still a draft until the publisher
+finishes it, the way forward is to delete the draft's partial assets and dispatch again:
+
+    gh release view 7d2d-v1.2.3 --json assets -q '.assets[].name'
+    gh release delete-asset 7d2d-v1.2.3 <name> --yes      # once per listed asset
+    gh workflow run 7d2d.yml --ref main -f tag=7d2d-v1.2.3 -f version=1.2.3
+
+Never delete assets from a release that is no longer a draft. Each connector adopts the
+deterministic packaging in its own maintenance issue; until then this is the recovery path.
 
 ## Rolling and PR builds
 
@@ -209,7 +224,9 @@ pkg_sha256sums dist
 `maintenance/tests/test_package_determinism.sh` builds the same content in two different paths,
 in the opposite order, with different mtimes and permissions, and requires identical bytes — and
 requires a one-byte content change to change them. The library is available to the game build
-scripts; adopting it belongs to each game's own issue.
+scripts; adopting it — and proving the build itself reproducible by building twice and comparing,
+as the Minecraft legs do — belongs to each game's own maintenance issue. Until a connector has
+done both, its stable recovery is the manual path described under Recovery.
 
 The Minecraft build legs prove the same thing for the Gradle build directly, by building each
 target twice with `--rerun-tasks` and comparing the jars.
