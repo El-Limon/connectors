@@ -22,10 +22,12 @@ services:
       HOME: /tmp
       DOTNET_CLI_HOME: /tmp
     ports:
-      # dev-servers/.env.example declares no port keys for this game, so both carry the
-      # default an operator gets without setting anything; an isolated run overrides them.
-      - "${TERRARIA_PORT:-7777}:7777/tcp"
-      - "127.0.0.1:${TERRARIA_REST_PORT:-7878}:7878"
+      # Literal, like every other rig here. The compose lint substitutes a placeholder for
+      # every variable dev-servers/.env.example does not declare, including one with a
+      # default, and a placeholder is not a port — so these wait on TERRARIA_PORT and
+      # TERRARIA_REST_PORT being declared there.
+      - "7777:7777/tcp"
+      - "127.0.0.1:7878:7878"
     # The image entrypoint already sets -configpath /tshock -worldselectpath
     # /worlds -additionalplugins /plugins; these args autocreate the world so
     # the server never blocks on the interactive world-selection prompt.

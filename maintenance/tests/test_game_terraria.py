@@ -949,15 +949,13 @@ def test_the_terraria_compose_file_runs_the_bridge_in_the_server_namespace() -> 
         pytest.skip("no docker on this host")
     environment = dict(os.environ)
     body = (DS_ROOT / "compose" / "terraria.yml").read_text()
-    # Only the references with no inline default need a value; the ones that carry `:-`
-    # are exactly what an operator who set nothing would get, which is what this renders.
-    referenced = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", body))
+    # The same substitution the compose lint makes: every reference .env.example does not
+    # declare becomes a placeholder, default or no default.
+    referenced = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", body))
     declared = (DS_ROOT / ".env.example").read_text()
     for name in sorted(referenced):
         if not re.search(rf"^{name}=.", declared, re.MULTILINE):
             environment[name] = "placeholder"
-    for name in ("TERRARIA_PORT", "TERRARIA_REST_PORT", "TERRARIA_CONTAINER_NAME"):
-        environment.pop(name, None)
     environment["TERRARIA_IMAGE"] = IMAGE_REF
     environment["TERRARIA_BRIDGE_IMAGE"] = "docker.io/library/node:22.23.2-bookworm-slim"
 
@@ -980,7 +978,8 @@ def test_the_terraria_compose_file_runs_the_bridge_in_the_server_namespace() -> 
     assert services["terraria-bridge"]["environment"]["BRIDGE_CONFIG"] == "/config/TakaroConfig.txt"
     targets = {volume["target"] for volume in services["terraria-bridge"]["volumes"]}
     assert "/config/TakaroConfig.txt" in targets
-    # Unset, the ports are the defaults an operator gets; an isolated run overrides them.
+    # Literal: a placeholder substituted into a port spec is not a port, and the lint
+    # substitutes one for every variable .env.example does not declare.
     published = {(port["published"], port["target"]) for port in services["terraria"]["ports"]}
     assert published == {("7777", 7777), ("7878", 7878)}
 
