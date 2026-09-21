@@ -103,3 +103,4 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [Discovery](docs/discovery.md) — how `scan` turns upstream releases into deduplicated maintenance issues.
 - [Runtime verification](docs/verify.md) — what `verify` boots, checks and reports, locally and in CI.
 - [Releases](docs/release.md) — the release channels, the asset names, the compatibility record and how a release is recovered.
+- [Lifecycle](docs/lifecycle.md) — how `reconcile` and `run` move a maintenance issue from detection to a verified, published release.
