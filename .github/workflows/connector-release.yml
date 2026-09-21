@@ -195,6 +195,9 @@ jobs:
           jq '.artifacts |= map(.target = "fabric-0.0.0")' dist/build-manifest.json > m.json && mv m.json dist/build-manifest.json
 
       - name: Boot the target against a local fake Takaro and run every check
+        # `shell: bash` is what turns on `-o pipefail`; the implicit shell does not, so the
+        # `tee` below would swallow a failing verification and let `publish` run anyway.
+        shell: bash
         run: |
           mkdir -p reports
           maintenance/bin/takaro-maint verify \
