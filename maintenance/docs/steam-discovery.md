@@ -126,7 +126,7 @@ surface for a Steam game.
 | `os` | `linux`, `windows` or `macos`: which build this identity is about. Two operating systems of one app are two identities, never one. |
 | `depots` | the depot ids whose content manifests make the identity. Required, and a depot the app does not publish fails the source by name. |
 | `channels` | key = the upstream branch label exactly as Steam spells it; `branch` = the marker branch name; `enabled: false` = declared and deliberately unwatched; `passwordEnv` = the variable a protected branch's password comes from. |
-| `knownBranches` | labels that are known and never reviewed: exact strings or `regex:<pattern>`, the selector grammar `build.references` uses. |
+| `knownBranches` | labels that are known and never reviewed: exact strings or `regex:<pattern>`, the selector grammar `build.references` uses. A pattern that does not compile fails this source alone, naming the entry. |
 
 The channel key and the branch name are two different things because they answer to two
 different grammars. Steam labels its experimental branch `latest_experimental`; a marker
@@ -283,6 +283,11 @@ The two reads are a moment apart. If they disagree, a publish is in flight betwe
 and recording that pair would pin a build id to manifests that never shipped under it.
 That is reported as a retry (exit 4), not recorded. `--metadata` together with an explicit
 `--buildid` is a usage error: one of them is the answer, not both.
+
+A protected branch publishes its manifest ids encrypted, so for those depots the metadata
+has nothing to compare against. That is not a disagreement and does not fail the pin — but
+it is not the cross-check either, so `metadata.crossChecked` lists the depots that really
+were compared rather than leaving the reader to assume it was all of them.
 
 ## Recording the fixture
 

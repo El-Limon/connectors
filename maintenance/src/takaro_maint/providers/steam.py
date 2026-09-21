@@ -73,11 +73,19 @@ def branch_name(label: str) -> str:
     return candidate if candidate and BRANCH_RE.match(candidate) else channels.UNKNOWN_BRANCH
 
 
-def _selector(pattern: str) -> re.Pattern[str]:
-    """``regex:<pattern>`` or an exact string — the grammar ``build.references`` uses."""
-    if pattern.startswith("regex:"):
-        return re.compile(pattern[len("regex:") :])
-    return re.compile(f"^{re.escape(pattern)}$")
+def _selector(pattern: str, where: str) -> re.Pattern[str]:
+    """``regex:<pattern>`` or an exact string — the grammar ``build.references`` uses.
+
+    A pattern comes out of the catalog, so a broken one is a misconfigured source rather
+    than a crash: ``re.error`` would escape the scan's per-source handling and take the
+    whole run — and every other game's sources — down with it.
+    """
+    try:
+        if pattern.startswith("regex:"):
+            return re.compile(pattern[len("regex:") :])
+        return re.compile(f"^{re.escape(pattern)}$")
+    except re.error as exc:
+        raise UsageError(f"{where} is not a valid pattern: {pattern!r} ({exc})") from exc
 
 
 class _Watch:
@@ -113,7 +121,10 @@ class _Watch:
                     f"{channel['branch']!r}; a branch name is {BRANCH_RE.pattern} (an upstream label "
                     "with an underscore needs an explicit 'branch')"
                 )
-        self.known = [_selector(str(entry)) for entry in watch.get("knownBranches") or []]
+        self.known = [
+            _selector(str(entry), f"the Steam watch block of {where} entry 'watch.knownBranches[{index}]'")
+            for index, entry in enumerate(watch.get("knownBranches") or [])
+        ]
 
     def is_known(self, label: str) -> bool:
         return any(selector.match(label) for selector in self.known)

@@ -36,10 +36,22 @@ OBSERVATION_LIMIT = (
 )
 
 
-def _selector(pattern: str) -> re.Pattern[str]:
+def _compile(pattern: str, where: str) -> re.Pattern[str]:
+    """One catalog-supplied regular expression, or a usage error naming the key it came from.
+
+    Watch blocks are not schema-validated, and ``scan`` isolates only its own errors — so a
+    raw ``re.error`` here would abort the entire run instead of failing this one source.
+    """
+    try:
+        return re.compile(pattern)
+    except re.error as exc:
+        raise UsageError(f"{where} is not a valid regular expression: {pattern!r} ({exc})") from exc
+
+
+def _selector(pattern: str, where: str) -> re.Pattern[str]:
     """``regex:<pattern>`` or an exact string, the grammar ``build.references`` already uses."""
     if pattern.startswith("regex:"):
-        return re.compile(pattern[len("regex:") :])
+        return _compile(pattern[len("regex:") :], where)
     return re.compile(f"^{re.escape(pattern)}$")
 
 
@@ -101,10 +113,10 @@ class GitHubReleaseProvider(Provider):
             raise UpstreamUnavailable(f"{url}: the release listing is not a list", url=url)
         return [entry for entry in listed if isinstance(entry, dict) and not entry.get("draft")], url
 
-    def _matches(self, channel: dict[str, Any], release: dict[str, Any]) -> bool:
+    def _matches(self, channel: dict[str, Any], release: dict[str, Any], key: str) -> bool:
         tag = str(release.get("tag_name") or "")
         wanted = channel.get("tag")
-        if wanted is not None and not _selector(str(wanted)).match(tag):
+        if wanted is not None and not _selector(str(wanted), f"watch.channels.{key}.tag").match(tag):
             return False
         prerelease = channel.get("prerelease")
         return not (prerelease is not None and bool(release.get("prerelease")) is not bool(prerelease))
@@ -120,7 +132,7 @@ class GitHubReleaseProvider(Provider):
         pattern = channel.get("asset")
         if not pattern:
             raise UsageError(f"watch.channels.{key} declares no 'asset' pattern; a release carries several files")
-        selector = re.compile(str(pattern))
+        selector = _compile(str(pattern), f"watch.channels.{key}.asset")
         found = [asset for asset in release.get("assets") or [] if selector.match(str(asset.get("name") or ""))]
         if len(found) != 1:
             names = ", ".join(sorted(str(asset.get("name")) for asset in release.get("assets") or [])) or "<none>"
@@ -130,7 +142,7 @@ class GitHubReleaseProvider(Provider):
             )
         return found[0]
 
-    def _rev(self, channel: dict[str, Any], release: dict[str, Any], asset: dict[str, Any]) -> str:
+    def _rev(self, channel: dict[str, Any], release: dict[str, Any], asset: dict[str, Any], key: str) -> str:
         """The revision: a version out of the release name when there is one, else the tag.
 
         A mutable tag gets the asset digest appended, so re-uploading ``production_build``
@@ -140,7 +152,8 @@ class GitHubReleaseProvider(Provider):
         rev = tag
         pattern = channel.get("versionPattern")
         if pattern:
-            match = re.search(str(pattern), str(release.get("name") or ""))
+            version = _compile(str(pattern), f"watch.channels.{key}.versionPattern")
+            match = version.search(str(release.get("name") or ""))
             if match and match.groups():
                 rev = match.group(1)
         if channel.get("mutable"):
@@ -168,10 +181,10 @@ class GitHubReleaseProvider(Provider):
         for key, channel in sorted(enabled.items()):
             branch = str(channel["branch"])
             for release in releases:
-                if not self._matches(channel, release):
+                if not self._matches(channel, release, key):
                     continue
                 asset = self._asset(channel, release, key)
-                rev = self._rev(channel, release, asset)
+                rev = self._rev(channel, release, asset, key)
                 mutable = mutable or bool(channel.get("mutable"))
                 published = str(release.get("published_at") or "")
                 facts: dict[str, Any] = {

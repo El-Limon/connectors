@@ -363,10 +363,28 @@ def test_steam_pin_metadata_fills_the_buildid_from_app_info(run: Any, steam: Any
         "timeupdated": "2026-08-31T17:10:35Z",
         "description": None,
         "changeNumber": 39026857,
+        "crossChecked": ["294422"],
     }
     assert payload["buildid"] == 24994542
     assert payload["snippet"]["buildid"] == 24994542
     assert payload["depots"]["294422"]["manifest"] == fake_dd.HEAD_MANIFEST
+
+
+def test_a_metadata_pin_says_which_depots_it_could_cross_check(run: Any, steam: Any, repo: Path) -> None:
+    """A protected branch publishes its manifest ids encrypted, so there is nothing to compare.
+
+    That is not a disagreement and must not fail the pin -- but it is also not the
+    cross-check, so the run says which depots it actually compared instead of leaving the
+    reader to assume all of them were.
+    """
+    fake_steamcmd.set_manifest(steam.document, "294422", "public", fake_dd.HEAD_MANIFEST, encrypted=True)
+    steam.serve()
+
+    code, payload, err = run("steam", "pin", "--game", GAME, "--target", fake_dd.TARGET_ID, "--metadata", repo=repo)
+
+    assert code == 0, err
+    assert payload["metadata"]["buildid"] == 24994542
+    assert payload["metadata"]["crossChecked"] == [], "an encrypted manifest cannot be compared"
 
 
 def test_a_publish_in_flight_is_a_retry_not_a_record(run: Any, steam: Any, repo: Path) -> None:
@@ -835,6 +853,25 @@ def test_a_misconfigured_watch_block_names_the_missing_key(run: Any, tracker: An
 
     assert code == 4
     assert "watch.depots" in payload["sources"][STEAM_KEY]["error"]
+    assert payload["observations"] == []
+
+
+def test_a_broken_known_branch_pattern_fails_only_its_own_source(run: Any, tracker: Any, steam: Any) -> None:
+    """A pattern comes out of the catalog, so a broken one is a misconfiguration.
+
+    The scan isolates a source that reports its own error; a raw ``re.error`` would escape
+    that and take the whole run down, which is exactly what a bad regex must not do.
+    """
+    watch = watch_of(tracker.root)
+    watch["knownBranches"] = ["regex:^v[0-9]+("]
+    set_watch(tracker.root, watch)
+
+    code, payload, _ = tracker.scan(run, "--bootstrap")
+
+    assert code == 4
+    error = payload["sources"][STEAM_KEY]["error"]
+    assert "watch.knownBranches[0]" in error, error
+    assert "not a valid pattern" in error
     assert payload["observations"] == []
 
 

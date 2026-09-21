@@ -193,10 +193,18 @@ def _metadata(spec: SteamInput, branch: str, observed: dict[str, dict[str, Any]]
             + f". Listed: {listed}"
         )
     disagree = []
+    compared = []
     for depot, entry in sorted(observed.items()):
         found = info.depots.get(depot)
         manifest = found.manifests.get(branch) if found is not None else None
-        if manifest is not None and manifest.gid != str(entry["manifest"]):
+        if manifest is None:
+            # A protected branch publishes its manifest ids encrypted, so the metadata has
+            # nothing to compare against. That is not a disagreement -- but it is also not
+            # the cross-check this function is named for, so the caller is told which
+            # depots it actually got rather than being left to assume all of them.
+            continue
+        compared.append(depot)
+        if manifest.gid != str(entry["manifest"]):
             disagree.append(f"depot {depot}: metadata {manifest.gid}, depot {entry['manifest']}")
     if disagree:
         raise UpstreamUnavailable(
@@ -208,6 +216,7 @@ def _metadata(spec: SteamInput, branch: str, observed: dict[str, dict[str, Any]]
         "timeupdated": steamcmd.iso(published.timeupdated) if published.timeupdated is not None else None,
         "description": published.description,
         "changeNumber": info.change_number,
+        "crossChecked": compared,
     }
 
 

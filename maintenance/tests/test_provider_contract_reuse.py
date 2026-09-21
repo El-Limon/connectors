@@ -314,6 +314,27 @@ def test_an_ambiguous_asset_pattern_is_an_upstream_failure() -> None:
     assert "Carbon.Linux.Release.tar.gz" in raised.value.message, "the message lists what it could have meant"
 
 
+def test_a_broken_channel_pattern_is_a_usage_error_naming_its_key() -> None:
+    """A regex comes out of the catalog, so a broken one names the key rather than crashing.
+
+    ``scan`` isolates a source that reports one of its own errors; a raw ``re.error`` would
+    escape that handling and abort the whole run, including every unrelated source in it.
+    """
+    from takaro_maint.exit_codes import USAGE, MaintError
+
+    for key, channel in (
+        ("asset", {"asset": "^Carbon\\.Linux\\.(Release$"}),
+        ("tag", {"tag": "regex:^(production_build$"}),
+        ("versionPattern", {"tag": "production_build", "versionPattern": "v([0-9]+"}),
+    ):
+        with pytest.raises(MaintError) as raised:
+            observe_carbon(**channel)
+
+        assert raised.value.code == USAGE, key
+        assert f"watch.channels.release.{key}" in raised.value.message, raised.value.message
+        assert "not a valid regular expression" in raised.value.message
+
+
 def test_a_watch_block_without_a_repo_names_the_missing_key() -> None:
     from takaro_maint.exit_codes import USAGE, MaintError
 
