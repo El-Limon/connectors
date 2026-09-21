@@ -47,9 +47,19 @@ BANNER_MARKERS = ("Valheim version:", "BepInEx ")
 
 #: The plugin reconnects with an exponential backoff capped at 60 s, so the 20 s the
 #: lifecycle checks allow a Minecraft connector is far too short.
+#: How long the image's log supervisor may take to tail a line the plugin has already
+#: answered over the socket.
+CATALOGUE_LOG_BUDGET = 60.0
+
 RECONNECT_BUDGET = 150.0
 QUIT_BUDGET = 120.0
 STOP_TIMEOUT = 120
+
+#: The game has already quit by the time the container is stopped, so what is left is the
+#: image's supervisor. It exits on the signal ``docker stop`` sends rather than trapping it,
+#: which is 128 + SIGTERM. Anything else means the supervisor died some other way, which is
+#: what this check is for.
+CLEAN_EXIT_CODES = frozenset({0, 143})
 
 CONFIG_RELATIVE = Path("BepInEx") / "config" / "com.takaro.valheim.cfg"
 
@@ -151,8 +161,8 @@ def _named(entries: Any, code: str) -> str | None:
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
     for check_id, coroutine in (
         ("handshake", lambda: _check_handshake(run, fake, alive)),
-        ("items", lambda: _check_catalogue(run, fake, "listItems", "items", "SwordBronze")),
-        ("entities", lambda: _check_catalogue(run, fake, "listEntities", "entities", "Greydwarf_Elite")),
+        ("items", lambda: _check_catalogue(run, fake, alive, "listItems", "items", "SwordBronze")),
+        ("entities", lambda: _check_catalogue(run, fake, alive, "listEntities", "entities", "Greydwarf_Elite")),
         ("action", lambda: _check_action(run, fake)),
         ("reconnect", lambda: _check_reconnect(run, fake, alive)),
     ):
@@ -199,7 +209,9 @@ async def _check_handshake(run: Any, fake: Any, alive: Any) -> checks.CheckResul
     )
 
 
-async def _check_catalogue(run: Any, fake: Any, request: str, check_id: str, spot: str) -> checks.CheckResult:
+async def _check_catalogue(
+    run: Any, fake: Any, alive: Any, request: str, check_id: str, spot: str
+) -> checks.CheckResult:
     """The catalogue answers, and says what it answers with."""
     with checks._Timer() as timer:
         entries: Any = None
@@ -213,7 +225,13 @@ async def _check_catalogue(run: Any, fake: Any, request: str, check_id: str, spo
         human = bool(names) and not any(_looks_like_a_dev_name(name) for name in names)
         logged = None
         if check_id == "items" and not problems:
-            found = await asyncio.to_thread(checks.find_line, run.server_log, LIST_ITEMS_LINE)
+            # The response comes back over the websocket; the line reaches server.log only
+            # once the image's log supervisor has tailed the game's own file, which is a
+            # moment later. Waiting for it is the difference between reading the count and
+            # racing it.
+            found = await asyncio.to_thread(
+                checks.wait_for_line, run.server_log, LIST_ITEMS_LINE, CATALOGUE_LOG_BUDGET, alive
+            )
             if found is None:
                 problems.append("the server never logged 'listItems returned N item prefab(s)'")
             else:
@@ -351,8 +369,8 @@ async def _check_stop(run: Any, fake: Any, ledger_inputs: list[dict[str, Any]]) 
             if completed.returncode != 0:
                 problems.append(f"docker stop failed: {completed.stderr.strip()}")
             code = await asyncio.to_thread(container.wait_for_exit, float(STOP_TIMEOUT))
-            if code != 0:
-                problems.append(f"the server container exited {code}, expected 0")
+            if code not in CLEAN_EXIT_CODES:
+                problems.append(f"the server container exited {code}, expected one of {sorted(CLEAN_EXIT_CODES)}")
         intact, changed = _rehash(run.data_dir, ledger_inputs)
         if changed:
             problems.append("the pinned inputs changed during the run: " + "; ".join(changed))
@@ -362,6 +380,7 @@ async def _check_stop(run: Any, fake: Any, ledger_inputs: list[dict[str, Any]]) 
         timer.elapsed_ms,
         {
             "exitCode": code,
+            "exitCodeMeaning": "clean" if code in CLEAN_EXIT_CODES else "unexpected",
             "note": note,
             "inputsIntactAfterStop": not changed,
             "intact": intact,

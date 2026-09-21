@@ -146,18 +146,22 @@ for, and `processRole` is `dedicated-server` or `graphical-client`.
 
 ## Catalogue names
 
-`listItems` and `listEntities` return `code = prefab.name` (`SwordBronze`) and
-`name = the prefab's localisation key with its `$` stripped` (`item_sword_bronze`). The key
-is not a human name, and the dedicated server cannot turn it into one from what the plugin
-references: Valheim's `Localization` lives in `assembly_guiutils.dll`, which is not among
-the assemblies `build.references` selects, and a headless server has no reason to load a
-translation table.
+`listItems` and `listEntities` return `code = prefab.name` (`SwordBronze`) and `name` = the
+prefab's localisation key with its `$` stripped (`item_sword_bronze`). The key is not a
+human name.
 
-Making those names human therefore costs a reference: add `assembly_guiutils.dll` to the
-target's `build.references` and `files`, re-pin, add the `HintPath`, and then **prove on a
-real headless server** that `Localization.instance.Localize("$item_sword_bronze")` returns
-a word rather than the key back. Do not ship the call without that proof — an unresolved key
-comes back unchanged or in brackets, and the catalogue would be no better than it is now.
+The server is not the obstacle. A verification run's log shows the dedicated server loading
+thirteen localisation files and selecting English, so the translation table is there. The
+obstacle is the reference set: Valheim's `Localization` lives in `assembly_guiutils.dll`,
+which `build.references` does not select, so the plugin cannot name the type and the build
+fails outright if it tries.
+
+Making those names human therefore costs a pinned reference: add `assembly_guiutils.dll` to
+the target's `build.references` and `files`, re-pin (the fingerprint changes), add the
+`HintPath`, then call `Localization.instance?.Localize(key)` behind a null guard and keep
+the stripped key as the fallback — an unresolved key comes back unchanged or in Valheim's
+missing-key brackets. Prove it on a real headless run before claiming it: the catalogue
+must show a word, not the key.
 
 ## Companion evidence policy
 
