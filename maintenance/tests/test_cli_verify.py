@@ -12,7 +12,7 @@ import pytest
 import websockets
 
 from conftest import REPO_ROOT
-from fake_docker import artifacts_for, install_docker_stub
+from fake_docker import artifacts_for, install_docker_stub, process_is_gone
 
 PROTOCOL = json.loads((REPO_ROOT / "games/7d2d/tests/fixtures/generic-protocol.json").read_text())
 
@@ -242,8 +242,8 @@ def test_a_run_that_observed_nothing_is_not_a_pass() -> None:
 
 
 @pytest.fixture
-def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    return install_docker_stub(tmp_path, monkeypatch)
+def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Path:
+    return install_docker_stub(tmp_path, monkeypatch, request)
 
 
 def test_a_full_stubbed_run_reaches_protocol_level(
@@ -411,6 +411,9 @@ def test_the_container_is_always_removed(run: Any, wired: Any, tmp_path: Path, d
 
     assert (docker_stub / "removed").is_file()
     assert "rm -f" in (docker_stub / "removed").read_text().replace("-f ", "-f ")
+    # `rm` means the container is gone, not merely that `rm` was called.
+    pid = int((docker_stub / "takaro-verify-minecraft-fabric-26.2-t1" / "pid").read_text().strip())
+    assert process_is_gone(pid)
 
 
 def test_a_failing_check_exits_eight_and_still_writes_a_report(
