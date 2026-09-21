@@ -65,6 +65,16 @@ def catalog_copy(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     (root / "catalog").mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "catalog", root / "catalog", dirs_exist_ok=True)
+    for target_file in (root / "catalog").glob("*/targets/*.json"):
+        target = json.loads(target_file.read_text(encoding="utf-8"))
+        script = target.get("build", {}).get("script")
+        if not script:
+            continue
+        source = REPO_ROOT / script
+        if source.is_file():
+            destination = root / script
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
     mod = root / "games" / "minecraft" / "mod"
     (mod / "gradle").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "games/minecraft/mod/gradle/libs.versions.toml", mod / "gradle")
