@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# What games/valheim/scripts/setup-environment.sh has to be true of, driven through stubs.
+#
+# The script prepares two pinned inputs: the reference assemblies of an exact Steam depot
+# manifest (fetched by `takaro-maint steam references`) and an exact BepInExPack zip
+# (fetched from its versioned URL and hash-checked). Both land through the same atomic
+# publication, and the behaviour that matters is what survives a failure: a run that cannot
+# finish must leave whatever was already prepared byte-identical, and must never accept
+# something that merely looks like an assembly.
+#
+# The stubs here stand in for takaro-maint and curl. sha256sum, zip extraction and the JSON
+# read are real, because those are the checks being tested.
+#
+# Before #161 this file also covered downloading and repairing a SteamCMD tarball and
+# falling back from the Linux depot to the Windows one. Both are gone: the references come
+# from a pinned manifest through a pinned DepotDownloader, and there is no fallback -- a
+# pinned build that Steam no longer serves is a re-pin, not a retry somewhere else.
 set -uo pipefail
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
@@ -12,6 +28,10 @@ REQUIRED_ASSEMBLIES=(
 )
 REFERENCE_CACHE_MARKER_NAME=".takaro-valheim-reference-cache"
 REFERENCE_CACHE_MARKER_CONTENT="takaro-valheim-reference-cache-v1"
+STUB_FP16="fp16valheimtest1"
+STUB_TARGET="linux-1.0.15"
+STUB_FINGERPRINT="fp16valheimtest1000000000000000000000000000000000000000000000000"
+PACK_VERSION="5.4.2350"
 
 mark_owned_reference_cache() {
   local cache_dir="$1"
@@ -41,279 +61,159 @@ create_fake_marker_assembly_fixture() {
   printf 'MZ%0126dBSJB' 0 > "$output"
 }
 
-steamcmd_stub() {
-  local platform="unknown"
-  local previous=""
-  local argument
-  local count=0
-  local install_dir="$STUB_SERVER_DIR"
+# --------------------------------------------------------------------------- the stubs
+
+takaro_maint_stub() {
+  local subcommand="${1:-} ${2:-}"
+  local argument previous="" out="" dest="" target="" forced=false
 
   for argument in "$@"; do
-    if [ "$previous" = "+@sSteamCmdForcePlatformType" ]; then
-      platform="$argument"
-    fi
-    if [ "$previous" = "+force_install_dir" ]; then
-      install_dir="$argument"
-    fi
+    case "$previous" in
+      --out) out="$argument" ;;
+      --dest) dest="$argument" ;;
+      --target) target="$argument" ;;
+    esac
+    [ "$argument" = "--force" ] && forced=true
     previous="$argument"
   done
-
   mkdir -p "$STUB_STATE_DIR"
-  if [ -f "$STUB_STATE_DIR/count" ]; then
-    read -r count < "$STUB_STATE_DIR/count"
-  fi
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$STUB_STATE_DIR/count"
-  printf '%s\n' "$platform" >> "$STUB_STATE_DIR/platforms"
+  printf '%s\n' "$*" >> "$STUB_STATE_DIR/maint-calls"
 
-  if [ "$count" -gt 1 ] \
-    && { [ -e "$HOME/Steam/appcache/sentinel" ] || [ -e "$STUB_STEAMCMD_DIR/appcache/sentinel" ]; }; then
-    printf '%s\n' "cache not cleared before attempt $count" >> "$STUB_STATE_DIR/errors"
-    return 88
+  case "$subcommand" in
+    "targets resolve")
+      [ -n "$out" ] || return 2
+      cat > "$out" <<ENV
+VALHEIM_TARGET=$STUB_TARGET
+VALHEIM_FINGERPRINT=$STUB_FINGERPRINT
+VALHEIM_FP16=$STUB_FP16
+VALHEIM_REVISION=1.0.15
+VALHEIM_IMAGE=mbround18/valheim:3.8.8@sha256:0000
+VALHEIM_TOOLCHAIN=mcr.microsoft.com/dotnet/sdk:8.0@sha256:0000
+VALHEIM_STEAM_APP=896660
+VALHEIM_STEAM_BRANCH=public
+VALHEIM_STEAM_BUILDID=25390671
+VALHEIM_STEAM_DEPOTS=896661:6686760496212527200
+VALHEIM_BEPINEX_PACKAGE=denikson/BepInExPack_Valheim
+VALHEIM_BEPINEX_PACK_VERSION=$PACK_VERSION
+VALHEIM_BEPINEX_URL=https://example.invalid/package/download/denikson/BepInExPack_Valheim/$PACK_VERSION/
+VALHEIM_BEPINEX_SHA256=$STUB_PACK_SHA256
+VALHEIM_BEPINEX_SIZE=$STUB_PACK_SIZE
+VALHEIM_ASSEMBLY_VALHEIM_SHA256=$STUB_ASSEMBLY_SHA256
+ENV
+      return 0
+      ;;
+    "steam references")
+      printf '%s\n' "${target:-<no-target>}" >> "$STUB_STATE_DIR/reference-fetches"
+      [ "$forced" = true ] && printf 'forced\n' >> "$STUB_STATE_DIR/reference-forces"
+      steam_references_stub "$dest"
+      return $?
+      ;;
+  esac
+  printf 'unexpected takaro-maint call: %s\n' "$*" >&2
+  return 99
+}
+
+steam_references_stub() {
+  local dest="$1"
+  local assembly count=0
+
+  [ -n "$dest" ] || return 2
+  if [ -f "$STUB_STATE_DIR/reference-fetches" ]; then
+    count="$(wc -l < "$STUB_STATE_DIR/reference-fetches")"
   fi
 
   case "$STUB_SCENARIO" in
-    first_success|empty_bepinex|corrupt_bepinex|fake_marker_bepinex|file_unavailable|valheim_publish_failure|valheim_publish_interrupt|valheim_first_rename_interrupt)
-      create_required_assemblies "$install_dir"
+    manifest_unavailable)
+      printf 'depot 896661 manifest 6686760496212527200 is not available\n' >&2
+      return 4
+      ;;
+    reference_hash_mismatch)
+      mkdir -p "$dest"
+      for assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
+        create_managed_assembly_fixture "$dest/$assembly"
+      done
+      # A real managed assembly, but not the one the target pins: the script's own
+      # sha256sum check is what has to catch this.
+      printf 'tampered\n' >> "$dest/assembly_valheim.dll"
       return 0
       ;;
-    retry_success)
-      if [ "$count" -eq 1 ]; then
-        return 31
+    stale_cache)
+      if [ "$count" -le 1 ]; then
+        printf '%s was built for another fingerprint; pass --force to replace it\n' "$dest" >&2
+        return 7
       fi
-      create_required_assemblies "$install_dir"
-      return 0
-      ;;
-    windows_success)
-      if [ "$platform" = "linux" ]; then
-        return 32
-      fi
-      create_required_assemblies "$install_dir"
-      return 0
-      ;;
-    missing_required)
-      mkdir -p "$install_dir/valheim_server_Data/Managed"
-      create_managed_assembly_fixture "$install_dir/valheim_server_Data/Managed/assembly_valheim.dll"
-      return 0
-      ;;
-    corrupt_required)
-      local corrupt_dir="$install_dir/valheim_server_Data/Managed"
-      local corrupt_assembly
-      mkdir -p "$corrupt_dir"
-      for corrupt_assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
-        printf 'not a managed assembly\n' > "$corrupt_dir/$corrupt_assembly"
+      mkdir -p "$dest"
+      for assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
+        create_managed_assembly_fixture "$dest/$assembly"
       done
       return 0
       ;;
+    missing_required)
+      mkdir -p "$dest"
+      create_managed_assembly_fixture "$dest/assembly_valheim.dll"
+      return 0
+      ;;
     empty_required)
-      local managed_dir="$install_dir/valheim_server_Data/Managed"
-      local assembly
-      mkdir -p "$managed_dir"
+      mkdir -p "$dest"
       for assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
-        : > "$managed_dir/$assembly"
+        : > "$dest/$assembly"
+      done
+      return 0
+      ;;
+    corrupt_required)
+      mkdir -p "$dest"
+      for assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
+        printf 'not a managed assembly\n' > "$dest/$assembly"
       done
       return 0
       ;;
     fake_marker_required)
-      local marker_dir="$install_dir/valheim_server_Data/Managed"
-      local marker_assembly
-      mkdir -p "$marker_dir"
-      for marker_assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
-        create_fake_marker_assembly_fixture "$marker_dir/$marker_assembly"
+      mkdir -p "$dest"
+      for assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
+        create_fake_marker_assembly_fixture "$dest/$assembly"
       done
       return 0
       ;;
     always_fail)
-      return 33
+      printf 'simulated reference fetch failure\n' >&2
+      return 1
       ;;
     *)
-      printf 'unknown SteamCMD test scenario: %s\n' "$STUB_SCENARIO" >&2
-      return 99
+      mkdir -p "$dest"
+      for assembly in "${REQUIRED_ASSEMBLIES[@]}"; do
+        create_managed_assembly_fixture "$dest/$assembly"
+      done
+      return 0
       ;;
   esac
 }
 
 curl_stub() {
-  local output=""
-  local is_steamcmd_download=false
-  local previous=""
-  local argument
+  local output="" argument previous=""
   for argument in "$@"; do
-    if [ "$previous" = "-o" ]; then
-      output="$argument"
-    fi
-    if [[ "$argument" == *steamcmd_linux.tar.gz ]]; then
-      is_steamcmd_download=true
-    fi
+    [ "$previous" = "-o" ] && output="$argument"
     previous="$argument"
   done
+  printf '%s\n' "$*" >> "$STUB_STATE_DIR/curl-calls"
 
-  if [ "$is_steamcmd_download" = true ]; then
-    local download_count=0
-    if [ -f "$STUB_STATE_DIR/steamcmd-download-count" ]; then
-      read -r download_count < "$STUB_STATE_DIR/steamcmd-download-count"
-    fi
-    printf '%s\n' "$((download_count + 1))" > "$STUB_STATE_DIR/steamcmd-download-count"
-    if [ -n "$output" ]; then
-      mkdir -p "$(dirname "$output")"
-      printf 'PARTIAL_RETRY_BYTES' > "$output"
-      if [ "$STUB_SCENARIO" = "steamcmd_download_failure" ]; then
-        return 66
-      fi
-      printf 'COMPLETE_ARCHIVE' > "$output"
-      printf '%s\n' "$output" > "$STUB_STATE_DIR/curl-output"
-      return 0
-    fi
-
-    # A retried stream can contain bytes from the failed transfer followed by the
-    # completed transfer. Piping this directly to tar must fail the regression.
-    printf 'PARTIAL_RETRY_BYTESCOMPLETE_ARCHIVE'
+  if [ "$STUB_SCENARIO" = "pack_download_failure" ]; then
+    printf 'simulated Thunderstore download failure\n' >&2
+    return 22
+  fi
+  [ -n "$output" ] || return 2
+  mkdir -p "$(dirname "$output")"
+  if [ "$STUB_SCENARIO" = "pack_hash_mismatch" ]; then
+    printf 'not the pinned pack at all\n' > "$output"
     return 0
   fi
-
-  previous=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-o" ]; then
-      shift
-      output="${1:-}"
-      break
-    fi
-    shift
-  done
-
-  if [ -n "$output" ]; then
-    mkdir -p "$(dirname "$output")"
-    : > "$output"
-  else
-    printf '%s\n' '{"latest":{"download_url":"https://example.invalid/bepinex.zip"}}'
-  fi
-}
-
-tar_stub() {
-  local archive=""
-  local destination=""
-  local previous=""
-  local argument
-  local archive_contents
-
-  for argument in "$@"; do
-    if [ "$previous" = "-xzf" ]; then
-      archive="$argument"
-    elif [ "$previous" = "-C" ]; then
-      destination="$argument"
-    fi
-    previous="$argument"
-  done
-
-  if [ -z "$archive" ] || [ "$archive" = "-" ]; then
-    archive_contents="$(cat)"
-  else
-    archive_contents="$(cat "$archive")"
-  fi
-  printf '%s' "$archive_contents" > "$STUB_STATE_DIR/tar-input"
-
-  if [ "$archive_contents" != "COMPLETE_ARCHIVE" ]; then
-    printf 'tar received a partial or concatenated SteamCMD archive\n' >&2
-    return 67
-  fi
-
-  if [ "$STUB_SCENARIO" = "steamcmd_extract_failure" ]; then
-    mkdir -p "$destination"
-    printf 'partial extraction\n' > "$destination/partial-extraction"
-    printf 'simulated SteamCMD extraction failure\n' >&2
-    return 69
-  fi
-
-  mkdir -p "$destination"
-  ln -sf "$SELF" "$destination/steamcmd.sh"
-}
-
-jq_stub() {
-  while IFS= read -r _; do
-    :
-  done
-  printf '%s\n' 'https://example.invalid/bepinex.zip'
-}
-
-unzip_stub() {
-  local destination=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-d" ]; then
-      shift
-      destination="${1:-}"
-      break
-    fi
-    shift
-  done
-
-  mkdir -p "$destination/BepInExPack_Valheim/BepInEx/core"
-  if [ "$STUB_SCENARIO" = "empty_bepinex" ]; then
-    : > "$destination/BepInExPack_Valheim/BepInEx/core/BepInEx.dll"
-    : > "$destination/BepInExPack_Valheim/BepInEx/core/0Harmony.dll"
-  elif [ "$STUB_SCENARIO" = "corrupt_bepinex" ]; then
-    printf 'not a managed assembly\n' > "$destination/BepInExPack_Valheim/BepInEx/core/BepInEx.dll"
-    printf 'not a managed assembly\n' > "$destination/BepInExPack_Valheim/BepInEx/core/0Harmony.dll"
-  elif [ "$STUB_SCENARIO" = "fake_marker_bepinex" ]; then
-    create_fake_marker_assembly_fixture "$destination/BepInExPack_Valheim/BepInEx/core/BepInEx.dll"
-    create_fake_marker_assembly_fixture "$destination/BepInExPack_Valheim/BepInEx/core/0Harmony.dll"
-  else
-    create_managed_assembly_fixture "$destination/BepInExPack_Valheim/BepInEx/core/BepInEx.dll"
-    create_managed_assembly_fixture "$destination/BepInExPack_Valheim/BepInEx/core/0Harmony.dll"
-  fi
-}
-
-write_poisoned_steamcmd_destination() {
-  local destination="$1"
-  mkdir -p "$destination"
-  # Expand STUB_STATE_DIR when the generated stub runs, not while writing it.
-  # shellcheck disable=SC2016
-  printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    ': > "$STUB_STATE_DIR/poisoned-steamcmd-ran"' \
-    'exit 91' > "$destination/steamcmd.sh"
-  chmod +x "$destination/steamcmd.sh"
+  /bin/cp "$STUB_PACK_ZIP" "$output"
 }
 
 cp_stub() {
-  local destination="${*: -1}"
-  if [ "$STUB_SCENARIO" = "steamcmd_partial_publish_failure" ] \
-    && [ "${destination%/}" = "$STUB_STEAMCMD_DIR" ]; then
-    write_poisoned_steamcmd_destination "$STUB_STEAMCMD_DIR"
-    printf 'simulated partial SteamCMD publish failure\n' >&2
-    return 68
-  fi
-  if [ "$STUB_SCENARIO" = "steamcmd_partial_publish_interrupt" ] \
-    && [ "${destination%/}" = "$STUB_STEAMCMD_DIR" ]; then
-    write_poisoned_steamcmd_destination "$STUB_STEAMCMD_DIR"
-    : > "$STUB_STATE_DIR/steamcmd-publish-interrupt-attempted"
-    kill -TERM "$PPID"
-    /bin/sleep 0.2
-    return 72
-  fi
-  if [ "$STUB_SCENARIO" = "steamcmd_publish_failure" ]; then
-    printf 'simulated SteamCMD publish failure\n' >&2
-    return 68
-  fi
   /bin/cp "$@"
 }
 
 mv_stub() {
-  if [ "$STUB_SCENARIO" = "steamcmd_partial_publish_failure" ] \
-    && [[ "${1:-}" == "$STUB_STEAMCMD_DIR".stage.* ]] \
-    && [ "${2:-}" = "$STUB_STEAMCMD_DIR" ]; then
-    write_poisoned_steamcmd_destination "$STUB_STEAMCMD_DIR"
-    printf 'simulated partial atomic SteamCMD publication failure\n' >&2
-    return 72
-  fi
-  if [ "$STUB_SCENARIO" = "steamcmd_partial_publish_interrupt" ] \
-    && [[ "${1:-}" == "$STUB_STEAMCMD_DIR".stage.* ]] \
-    && [ "${2:-}" = "$STUB_STEAMCMD_DIR" ]; then
-    write_poisoned_steamcmd_destination "$STUB_STEAMCMD_DIR"
-    : > "$STUB_STATE_DIR/steamcmd-publish-interrupt-attempted"
-    kill -TERM "$PPID"
-    /bin/sleep 0.2
-    return 73
-  fi
   if [ "$STUB_SCENARIO" = "valheim_first_rename_interrupt" ] \
     && [ "${1:-}" = "$STUB_SERVER_DIR" ] \
     && [[ "${2:-}" == "$STUB_SERVER_DIR".backup.* ]]; then
@@ -349,24 +249,12 @@ file_stub() {
 }
 
 case "$COMMAND_NAME" in
-  steamcmd.sh)
-    steamcmd_stub "$@"
+  takaro-maint)
+    takaro_maint_stub "$@"
     exit $?
     ;;
   curl)
     curl_stub "$@"
-    exit $?
-    ;;
-  jq)
-    jq_stub "$@"
-    exit $?
-    ;;
-  unzip)
-    unzip_stub "$@"
-    exit $?
-    ;;
-  tar)
-    tar_stub "$@"
     exit $?
     ;;
   cp)
@@ -386,6 +274,8 @@ case "$COMMAND_NAME" in
     ;;
 esac
 
+# --------------------------------------------------------------------------- the harness
+
 VALHEIM_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
 SETUP_SCRIPT="$VALHEIM_DIR/scripts/setup-environment.sh"
 MANAGED_ASSEMBLY_FIXTURE="${MANAGED_ASSEMBLY_FIXTURE:-$VALHEIM_DIR/src/Takaro.Valheim.Core/bin/Debug/net8.0/Takaro.Valheim.Core.dll}"
@@ -396,6 +286,62 @@ fi
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+# One BepInExPack zip per content variant, built once with fixed timestamps. The core DLLs
+# are the real managed-assembly fixture unless the variant is about them being wrong.
+build_pack_zip() {
+  local variant="$1" out="$2" work
+  work="$(mktemp -d "$TMP_ROOT/packXXXXXX")"
+  mkdir -p "$work/BepInExPack_Valheim/BepInEx/core" \
+    "$work/BepInExPack_Valheim/BepInEx/config" \
+    "$work/BepInExPack_Valheim/doorstop_libs"
+  printf 'doorstop\n' > "$work/BepInExPack_Valheim/doorstop_libs/libdoorstop_x64.so"
+  printf '[Logging]\n' > "$work/BepInExPack_Valheim/BepInEx/config/BepInEx.cfg"
+  printf '#!/bin/sh\nexport DOORSTOP_ENABLE=TRUE\n' > "$work/BepInExPack_Valheim/start_server_bepinex.sh"
+
+  local core="$work/BepInExPack_Valheim/BepInEx/core"
+  case "$variant" in
+    empty)
+      : > "$core/BepInEx.dll"
+      : > "$core/0Harmony.dll"
+      ;;
+    corrupt)
+      printf 'not a managed assembly\n' > "$core/BepInEx.dll"
+      printf 'not a managed assembly\n' > "$core/0Harmony.dll"
+      ;;
+    fake_marker)
+      create_fake_marker_assembly_fixture "$core/BepInEx.dll"
+      create_fake_marker_assembly_fixture "$core/0Harmony.dll"
+      ;;
+    *)
+      create_managed_assembly_fixture "$core/BepInEx.dll"
+      create_managed_assembly_fixture "$core/0Harmony.dll"
+      ;;
+  esac
+
+  local version="$PACK_VERSION"
+  [ "$variant" = "wrong_version" ] && version="5.4.2333"
+  printf '{"name": "BepInExPack_Valheim", "version_number": "%s"}\n' "$version" \
+    > "$work/manifest.json"
+  printf '# BepInExPack Valheim\n' > "$work/README.md"
+
+  python3 - "$work" "$out" <<'PY'
+import os, sys, zipfile
+
+source, target = sys.argv[1], sys.argv[2]
+names = []
+for root, _, files in os.walk(source):
+    for name in files:
+        path = os.path.join(root, name)
+        names.append((os.path.relpath(path, source).replace(os.sep, "/"), path))
+with zipfile.ZipFile(target, "w") as archive:
+    for relative, path in sorted(names):
+        with open(path, "rb") as handle:
+            archive.writestr(zipfile.ZipInfo(relative, (1980, 1, 1, 0, 0, 0)), handle.read())
+PY
+}
+
+sha256_of() { sha256sum "$1" | awk '{print $1}'; }
+
 RUN_STATUS=0
 RUN_OUTPUT=""
 RUN_CASE_DIR=""
@@ -403,35 +349,26 @@ RUN_CASE_DIR=""
 run_setup() {
   local name="$1"
   local scenario="$2"
-  local platforms="${3:-linux windows}"
-  local preinstall_steamcmd="${4:-true}"
-  local cache_variable="${5:-reference}"
+  local pack_variant="${3:-valid}"
+  local cache_variable="${4:-reference}"
   local case_dir="$TMP_ROOT/$name"
   local bin_dir="$case_dir/bin"
-  local command
-  local steamcmd_path
+  local command pack_zip
   local -a cache_environment
 
-  mkdir -p "$bin_dir" "$case_dir/home" "$case_dir/data" "$case_dir/server" "$case_dir/steamcmd" "$case_dir/deps" "$case_dir/state"
-  for command in curl jq unzip tar cp mv file sleep; do
+  mkdir -p "$bin_dir" "$case_dir/home" "$case_dir/data" "$case_dir/server" "$case_dir/deps" "$case_dir/state"
+  for command in takaro-maint curl cp mv file sleep; do
     ln -sf "$SELF" "$bin_dir/$command"
   done
-  if [ "$preinstall_steamcmd" = true ]; then
-    ln -sf "$SELF" "$bin_dir/steamcmd.sh"
-    steamcmd_path="$bin_dir/steamcmd.sh"
-  else
-    steamcmd_path="$case_dir/steamcmd/steamcmd.sh"
-  fi
+
+  pack_zip="$case_dir/pack-${pack_variant}.zip"
+  [ -f "$pack_zip" ] || build_pack_zip "$pack_variant" "$pack_zip"
 
   RUN_OUTPUT="$case_dir/output.log"
   RUN_CASE_DIR="$case_dir"
   case "$cache_variable" in
-    reference)
-      cache_environment=("VALHEIM_REFERENCE_CACHE_DIR=$case_dir/server")
-      ;;
-    legacy)
-      cache_environment=("VALHEIM_SERVER_DIR=$case_dir/server")
-      ;;
+    reference) cache_environment=("VALHEIM_REFERENCE_CACHE_DIR=$case_dir/server") ;;
+    legacy) cache_environment=("VALHEIM_SERVER_DIR=$case_dir/server") ;;
     *)
       printf 'unknown cache variable mode: %s\n' "$cache_variable" >&2
       return 2
@@ -441,26 +378,37 @@ run_setup() {
     PATH="$bin_dir:$PATH" \
     HOME="$case_dir/home" \
     VALHEIM_DATA_DIR="$case_dir/data" \
-    STEAMCMD_DIR="$case_dir/steamcmd" \
     VALHEIM_DEPS_DIR="$case_dir/deps" \
-    STEAMCMD="$steamcmd_path" \
-    VALHEIM_STEAM_PLATFORMS="$platforms" \
+    TAKARO_MAINT="$bin_dir/takaro-maint" \
     STUB_SCENARIO="$scenario" \
     STUB_STATE_DIR="$case_dir/state" \
     STUB_SERVER_DIR="$case_dir/server" \
-    STUB_STEAMCMD_DIR="$case_dir/steamcmd" \
+    STUB_PACK_ZIP="$pack_zip" \
+    STUB_PACK_SHA256="$(sha256_of "$pack_zip")" \
+    STUB_PACK_SIZE="$(wc -c < "$pack_zip" | tr -d '[:space:]')" \
+    STUB_ASSEMBLY_SHA256="$(sha256_of "$MANAGED_ASSEMBLY_FIXTURE")" \
     MANAGED_ASSEMBLY_FIXTURE="$MANAGED_ASSEMBLY_FIXTURE" \
     "${cache_environment[@]}" \
     bash "$SETUP_SCRIPT" > "$RUN_OUTPUT" 2>&1
   RUN_STATUS=$?
 }
 
+pack_dir() { printf '%s/deps/bepinex/%s' "$RUN_CASE_DIR" "$STUB_FP16"; }
+
 call_count() {
-  if [ ! -f "$RUN_CASE_DIR/state/platforms" ]; then
+  if [ ! -f "$RUN_CASE_DIR/state/reference-fetches" ]; then
     printf '0\n'
     return
   fi
-  wc -l < "$RUN_CASE_DIR/state/platforms"
+  wc -l < "$RUN_CASE_DIR/state/reference-fetches"
+}
+
+curl_count() {
+  if [ ! -f "$RUN_CASE_DIR/state/curl-calls" ]; then
+    printf '0\n'
+    return
+  fi
+  wc -l < "$RUN_CASE_DIR/state/curl-calls"
 }
 
 assert_equals() {
@@ -509,13 +457,11 @@ assert_output_contains() {
   fi
 }
 
-assert_no_steamcmd_temporary_state() {
-  local leaked_path
-  leaked_path="$(find "$RUN_CASE_DIR" -mindepth 1 -maxdepth 1 \
-    \( -name 'steamcmd.download.*' -o -name 'steamcmd.stage.*' -o -name 'steamcmd.backup.*' \) \
-    -print -quit)"
-  if [ -n "$leaked_path" ]; then
-    printf 'ASSERT: SteamCMD sibling temporary state was not cleaned up: %s\n' "$leaked_path" >&2
+assert_output_lacks() {
+  local needle="$1"
+  local message="$2"
+  if grep -Fq "$needle" "$RUN_OUTPUT"; then
+    printf 'ASSERT: %s (unexpected output: %s)\n' "$message" "$needle" >&2
     return 1
   fi
 }
@@ -527,6 +473,17 @@ assert_no_server_temporary_state() {
     -print -quit)"
   if [ -n "$leaked_path" ]; then
     printf 'ASSERT: Valheim reference-cache sibling temporary state was not cleaned up: %s\n' "$leaked_path" >&2
+    return 1
+  fi
+}
+
+assert_no_pack_temporary_state() {
+  local leaked_path
+  leaked_path="$(find "$RUN_CASE_DIR/deps/bepinex" -mindepth 1 -maxdepth 1 \
+    \( -name '*.stage.*' -o -name '*.backup.*' \) \
+    -print -quit 2>/dev/null)"
+  if [ -n "$leaked_path" ]; then
+    printf 'ASSERT: BepInExPack sibling temporary state was not cleaned up: %s\n' "$leaked_path" >&2
     return 1
   fi
 }
@@ -544,32 +501,108 @@ tree_fingerprint() {
   ) | sha256sum | awk '{print $1}'
 }
 
+# --------------------------------------------------------------------------- the tests
+
 test_first_attempt_success() {
   run_setup first-success first_success
-  assert_equals 0 "$RUN_STATUS" "first successful SteamCMD run should complete setup" || return 1
-  assert_equals 1 "$(call_count)" "success should not retry" || return 1
+  assert_equals 0 "$RUN_STATUS" "a first successful run should complete setup" || return 1
+  assert_equals 1 "$(call_count)" "success should fetch the references exactly once" || return 1
   assert_nonempty_file "$RUN_CASE_DIR/server/valheim_server_Data/Managed/UnityEngine.CoreModule.dll" "required assemblies should be nonempty" || return 1
   assert_file "$RUN_CASE_DIR/server/$REFERENCE_CACHE_MARKER_NAME" "a newly published reference cache must carry its ownership marker" || return 1
   assert_equals "$REFERENCE_CACHE_MARKER_CONTENT" "$(cat "$RUN_CASE_DIR/server/$REFERENCE_CACHE_MARKER_NAME")" "the ownership marker must be written only with the completed format" || return 1
-  assert_nonempty_file "$RUN_CASE_DIR/deps/bepinex/BepInExPack_Valheim/BepInEx/core/BepInEx.dll" "BepInEx reference should be nonempty" || return 1
+  assert_nonempty_file "$(pack_dir)/BepInExPack_Valheim/BepInEx/core/BepInEx.dll" "BepInEx reference should be nonempty" || return 1
+  assert_file "$(pack_dir)/BepInExPack_Valheim/start_server_bepinex.sh" "the pack's loader entrypoint should be published" || return 1
+  assert_output_contains "Reference assemblies ready" "a successful run should say where the references are" || return 1
+  assert_no_pack_temporary_state || return 1
 }
 
-test_retry_recovery_clears_cache() {
-  local case_dir="$TMP_ROOT/retry-recovery"
-  mkdir -p "$case_dir/home/Steam/appcache" "$case_dir/steamcmd/appcache"
-  : > "$case_dir/home/Steam/appcache/sentinel"
-  : > "$case_dir/steamcmd/appcache/sentinel"
-
-  run_setup retry-recovery retry_success
-  assert_equals 0 "$RUN_STATUS" "second SteamCMD attempt should recover" || return 1
-  assert_equals 2 "$(call_count)" "recovery should use exactly two attempts" || return 1
-  if [ -f "$RUN_CASE_DIR/state/errors" ]; then
-    printf 'ASSERT: retry observed uncleared cache\n' >&2
+test_references_are_fetched_from_the_pinned_manifest_only() {
+  run_setup pinned-manifest first_success
+  assert_equals 0 "$RUN_STATUS" "the pinned fetch should succeed" || return 1
+  assert_equals 1 "$(call_count)" "exactly one reference fetch" || return 1
+  assert_equals "$STUB_TARGET" "$(tr -d '[:space:]' < "$RUN_CASE_DIR/state/reference-fetches")" "the fetch must name the catalog target" || return 1
+  if grep -Fq "app_update" "$RUN_CASE_DIR/state/maint-calls"; then
+    printf 'ASSERT: setup ran an app_update against the branch head\n' >&2
     return 1
   fi
+  # The pack is fetched by its exact versioned URL, never through Thunderstore's `latest`.
+  assert_equals 1 "$(curl_count)" "the pack should be downloaded exactly once" || return 1
+  if grep -Fq "latest" "$RUN_CASE_DIR/state/curl-calls"; then
+    printf 'ASSERT: the pack was fetched through a moving latest alias\n' >&2
+    return 1
+  fi
+  grep -Fq "/${PACK_VERSION}/" "$RUN_CASE_DIR/state/curl-calls" || {
+    printf 'ASSERT: the pack download did not name the pinned version\n' >&2
+    return 1
+  }
 }
 
-test_failed_steamcmd_does_not_accept_stale_managed_directory() {
+test_unavailable_manifest_fails_without_fallback_and_keeps_cache() {
+  local case_dir="$TMP_ROOT/manifest-unavailable"
+  local before after
+  mkdir -p "$case_dir/server/valheim_server_Data/Managed"
+  printf '%s\n' 'an existing cache' > "$case_dir/server/valheim_server_Data/Managed/keep.txt"
+  mark_owned_reference_cache "$case_dir/server"
+  before="$(tree_fingerprint "$case_dir/server")"
+
+  run_setup manifest-unavailable manifest_unavailable
+  after="$(tree_fingerprint "$RUN_CASE_DIR/server")"
+
+  assert_nonzero "$RUN_STATUS" "an unavailable pinned manifest must fail setup" || return 1
+  assert_equals 1 "$(call_count)" "an unavailable manifest must not be retried elsewhere" || return 1
+  assert_equals "$before" "$after" "a failed fetch must leave the existing cache byte-identical" || return 1
+  assert_output_contains "not falling back" "the failure must say it is not falling back" || return 1
+  assert_output_contains "6686760496212527200" "the failure must name the pinned manifest" || return 1
+  assert_output_contains "$STUB_TARGET" "the failure must name the target" || return 1
+  assert_output_contains "steam pin" "the failure must name the re-pin recovery route" || return 1
+  assert_no_server_temporary_state || return 1
+}
+
+test_no_windows_fallback_is_attempted() {
+  run_setup no-second-platform always_fail
+  assert_nonzero "$RUN_STATUS" "a failed fetch must fail setup" || return 1
+  assert_equals 1 "$(call_count)" "there is no second platform to try" || return 1
+  assert_output_lacks "windows" "setup must not attempt a Windows depot fallback" || return 1
+  assert_output_contains "Windows depot recorded in the target" "the manual recovery route should still be named" || return 1
+}
+
+test_wrong_reference_hash_is_refused() {
+  local case_dir="$TMP_ROOT/wrong-reference-hash"
+  local before after
+  mkdir -p "$case_dir/server/valheim_server_Data/Managed"
+  printf '%s\n' 'an existing cache' > "$case_dir/server/valheim_server_Data/Managed/keep.txt"
+  mark_owned_reference_cache "$case_dir/server"
+  before="$(tree_fingerprint "$case_dir/server")"
+
+  run_setup wrong-reference-hash reference_hash_mismatch
+  after="$(tree_fingerprint "$RUN_CASE_DIR/server")"
+
+  assert_nonzero "$RUN_STATUS" "an assembly that is not the pinned one must fail setup" || return 1
+  assert_output_contains "is not the one ${STUB_TARGET} pins" "the refusal must name the target" || return 1
+  assert_equals "$before" "$after" "a refused fetch must leave the existing cache byte-identical" || return 1
+  assert_no_server_temporary_state || return 1
+}
+
+test_stale_reference_cache_is_refetched_only_when_owned() {
+  local case_dir="$TMP_ROOT/stale-cache"
+  mkdir -p "$case_dir/server/valheim_server_Data/Managed"
+  mark_owned_reference_cache "$case_dir/server"
+
+  run_setup stale-cache stale_cache
+  assert_equals 0 "$RUN_STATUS" "a cache this script owns may be replaced" || return 1
+  assert_equals 2 "$(call_count)" "a stale owned cache costs exactly one retry" || return 1
+  assert_file "$RUN_CASE_DIR/state/reference-forces" "the retry must pass --force" || return 1
+  assert_nonempty_file "$RUN_CASE_DIR/server/valheim_server_Data/Managed/assembly_valheim.dll" "the retry should publish the references" || return 1
+
+  # The same conflict without the ownership marker is refused, not forced.
+  local unowned="$TMP_ROOT/stale-cache-unowned"
+  mkdir -p "$unowned/server/valheim_server_Data/Managed"
+  printf '%s\n' 'someone else owns this' > "$unowned/server/valheim_server_Data/Managed/other.txt"
+  run_setup stale-cache-unowned stale_cache
+  assert_nonzero "$RUN_STATUS" "an unowned stale cache must be refused" || return 1
+}
+
+test_a_failed_fetch_does_not_accept_a_stale_managed_directory() {
   local case_dir="$TMP_ROOT/stale-managed"
   local assembly
   mkdir -p "$case_dir/server/valheim_server_Data/Managed"
@@ -579,25 +612,23 @@ test_failed_steamcmd_does_not_accept_stale_managed_directory() {
   mark_owned_reference_cache "$case_dir/server"
 
   run_setup stale-managed always_fail
-  assert_nonzero "$RUN_STATUS" "failed SteamCMD must not accept stale assemblies" || return 1
-  assert_equals 6 "$(call_count)" "stale cache must not bypass retries or platform fallback" || return 1
+  assert_nonzero "$RUN_STATUS" "a failed fetch must not accept stale assemblies" || return 1
+  assert_equals 1 "$(call_count)" "a stale cache must not bypass the fetch" || return 1
 }
 
-test_owned_reference_cache_linux_windows_fallback_preserves_cache_data() {
-  local case_dir="$TMP_ROOT/platform-fallback"
+test_owned_reference_cache_data_survives_a_refetch() {
+  local case_dir="$TMP_ROOT/cache-data-survives"
   mkdir -p "$case_dir/server/worlds_local"
   printf '%s\n' "keep me" > "$case_dir/server/worlds_local/world.db"
   mark_owned_reference_cache "$case_dir/server"
 
-  run_setup platform-fallback windows_success
-  assert_equals 0 "$RUN_STATUS" "Windows compile-reference fallback should succeed" || return 1
-  assert_equals 4 "$(call_count)" "fallback should exhaust Linux then try Windows once" || return 1
-  assert_file "$RUN_CASE_DIR/server/worlds_local/world.db" "platform fallback must preserve owned cache data" || return 1
-  assert_file "$RUN_CASE_DIR/server/$REFERENCE_CACHE_MARKER_NAME" "successful fallback must publish a completed ownership marker" || return 1
-  assert_output_contains "Windows depot for compile references only" "fallback purpose should be explicit" || return 1
+  run_setup cache-data-survives first_success
+  assert_equals 0 "$RUN_STATUS" "a refetch into an owned cache should succeed" || return 1
+  assert_file "$RUN_CASE_DIR/server/worlds_local/world.db" "a refetch must preserve owned cache data" || return 1
+  assert_file "$RUN_CASE_DIR/server/$REFERENCE_CACHE_MARKER_NAME" "a successful publication must carry a completed ownership marker" || return 1
 }
 
-test_invalid_legacy_live_server_is_refused_before_steamcmd_and_unchanged() {
+test_invalid_legacy_live_server_is_refused_before_any_fetch_and_unchanged() {
   local case_dir="$TMP_ROOT/legacy-live-server"
   local before
   local after
@@ -608,11 +639,11 @@ test_invalid_legacy_live_server_is_refused_before_steamcmd_and_unchanged() {
   printf '%s\n' 'invalid reference' > "$case_dir/server/valheim_server_Data/Managed/assembly_valheim.dll"
   before="$(tree_fingerprint "$case_dir/server")"
 
-  run_setup legacy-live-server windows_success "linux windows" true legacy
+  run_setup legacy-live-server first_success valid legacy
   after="$(tree_fingerprint "$case_dir/server")"
 
   assert_nonzero "$RUN_STATUS" "an invalid unowned legacy live-server tree must be refused" || return 1
-  assert_equals 0 "$(call_count)" "refusal must happen before SteamCMD can mutate a live server tree" || return 1
+  assert_equals 0 "$(call_count)" "refusal must happen before anything can mutate a live server tree" || return 1
   assert_equals "$before" "$after" "every live-server file and hash must stay unchanged" || return 1
   assert_output_contains "VALHEIM_REFERENCE_CACHE_DIR" "refusal must direct the caller to a separate owned cache" || return 1
   assert_output_contains "valheim_server.x86_64" "refusal must identify the live-server marker" || return 1
@@ -623,46 +654,90 @@ test_invalid_legacy_live_server_is_refused_before_steamcmd_and_unchanged() {
   assert_no_server_temporary_state || return 1
 }
 
-test_missing_required_dlls_exhausts_all_attempts() {
+test_missing_required_dlls_fail_setup() {
   run_setup missing-required missing_required
   assert_nonzero "$RUN_STATUS" "a Managed directory without every required DLL must fail" || return 1
-  assert_equals 6 "$(call_count)" "missing DLLs should retry and fall back" || return 1
+  assert_output_contains "managed PE/CLI assembly" "the failure should name the assembly contract" || return 1
 }
 
-test_empty_required_dlls_exhaust_all_attempts() {
+test_empty_required_dlls_fail_setup() {
   run_setup empty-required empty_required
   assert_nonzero "$RUN_STATUS" "zero-byte Valheim DLLs must not satisfy reference validation" || return 1
-  assert_equals 6 "$(call_count)" "empty DLLs should retry and fall back" || return 1
 }
 
-test_corrupt_required_dlls_exhaust_all_attempts() {
+test_corrupt_required_dlls_fail_setup() {
   run_setup corrupt-required corrupt_required
   assert_nonzero "$RUN_STATUS" "non-managed Valheim DLL text must not satisfy reference validation" || return 1
-  assert_equals 6 "$(call_count)" "corrupt DLLs should retry and fall back" || return 1
   assert_output_contains "managed PE/CLI assembly" "Valheim corruption failure should be actionable" || return 1
 }
 
 test_fake_managed_markers_do_not_satisfy_real_assembly_validation() {
   run_setup fake-marker-required fake_marker_required
   assert_nonzero "$RUN_STATUS" "MZ and BSJB marker placement must not satisfy managed assembly validation" || return 1
-  assert_equals 6 "$(call_count)" "fake marker DLLs should retry and fall back" || return 1
 }
 
 test_empty_bepinex_dlls_fail_setup() {
-  run_setup empty-bepinex empty_bepinex
+  run_setup empty-bepinex first_success empty
   assert_nonzero "$RUN_STATUS" "zero-byte BepInEx DLLs must not satisfy reference validation" || return 1
   assert_output_contains "required BepInEx assembly" "BepInEx failure should name the missing or empty reference" || return 1
 }
 
 test_corrupt_bepinex_dlls_fail_setup() {
-  run_setup corrupt-bepinex corrupt_bepinex
+  run_setup corrupt-bepinex first_success corrupt
   assert_nonzero "$RUN_STATUS" "non-managed BepInEx DLL text must not satisfy reference validation" || return 1
   assert_output_contains "managed PE/CLI assembly" "BepInEx corruption failure should be actionable" || return 1
 }
 
 test_fake_bepinex_markers_do_not_satisfy_real_assembly_validation() {
-  run_setup fake-marker-bepinex fake_marker_bepinex
+  run_setup fake-marker-bepinex first_success fake_marker
   assert_nonzero "$RUN_STATUS" "fake BepInEx marker blobs must fail managed assembly validation" || return 1
+}
+
+test_pack_manifest_version_must_match_the_pin() {
+  run_setup pack-wrong-version first_success wrong_version
+  assert_nonzero "$RUN_STATUS" "a pack that is not the pinned version must fail setup" || return 1
+  assert_output_contains "the pack says it is 5.4.2333" "the refusal must name what arrived" || return 1
+  assert_output_contains "the target pins ${PACK_VERSION}" "the refusal must name what was pinned" || return 1
+  assert_no_pack_temporary_state || return 1
+}
+
+test_pack_hash_mismatch_is_refused_and_previous_pack_kept() {
+  local before after
+  run_setup pack-hash-mismatch first_success
+  assert_equals 0 "$RUN_STATUS" "the first run should prepare a pack to protect" || return 1
+  before="$(tree_fingerprint "$(pack_dir)")"
+
+  # The same case directory, so the prepared pack is the one at risk. The reference cache
+  # is already valid, so only the pack step runs.
+  rm -rf "$(pack_dir)"
+  mkdir -p "$(pack_dir)/BepInExPack_Valheim/BepInEx/core"
+  printf 'previous pack\n' > "$(pack_dir)/BepInExPack_Valheim/BepInEx/core/keep.txt"
+  before="$(tree_fingerprint "$(pack_dir)")"
+  run_setup pack-hash-mismatch pack_hash_mismatch
+  after="$(tree_fingerprint "$(pack_dir)")"
+
+  assert_nonzero "$RUN_STATUS" "a pack that is not the recorded sha256 must fail setup" || return 1
+  assert_output_contains "not the sha256 the target records" "the refusal must say what was wrong" || return 1
+  assert_equals "$before" "$after" "a refused pack must leave the previous pack byte-identical" || return 1
+  assert_no_pack_temporary_state || return 1
+}
+
+test_pack_download_failure_preserves_previous_pack() {
+  local before after
+  run_setup pack-download-failure first_success
+  assert_equals 0 "$RUN_STATUS" "the first run should prepare a pack to protect" || return 1
+  rm -rf "$(pack_dir)"
+  mkdir -p "$(pack_dir)/BepInExPack_Valheim/BepInEx/core"
+  printf 'previous pack\n' > "$(pack_dir)/BepInExPack_Valheim/BepInEx/core/keep.txt"
+  before="$(tree_fingerprint "$(pack_dir)")"
+
+  run_setup pack-download-failure pack_download_failure
+  after="$(tree_fingerprint "$(pack_dir)")"
+
+  assert_nonzero "$RUN_STATUS" "a failed pack download must fail setup" || return 1
+  assert_output_contains "the download failed" "the failure should say the download failed" || return 1
+  assert_equals "$before" "$after" "a failed download must leave the previous pack byte-identical" || return 1
+  assert_no_pack_temporary_state || return 1
 }
 
 test_failed_file_validator_is_actionable() {
@@ -695,17 +770,30 @@ test_missing_file_command_fails_preflight() {
   assert_output_contains "requires the 'file' command" "missing validator preflight should be actionable" || return 1
 }
 
-test_valid_existing_install_skips_steamcmd() {
+test_valid_existing_cache_skips_the_fetch() {
   local case_dir="$TMP_ROOT/valid-existing"
   STUB_SERVER_DIR="$case_dir/server" create_required_assemblies "$case_dir/server"
 
-  run_setup valid-existing always_fail "linux windows" true legacy
+  run_setup valid-existing always_fail valid legacy
   assert_equals 0 "$RUN_STATUS" "a fully validated existing install should be reused" || return 1
-  assert_equals 0 "$(call_count)" "validated existing references should skip SteamCMD" || return 1
+  assert_equals 0 "$(call_count)" "validated existing references should skip the fetch" || return 1
   if [ -e "$RUN_CASE_DIR/server/$REFERENCE_CACHE_MARKER_NAME" ]; then
     printf 'ASSERT: read-only reuse must not claim ownership of a caller installation\n' >&2
     return 1
   fi
+}
+
+test_a_prepared_pack_is_not_downloaded_again() {
+  run_setup pack-reuse first_success
+  assert_equals 0 "$RUN_STATUS" "the first run should prepare both inputs" || return 1
+  assert_equals 1 "$(curl_count)" "the first run downloads the pack once" || return 1
+
+  # The stub state carries over between runs in one case directory, so the counts are
+  # cumulative: unchanged counts mean the second run fetched nothing.
+  run_setup pack-reuse first_success
+  assert_equals 0 "$RUN_STATUS" "a second run over prepared inputs should succeed" || return 1
+  assert_equals 1 "$(curl_count)" "a validated pack must not be downloaded again" || return 1
+  assert_equals 1 "$(call_count)" "a validated reference cache must not be fetched again" || return 1
 }
 
 test_failed_atomic_publication_rolls_back_and_next_run_retries() {
@@ -766,137 +854,35 @@ test_signal_after_first_atomic_rename_restores_old_install() {
   assert_no_server_temporary_state || return 1
 }
 
-test_steamcmd_download_is_completed_before_tar_reads_it() {
-  run_setup steamcmd-download first_success "linux windows" false
-  assert_equals 0 "$RUN_STATUS" "completed SteamCMD archive should install and run" || return 1
-  assert_file "$RUN_CASE_DIR/state/tar-input" "tar should receive an archive file" || return 1
-  assert_equals "COMPLETE_ARCHIVE" "$(cat "$RUN_CASE_DIR/state/tar-input")" "tar must see only the completed retry result" || return 1
-  assert_no_steamcmd_temporary_state || return 1
-}
-
-test_failed_steamcmd_download_cleans_partial_archive() {
-  run_setup steamcmd-download-failure steamcmd_download_failure "linux windows" false
-  assert_nonzero "$RUN_STATUS" "failed SteamCMD download must fail setup before extraction" || return 1
-  if [ -f "$RUN_CASE_DIR/state/tar-input" ]; then
-    printf 'ASSERT: tar must not inspect a failed SteamCMD download\n' >&2
-    return 1
-  fi
-  assert_no_steamcmd_temporary_state || return 1
-}
-
-test_failed_steamcmd_extraction_cleans_archive_and_stage() {
-  run_setup steamcmd-extract-failure steamcmd_extract_failure "linux windows" false
-  assert_nonzero "$RUN_STATUS" "failed SteamCMD extraction must fail setup" || return 1
-  assert_file "$RUN_CASE_DIR/state/tar-input" "the extraction failure test must reach tar" || return 1
-  assert_no_steamcmd_temporary_state || return 1
-}
-
-test_failed_steamcmd_publish_cleans_archive_and_extract_directory() {
-  run_setup steamcmd-publish-failure steamcmd_publish_failure "linux windows" false
-  assert_nonzero "$RUN_STATUS" "failed SteamCMD publish must fail setup" || return 1
-  assert_no_steamcmd_temporary_state || return 1
-}
-
-test_partial_steamcmd_publication_is_removed_before_next_run() {
-  run_setup steamcmd-partial-publish steamcmd_partial_publish_failure "linux windows" false
-  assert_nonzero "$RUN_STATUS" "partial SteamCMD publication must fail setup" || return 1
-  if [ -e "$RUN_CASE_DIR/steamcmd/steamcmd.sh" ]; then
-    printf 'ASSERT: failed SteamCMD publication left an executable final destination\n' >&2
-    return 1
-  fi
-  assert_no_steamcmd_temporary_state || return 1
-
-  run_setup steamcmd-partial-publish first_success "linux windows" false
-  assert_equals 0 "$RUN_STATUS" "the next run must reinstall instead of trusting a partial executable" || return 1
-  assert_file "$RUN_CASE_DIR/steamcmd/.takaro-steamcmd-complete" "successful atomic publication should write its completion marker" || return 1
-  if [ -f "$RUN_CASE_DIR/state/poisoned-steamcmd-ran" ]; then
-    printf 'ASSERT: a poisoned partial SteamCMD executable was trusted on retry\n' >&2
-    return 1
-  fi
-}
-
-test_signal_during_partial_steamcmd_publication_cleans_destination() {
-  run_setup steamcmd-partial-interrupt steamcmd_partial_publish_interrupt "linux windows" false
-  assert_nonzero "$RUN_STATUS" "interrupted SteamCMD publication must fail setup" || return 1
-  assert_file "$RUN_CASE_DIR/state/steamcmd-publish-interrupt-attempted" "test must reach the partial SteamCMD publication boundary" || return 1
-  if [ -e "$RUN_CASE_DIR/steamcmd/steamcmd.sh" ]; then
-    printf 'ASSERT: interrupted SteamCMD publication left an executable final destination\n' >&2
-    return 1
-  fi
-  assert_no_steamcmd_temporary_state || return 1
-}
-
-test_markerless_steamcmd_executable_is_repaired_without_losing_unrelated_files() {
-  local case_dir="$TMP_ROOT/steamcmd-markerless-repair"
-  mkdir -p "$case_dir/steamcmd"
-  write_poisoned_steamcmd_destination "$case_dir/steamcmd"
-  printf '%s\n' 'keep me' > "$case_dir/steamcmd/unrelated.txt"
-
-  run_setup steamcmd-markerless-repair first_success "linux windows" false
-  assert_equals 0 "$RUN_STATUS" "a markerless executable must be repaired instead of trusted" || return 1
-  assert_file "$RUN_CASE_DIR/steamcmd/.takaro-steamcmd-complete" "repaired SteamCMD install should have a completion marker" || return 1
-  assert_file "$RUN_CASE_DIR/steamcmd/unrelated.txt" "repair should preserve unrelated caller files" || return 1
-  assert_equals "keep me" "$(cat "$RUN_CASE_DIR/steamcmd/unrelated.txt")" "repair should preserve unrelated file contents" || return 1
-  if [ -f "$RUN_CASE_DIR/state/poisoned-steamcmd-ran" ]; then
-    printf 'ASSERT: markerless SteamCMD executable was invoked before repair\n' >&2
-    return 1
-  fi
-}
-
-test_complete_cached_steamcmd_install_is_reused() {
-  run_setup steamcmd-complete-cache first_success "linux windows" false
-  assert_equals 0 "$RUN_STATUS" "initial managed SteamCMD setup should succeed" || return 1
-  assert_file "$RUN_CASE_DIR/steamcmd/.takaro-steamcmd-complete" "managed SteamCMD setup should publish a completion marker" || return 1
-  assert_file "$RUN_CASE_DIR/server/$REFERENCE_CACHE_MARKER_NAME" "managed Valheim cache should publish an ownership marker" || return 1
-  assert_equals 1 "$(cat "$RUN_CASE_DIR/state/steamcmd-download-count")" "initial setup should download SteamCMD once" || return 1
-
-  rm -rf "$RUN_CASE_DIR/server/valheim_server_Data/Managed"
-  rm -f "$RUN_CASE_DIR/state/count" "$RUN_CASE_DIR/state/platforms"
-  run_setup steamcmd-complete-cache first_success "linux windows" false
-  assert_equals 0 "$RUN_STATUS" "a complete cached SteamCMD install should remain usable" || return 1
-  assert_equals 1 "$(cat "$RUN_CASE_DIR/state/steamcmd-download-count")" "complete cached install should not be downloaded again" || return 1
-  assert_file "$RUN_CASE_DIR/server/$REFERENCE_CACHE_MARKER_NAME" "owned cache repair should retain its completion marker" || return 1
-}
-
-test_exhaustion_reports_recovery_context() {
-  run_setup exhausted always_fail
-  assert_nonzero "$RUN_STATUS" "exhausted SteamCMD attempts should fail" || return 1
-  assert_equals 6 "$(call_count)" "three attempts per configured platform should run" || return 1
-  assert_output_contains "$RUN_CASE_DIR/server/valheim_server_Data/Managed" "failure should print expected Managed path" || return 1
-  assert_output_contains "Attempted Steam platforms: linux windows" "failure should print attempted platforms" || return 1
-  assert_output_contains "VALHEIM_STEAM_PLATFORMS" "failure should print platform recovery context" || return 1
-}
-
 failures=0
 for test_case in \
   test_first_attempt_success \
-  test_retry_recovery_clears_cache \
-  test_failed_steamcmd_does_not_accept_stale_managed_directory \
-  test_owned_reference_cache_linux_windows_fallback_preserves_cache_data \
-  test_invalid_legacy_live_server_is_refused_before_steamcmd_and_unchanged \
-  test_missing_required_dlls_exhausts_all_attempts \
-  test_empty_required_dlls_exhaust_all_attempts \
-  test_corrupt_required_dlls_exhaust_all_attempts \
+  test_references_are_fetched_from_the_pinned_manifest_only \
+  test_unavailable_manifest_fails_without_fallback_and_keeps_cache \
+  test_no_windows_fallback_is_attempted \
+  test_wrong_reference_hash_is_refused \
+  test_stale_reference_cache_is_refetched_only_when_owned \
+  test_a_failed_fetch_does_not_accept_a_stale_managed_directory \
+  test_owned_reference_cache_data_survives_a_refetch \
+  test_invalid_legacy_live_server_is_refused_before_any_fetch_and_unchanged \
+  test_missing_required_dlls_fail_setup \
+  test_empty_required_dlls_fail_setup \
+  test_corrupt_required_dlls_fail_setup \
   test_fake_managed_markers_do_not_satisfy_real_assembly_validation \
   test_empty_bepinex_dlls_fail_setup \
   test_corrupt_bepinex_dlls_fail_setup \
   test_fake_bepinex_markers_do_not_satisfy_real_assembly_validation \
+  test_pack_manifest_version_must_match_the_pin \
+  test_pack_hash_mismatch_is_refused_and_previous_pack_kept \
+  test_pack_download_failure_preserves_previous_pack \
   test_failed_file_validator_is_actionable \
   test_missing_file_command_fails_preflight \
-  test_valid_existing_install_skips_steamcmd \
+  test_valid_existing_cache_skips_the_fetch \
+  test_a_prepared_pack_is_not_downloaded_again \
   test_failed_atomic_publication_rolls_back_and_next_run_retries \
   test_failed_first_publication_does_not_forge_cache_ownership \
   test_signal_after_first_atomic_rename_restores_old_install \
-  test_signal_during_atomic_publication_restores_old_install \
-  test_steamcmd_download_is_completed_before_tar_reads_it \
-  test_failed_steamcmd_download_cleans_partial_archive \
-  test_failed_steamcmd_extraction_cleans_archive_and_stage \
-  test_failed_steamcmd_publish_cleans_archive_and_extract_directory \
-  test_partial_steamcmd_publication_is_removed_before_next_run \
-  test_signal_during_partial_steamcmd_publication_cleans_destination \
-  test_markerless_steamcmd_executable_is_repaired_without_losing_unrelated_files \
-  test_complete_cached_steamcmd_install_is_reused \
-  test_exhaustion_reports_recovery_context; do
+  test_signal_during_atomic_publication_restores_old_install; do
   if "$test_case"; then
     printf 'PASS %s\n' "$test_case"
   else

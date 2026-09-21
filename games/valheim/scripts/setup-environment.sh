@@ -1,17 +1,48 @@
 #!/usr/bin/env bash
-# Downloads the Valheim dedicated-server assemblies plus BepInEx reference DLLs
-# needed to compile the Valheim connector plugin.
+# Prepares everything the Valheim connector compiles against, for one catalog target:
+#
+#   * the reference assemblies `build.references` selects, fetched from the pinned Steam
+#     depot manifests by `takaro-maint steam references` -- never a branch head, never a
+#     whole depot, never `app_update`;
+#   * the BepInExPack the target pins, downloaded from its exact versioned URL and checked
+#     against the sha256 in the record -- never Thunderstore's moving `latest`.
+#
+# Both land through the same three-step publication this script has always used: stage in a
+# sibling directory, validate what was staged, then swap it in atomically with the previous
+# copy kept until the swap succeeds. A failed or interrupted preparation therefore leaves
+# whatever was already there byte-identical.
+#
+# Usage: setup-environment.sh [--target <catalog target id>]
 set -euo pipefail
-cd "$(dirname "$0")/.."
+
+# The assembly validator first: every later check is only as real as `file`, so a missing
+# validator fails the run before anything is fetched or replaced.
+if ! command -v file >/dev/null 2>&1; then
+  echo "Valheim reference setup requires the 'file' command to validate real PE/CLI assemblies." >&2
+  exit 1
+fi
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+# shellcheck source=lib-target.sh
+. "${SCRIPT_DIR}/lib-target.sh"
+
+valheim_parse_target_flag "$@"
+valheim_resolve_target "${TARGET}"
+
+cd "${PROJECT_ROOT}"
 
 DATA_DIR="${VALHEIM_DATA_DIR:-_data}"
-STEAMCMD_DIR="${STEAMCMD_DIR:-${DATA_DIR}/steamcmd}"
-REFERENCE_CACHE_DIR="${VALHEIM_REFERENCE_CACHE_DIR:-${VALHEIM_SERVER_DIR:-${DATA_DIR}/server}}"
+# The reference cache is per fingerprint, so two targets never share one directory. The two
+# legacy overrides keep working: they are how the behaviour harness and an existing
+# checkout point the script somewhere else.
+REFERENCE_CACHE_DIR="${VALHEIM_REFERENCE_CACHE_DIR:-${VALHEIM_SERVER_DIR:-${DATA_DIR}/references/${VALHEIM_FP16}}}"
 SERVER_DIR="$REFERENCE_CACHE_DIR"
 DEPS_DIR="${VALHEIM_DEPS_DIR:-${DATA_DIR}/deps}"
-STEAMCMD="${STEAMCMD:-${STEAMCMD_DIR}/steamcmd.sh}"
-VALHEIM_STEAM_PLATFORMS="${VALHEIM_STEAM_PLATFORMS:-linux windows}"
-MAX_ATTEMPTS=3
+PACK_DIR="${DEPS_DIR}/bepinex/${VALHEIM_FP16}"
+PACK_CORE_DIR="${PACK_DIR}/BepInExPack_Valheim/BepInEx/core"
+LOADER_VERSION_FILE="${PACK_DIR}/.takaro/loader-version"
+
 REQUIRED_VALHEIM_ASSEMBLIES=(
   assembly_valheim.dll
   assembly_utils.dll
@@ -26,77 +57,63 @@ REQUIRED_BEPINEX_ASSEMBLIES=(
 REFERENCE_CACHE_MARKER_NAME=".takaro-valheim-reference-cache"
 REFERENCE_CACHE_MARKER_CONTENT="takaro-valheim-reference-cache-v1"
 
-BEPINEX_API="${BEPINEX_API:-https://thunderstore.io/api/experimental/package/denikson/BepInExPack_Valheim/}"
+mkdir -p "$(dirname "$SERVER_DIR")" "$(dirname "$PACK_DIR")"
 
-if ! command -v file >/dev/null 2>&1; then
-  echo "Valheim reference setup requires the 'file' command to validate real PE/CLI assemblies." >&2
-  exit 1
-fi
-
-mkdir -p "$STEAMCMD_DIR" "$(dirname "$SERVER_DIR")" "$DEPS_DIR"
-
+# Where a publication currently is, for the cleanup handler. Both publications use the
+# same three slots, so the helpers below take the variable *names* and read and write them
+# indirectly -- which is why shellcheck cannot see these being used.
+# shellcheck disable=SC2034
 ACTIVE_SERVER_STAGE=""
+# shellcheck disable=SC2034
 ACTIVE_SERVER_BACKUP=""
+# shellcheck disable=SC2034
 ACTIVE_SERVER_FINAL=""
-ACTIVE_STEAMCMD_ARCHIVE=""
-ACTIVE_STEAMCMD_STAGE=""
-ACTIVE_STEAMCMD_BACKUP=""
-ACTIVE_STEAMCMD_FINAL=""
-ACTIVE_STEAMCMD_FINAL_WITHOUT_BACKUP=false
-STEAMCMD_COMPLETION_MARKER="${STEAMCMD_DIR}/.takaro-steamcmd-complete"
+# shellcheck disable=SC2034
+ACTIVE_PACK_STAGE=""
+# shellcheck disable=SC2034
+ACTIVE_PACK_BACKUP=""
+# shellcheck disable=SC2034
+ACTIVE_PACK_FINAL=""
+ACTIVE_PACK_ARCHIVE=""
 
-cleanup_steamcmd_publication_state() {
-  if [ -n "$ACTIVE_STEAMCMD_BACKUP" ] && [ -e "$ACTIVE_STEAMCMD_BACKUP" ]; then
-    if [ -n "$ACTIVE_STEAMCMD_FINAL" ]; then
-      if [ -e "$ACTIVE_STEAMCMD_FINAL" ] && ! rm -rf "$ACTIVE_STEAMCMD_FINAL"; then
-        echo "Interrupted SteamCMD publication could not remove the uncommitted replacement; the previous install remains preserved at $ACTIVE_STEAMCMD_BACKUP." >&2
-      elif mv "$ACTIVE_STEAMCMD_BACKUP" "$ACTIVE_STEAMCMD_FINAL"; then
-        ACTIVE_STEAMCMD_BACKUP=""
-      else
-        echo "Interrupted SteamCMD publication could not restore the previous install; it remains preserved at $ACTIVE_STEAMCMD_BACKUP." >&2
-      fi
+restore_publication_state() {
+  # One rollback for both publications: move the backup back over whatever is in the way,
+  # so a signal landing between the two renames cannot leave the destination half-swapped.
+  local backup_var="$1" final_var="$2" stage_var="$3" subject="$4"
+  local backup="${!backup_var}" final="${!final_var}" stage="${!stage_var}"
+
+  if [ -n "$backup" ] && [ -e "$backup" ] && [ -n "$final" ]; then
+    if [ -e "$final" ] && ! rm -rf "$final"; then
+      echo "Interrupted ${subject} publication could not remove the uncommitted replacement; the previous copy remains preserved at $backup." >&2
+    elif mv "$backup" "$final"; then
+      printf -v "$backup_var" '%s' ""
+    else
+      echo "Interrupted ${subject} publication could not restore the previous copy; it remains preserved at $backup." >&2
     fi
-  elif [ "$ACTIVE_STEAMCMD_FINAL_WITHOUT_BACKUP" = true ] \
-    && [ -n "$ACTIVE_STEAMCMD_FINAL" ] \
-    && [ -e "$ACTIVE_STEAMCMD_FINAL" ]; then
-    rm -rf "$ACTIVE_STEAMCMD_FINAL"
   fi
-
-  if [ -n "$ACTIVE_STEAMCMD_ARCHIVE" ]; then
-    rm -f "$ACTIVE_STEAMCMD_ARCHIVE"
-    ACTIVE_STEAMCMD_ARCHIVE=""
+  if [ -n "$stage" ]; then
+    rm -rf "$stage"
+    printf -v "$stage_var" '%s' ""
   fi
-  if [ -n "$ACTIVE_STEAMCMD_STAGE" ]; then
-    rm -rf "$ACTIVE_STEAMCMD_STAGE"
-    ACTIVE_STEAMCMD_STAGE=""
-  fi
-  ACTIVE_STEAMCMD_FINAL=""
-  ACTIVE_STEAMCMD_FINAL_WITHOUT_BACKUP=false
+  printf -v "$final_var" '%s' ""
 }
 
 cleanup_server_publication_state() {
-  if [ -n "$ACTIVE_SERVER_BACKUP" ] && [ -e "$ACTIVE_SERVER_BACKUP" ]; then
-    if [ -n "$ACTIVE_SERVER_FINAL" ]; then
-      if [ -e "$ACTIVE_SERVER_FINAL" ] && ! rm -rf "$ACTIVE_SERVER_FINAL"; then
-        echo "Interrupted Valheim publication could not remove the uncommitted replacement; the previous install remains preserved at $ACTIVE_SERVER_BACKUP." >&2
-      elif mv "$ACTIVE_SERVER_BACKUP" "$ACTIVE_SERVER_FINAL"; then
-        ACTIVE_SERVER_BACKUP=""
-      else
-        echo "Interrupted Valheim publication could not restore the previous install; it remains preserved at $ACTIVE_SERVER_BACKUP." >&2
-      fi
-    fi
+  restore_publication_state ACTIVE_SERVER_BACKUP ACTIVE_SERVER_FINAL ACTIVE_SERVER_STAGE "Valheim reference"
+}
+
+cleanup_pack_publication_state() {
+  restore_publication_state ACTIVE_PACK_BACKUP ACTIVE_PACK_FINAL ACTIVE_PACK_STAGE "BepInExPack"
+  if [ -n "$ACTIVE_PACK_ARCHIVE" ]; then
+    rm -f "$ACTIVE_PACK_ARCHIVE"
+    ACTIVE_PACK_ARCHIVE=""
   fi
-  if [ -n "$ACTIVE_SERVER_STAGE" ]; then
-    rm -rf "$ACTIVE_SERVER_STAGE"
-    ACTIVE_SERVER_STAGE=""
-  fi
-  ACTIVE_SERVER_FINAL=""
 }
 
 cleanup_on_exit() {
   local status=$?
-  cleanup_steamcmd_publication_state
   cleanup_server_publication_state
+  cleanup_pack_publication_state
   trap - EXIT
   exit "$status"
 }
@@ -108,105 +125,19 @@ curl_retry() {
   curl --retry 5 --retry-delay 2 --retry-all-errors "$@"
 }
 
-publish_steamcmd_install() {
-  local stage_dir="$1"
-  local final_dir="$2"
-  local backup_dir="${final_dir}.backup.$$.${RANDOM}"
-  local publish_status
+is_managed_pe_assembly() {
+  local assembly_path="$1"
+  local description
 
-  ACTIVE_STEAMCMD_FINAL="$final_dir"
-  ACTIVE_STEAMCMD_FINAL_WITHOUT_BACKUP=false
-  if [ -e "$final_dir" ]; then
-    ACTIVE_STEAMCMD_BACKUP="$backup_dir"
-    if mv "$final_dir" "$backup_dir"; then
-      :
-    else
-      publish_status=$?
-      echo "Could not move the existing SteamCMD install aside for atomic publication: $final_dir" >&2
-      cleanup_steamcmd_publication_state
-      return "$publish_status"
-    fi
-  else
-    ACTIVE_STEAMCMD_FINAL_WITHOUT_BACKUP=true
-  fi
-
-  if mv "$stage_dir" "$final_dir"; then
-    :
-  else
-    publish_status=$?
-    echo "Could not atomically publish the completed SteamCMD install to $final_dir; restoring the previous state." >&2
-    cleanup_steamcmd_publication_state
-    return "$publish_status"
-  fi
-
-  ACTIVE_STEAMCMD_STAGE=""
-  backup_dir="$ACTIVE_STEAMCMD_BACKUP"
-  ACTIVE_STEAMCMD_BACKUP=""
-  ACTIVE_STEAMCMD_FINAL=""
-  ACTIVE_STEAMCMD_FINAL_WITHOUT_BACKUP=false
-  if [ -n "$backup_dir" ]; then
-    rm -rf "$backup_dir"
-  fi
-}
-
-install_steamcmd() {
-  local steamcmd_archive
-  local steamcmd_stage_dir
-  local install_status=0
-
-  if ! steamcmd_archive="$(mktemp "${STEAMCMD_DIR}.download.XXXXXX.tar.gz")"; then
-    echo "Could not create a sibling temporary SteamCMD archive for $STEAMCMD_DIR." >&2
+  [ -f "$assembly_path" ] || return 1
+  if ! description="$(LC_ALL=C file -b -- "$assembly_path")"; then
     return 1
   fi
-  ACTIVE_STEAMCMD_ARCHIVE="$steamcmd_archive"
-  if ! steamcmd_stage_dir="$(mktemp -d "${STEAMCMD_DIR}.stage.XXXXXX")"; then
-    rm -f "$steamcmd_archive"
-    ACTIVE_STEAMCMD_ARCHIVE=""
-    echo "Could not create a sibling SteamCMD staging directory for $STEAMCMD_DIR." >&2
-    return 1
-  fi
-  ACTIVE_STEAMCMD_STAGE="$steamcmd_stage_dir"
 
-  if [ -d "$STEAMCMD_DIR" ] && ! cp -a "$STEAMCMD_DIR/." "$steamcmd_stage_dir/"; then
-    echo "Could not preserve existing files while staging the SteamCMD repair." >&2
-    install_status=1
-  fi
-
-  if [ "$install_status" -eq 0 ] && ! curl_retry -fsSL \
-    https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
-    -o "$steamcmd_archive"; then
-    echo "SteamCMD archive download failed before extraction." >&2
-    install_status=1
-  elif [ "$install_status" -eq 0 ] && ! tar -xzf "$steamcmd_archive" -C "$steamcmd_stage_dir"; then
-    echo "Downloaded SteamCMD archive could not be extracted." >&2
-    install_status=1
-  elif [ "$install_status" -eq 0 ] && [ ! -x "$steamcmd_stage_dir/steamcmd.sh" ]; then
-    echo "Downloaded SteamCMD archive is missing executable steamcmd.sh." >&2
-    install_status=1
-  elif [ "$install_status" -eq 0 ] && ! : > "$steamcmd_stage_dir/.takaro-steamcmd-complete"; then
-    echo "Could not mark the staged SteamCMD install complete." >&2
-    install_status=1
-  elif [ "$install_status" -eq 0 ] && ! publish_steamcmd_install "$steamcmd_stage_dir" "$STEAMCMD_DIR"; then
-    install_status=1
-  fi
-
-  cleanup_steamcmd_publication_state
-  return "$install_status"
-}
-
-steamcmd_install_is_complete() {
-  if [ "$STEAMCMD" = "$STEAMCMD_DIR/steamcmd.sh" ]; then
-    [ -x "$STEAMCMD" ] && [ -f "$STEAMCMD_COMPLETION_MARKER" ]
-  else
-    [ -x "$STEAMCMD" ]
-  fi
-}
-
-clear_steam_cache() {
-  if [ -n "${HOME:-}" ]; then
-    rm -rf "$HOME/Steam/appcache"
-  fi
-  rm -rf "$STEAMCMD_DIR/appcache"
+  case "$description" in
+    *PE32*Mono/.Net\ assembly*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 validate_managed_assemblies() {
@@ -216,7 +147,7 @@ validate_managed_assemblies() {
   [ -d "$managed_dir" ] || return 1
   for assembly in "${REQUIRED_VALHEIM_ASSEMBLIES[@]}"; do
     if ! is_managed_pe_assembly "$managed_dir/$assembly"; then
-      echo "SteamCMD required Valheim assembly is not a managed PE/CLI assembly: $managed_dir/$assembly" >&2
+      echo "Required Valheim assembly is not a managed PE/CLI assembly: $managed_dir/$assembly" >&2
       return 1
     fi
   done
@@ -233,21 +164,6 @@ validate_bepinex_assemblies() {
       return 1
     fi
   done
-}
-
-is_managed_pe_assembly() {
-  local assembly_path="$1"
-  local description
-
-  [ -f "$assembly_path" ] || return 1
-  if ! description="$(LC_ALL=C file -b -- "$assembly_path")"; then
-    return 1
-  fi
-
-  case "$description" in
-    *PE32*Mono/.Net\ assembly*) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 reference_cache_is_owned() {
@@ -293,78 +209,77 @@ ensure_reference_cache_write_is_safe() {
   return 1
 }
 
-ensure_steamcmd_install() {
-  if steamcmd_install_is_complete; then
-    return 0
-  fi
-
-  if [ -x "$STEAMCMD" ] && [ "$STEAMCMD" = "$STEAMCMD_DIR/steamcmd.sh" ]; then
-    echo "Repairing markerless or incomplete managed SteamCMD install..."
-  fi
-  echo "Downloading SteamCMD..."
-  install_steamcmd
-}
-
-publish_valheim_server_install() {
-  local stage_dir="$1"
-  local final_dir="$2"
+publish_directory() {
+  # stage -> final, with the previous copy kept until the swap has succeeded.
+  local stage_dir="$1" final_dir="$2" backup_var="$3" final_var="$4" stage_var="$5" subject="$6"
   local backup_dir="${final_dir}.backup.$$.${RANDOM}"
   local publish_status
 
+  mkdir -p "$(dirname "$final_dir")"
+  publish_status=0
   if [ -e "$final_dir" ]; then
-    # Record rollback state before the first rename so a signal cannot land in
-    # the gap after the old install moves but before cleanup knows its paths.
-    ACTIVE_SERVER_BACKUP="$backup_dir"
-    ACTIVE_SERVER_FINAL="$final_dir"
-    if mv "$final_dir" "$backup_dir"; then
-      :
-    else
-      publish_status=$?
-      echo "Could not move the existing Valheim install aside for atomic publication: $final_dir" >&2
-      cleanup_server_publication_state
+    # Recorded before the first rename, so a signal cannot land in the gap between the old
+    # copy moving aside and the cleanup handler learning where it went.
+    printf -v "$backup_var" '%s' "$backup_dir"
+    printf -v "$final_var" '%s' "$final_dir"
+    # Each rename's own status, captured directly: `if ! mv` would report the negation's.
+    mv "$final_dir" "$backup_dir" || publish_status=$?
+    if [ "$publish_status" -ne 0 ]; then
+      echo "Could not move the existing ${subject} aside for atomic publication: $final_dir" >&2
+      restore_publication_state "$backup_var" "$final_var" "$stage_var" "$subject"
       return "$publish_status"
     fi
-  fi
-
-  if mv "$stage_dir" "$final_dir"; then
-    ACTIVE_SERVER_STAGE=""
-    if [ -n "$ACTIVE_SERVER_BACKUP" ]; then
-      backup_dir="$ACTIVE_SERVER_BACKUP"
-      ACTIVE_SERVER_BACKUP=""
-      ACTIVE_SERVER_FINAL=""
-      rm -rf "$backup_dir"
-    fi
-    ACTIVE_SERVER_FINAL=""
-    return 0
   else
-    publish_status=$?
+    printf -v "$final_var" '%s' "$final_dir"
   fi
 
-  echo "Could not atomically publish validated Valheim references to $final_dir; restoring the previous install." >&2
-  cleanup_server_publication_state
+  mv "$stage_dir" "$final_dir" || publish_status=$?
+  if [ "$publish_status" -eq 0 ]; then
+    printf -v "$stage_var" '%s' ""
+    backup_dir="${!backup_var}"
+    printf -v "$backup_var" '%s' ""
+    printf -v "$final_var" '%s' ""
+    [ -n "$backup_dir" ] && rm -rf "$backup_dir"
+    return 0
+  fi
+
+  echo "Could not atomically publish the validated ${subject} to $final_dir; restoring the previous copy." >&2
+  restore_publication_state "$backup_var" "$final_var" "$stage_var" "$subject"
   return "$publish_status"
 }
 
-install_valheim_server() {
-  local -a platforms
-  local platform
-  local attempt
-  local last_exit_code=1
-  local managed_dir="$SERVER_DIR/valheim_server_Data/Managed"
-  local server_install_dir="$SERVER_DIR"
-  local stage_dir
-  local stage_managed_dir
+reference_fetch_failed() {
+  # One place that says what went wrong and what a human does about it, because a pinned
+  # manifest that Steam no longer serves is not something a retry or another platform fixes.
+  local status="$1"
 
-  read -r -a platforms <<< "$VALHEIM_STEAM_PLATFORMS"
-  if [ "${#platforms[@]}" -eq 0 ]; then
-    echo "VALHEIM_STEAM_PLATFORMS must name at least one Steam platform." >&2
-    return 1
-  fi
+  echo "Could not fetch the Valheim compile references for ${VALHEIM_TARGET}." >&2
+  case "$status" in
+    4)
+      echo "Steam did not serve depot manifest ${VALHEIM_STEAM_DEPOTS} of app ${VALHEIM_STEAM_APP} (branch ${VALHEIM_STEAM_BRANCH})." >&2
+      echo "This build is pinned to exactly those bytes and is not falling back to the branch head or to another platform." >&2
+      ;;
+    5)
+      echo "The depot served bytes that do not match the hashes ${VALHEIM_TARGET} records." >&2
+      ;;
+    7)
+      echo "The reference cache at ${SERVER_DIR} belongs to another fingerprint and is not owned by this script." >&2
+      ;;
+  esac
+  echo "Recovery: re-pin with 'takaro-maint steam pin --game valheim --target ${VALHEIM_TARGET} --metadata --record-files <path> --write'," >&2
+  echo "or recover the compile references by hand from the Windows depot recorded in the target's support notes." >&2
+  echo "Expected reference directory: ${SERVER_DIR}/valheim_server_Data/Managed" >&2
+  return "$status"
+}
+
+install_valheim_references() {
+  local server_install_dir="$SERVER_DIR"
+  local managed_dir stage_dir stage_managed_dir status=0
 
   if [[ "$server_install_dir" != /* ]]; then
     server_install_dir="$(pwd)/$server_install_dir"
-    managed_dir="$server_install_dir/valheim_server_Data/Managed"
   fi
+  managed_dir="$server_install_dir/valheim_server_Data/Managed"
 
   if validate_managed_assemblies "$managed_dir"; then
     echo "Reusing validated Valheim references read-only at $managed_dir."
@@ -375,96 +290,198 @@ install_valheim_server() {
     return 1
   fi
 
-  if ! ensure_steamcmd_install; then
+  if ! stage_dir="$(mktemp -d "${server_install_dir}.stage.XXXXXX")"; then
+    echo "Could not create a sibling Valheim staging directory for $server_install_dir." >&2
+    return 1
+  fi
+  # shellcheck disable=SC2034 # read indirectly by the cleanup handler
+  ACTIVE_SERVER_STAGE="$stage_dir"
+  # The stage starts as a copy of whatever is there, so unrelated files a caller keeps
+  # beside the references survive a re-fetch, and a cache left by another fingerprint is
+  # visible to the fetch (and refused by it) rather than silently overwritten.
+  if [ -d "$server_install_dir" ] && ! cp -a "$server_install_dir/." "$stage_dir/"; then
+    echo "Could not stage the existing Valheim reference cache before the fetch: $server_install_dir" >&2
+    return 1
+  fi
+  stage_managed_dir="$stage_dir/valheim_server_Data/Managed"
+
+  echo "Fetching the Valheim compile references pinned by ${VALHEIM_TARGET} (${VALHEIM_FP16})..."
+  # `if ! cmd` would report the negation's status, not the tool's, and the exit code is
+  # exactly what decides between a re-pin, a refusal and a retry here.
+  status=0
+  "$TAKARO_MAINT" steam references \
+    --game valheim --target "$VALHEIM_TARGET" --dest "$stage_managed_dir" || status=$?
+  # A cache left behind by another fingerprint is the one recoverable conflict, and only
+  # when this script is the thing that wrote it.
+  if [ "$status" -eq 7 ] && reference_cache_is_owned "$stage_dir"; then
+    echo "Replacing a reference cache this script owns and re-fetching..."
+    status=0
+    "$TAKARO_MAINT" steam references \
+      --game valheim --target "$VALHEIM_TARGET" --dest "$stage_managed_dir" --force || status=$?
+  fi
+  if [ "$status" -ne 0 ]; then
+    reference_fetch_failed "$status"
+    return "$status"
+  fi
+
+  if ! validate_managed_assemblies "$stage_managed_dir"; then
     return 1
   fi
 
-  for platform in "${platforms[@]}"; do
-    for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
-      if ! stage_dir="$(mktemp -d "${server_install_dir}.stage.XXXXXX")"; then
-        echo "Could not create a sibling Valheim staging directory for $server_install_dir." >&2
-        return 1
-      fi
-      ACTIVE_SERVER_STAGE="$stage_dir"
-      if [ -d "$server_install_dir" ] && ! cp -a "$server_install_dir/." "$stage_dir/"; then
-        echo "Could not stage the existing Valheim install before update: $server_install_dir" >&2
-        return 1
-      fi
-      stage_managed_dir="$stage_dir/valheim_server_Data/Managed"
-
-      echo "Installing Valheim compile references for Steam platform '$platform' (attempt $attempt/$MAX_ATTEMPTS)..."
-      if "$STEAMCMD" \
-        +@sSteamCmdForcePlatformType "$platform" \
-        +force_install_dir "$stage_dir" \
-        +login anonymous \
-        +app_update 896660 validate \
-        +quit; then
-        last_exit_code=0
-      else
-        last_exit_code=$?
-      fi
-
-      if [ "$last_exit_code" -eq 0 ] && validate_managed_assemblies "$stage_managed_dir"; then
-        if ! printf '%s\n' "$REFERENCE_CACHE_MARKER_CONTENT" > "$stage_dir/$REFERENCE_CACHE_MARKER_NAME"; then
-          echo "Could not mark the validated Valheim reference cache complete: $stage_dir" >&2
-          last_exit_code=1
-        elif publish_valheim_server_install "$stage_dir" "$server_install_dir"; then
-          echo "Valheim compile-reference cache installed for Steam platform '$platform'."
-          return 0
-        fi
-        last_exit_code=1
-      fi
-
-      if [ "$last_exit_code" -eq 0 ]; then
-        last_exit_code=1
-      fi
-
-      if [ -n "$ACTIVE_SERVER_STAGE" ]; then
-        rm -rf "$ACTIVE_SERVER_STAGE"
-        ACTIVE_SERVER_STAGE=""
-      fi
-
-      if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-        echo "SteamCMD attempt $attempt for '$platform' failed with exit code $last_exit_code; clearing cache and retrying..."
-        clear_steam_cache
-        sleep $((attempt * 10))
-      fi
-    done
-
-    if [ "$platform" = "linux" ]; then
-      echo "Linux references unavailable; falling back to the Windows depot for compile references only."
-      clear_steam_cache
+  # The one assembly whose hash decides whether this plugin can be built at all. There is
+  # no override: an override would assert nothing about the build it let through.
+  if [ -n "${VALHEIM_ASSEMBLY_VALHEIM_SHA256:-}" ]; then
+    if ! printf '%s  %s\n' "$VALHEIM_ASSEMBLY_VALHEIM_SHA256" "$stage_managed_dir/assembly_valheim.dll" \
+      | sha256sum --check --status; then
+      echo "error: $stage_managed_dir/assembly_valheim.dll is not the one ${VALHEIM_TARGET} pins" >&2
+      return 5
     fi
-  done
-
-  echo "Valheim managed assemblies were not installed after bounded SteamCMD retries." >&2
-  echo "Expected managed directory: $managed_dir" >&2
-  echo "Attempted Steam platforms: ${platforms[*]}" >&2
-  echo "Set VALHEIM_STEAM_PLATFORMS to override the compile-reference platform order (default: linux windows)." >&2
-  return "$last_exit_code"
-}
-
-install_valheim_server
-
-download_thunderstore_package() {
-  local api_url="$1"
-  local out_zip="$2"
-  local download_url
-  download_url="$(curl_retry -fsSL "$api_url" | jq -r '.latest.download_url')"
-  if [ -z "$download_url" ] || [ "$download_url" = "null" ]; then
-    echo "Could not resolve Thunderstore download URL from $api_url" >&2
-    exit 1
   fi
-  curl_retry -fsSL "$download_url" -o "$out_zip"
+
+  if ! printf '%s\n' "$REFERENCE_CACHE_MARKER_CONTENT" > "$stage_dir/$REFERENCE_CACHE_MARKER_NAME"; then
+    echo "Could not mark the validated Valheim reference cache complete: $stage_dir" >&2
+    return 1
+  fi
+
+  if ! publish_directory "$stage_dir" "$server_install_dir" \
+    ACTIVE_SERVER_BACKUP ACTIVE_SERVER_FINAL ACTIVE_SERVER_STAGE "Valheim reference cache"; then
+    return 1
+  fi
+  echo "Valheim compile-reference cache installed for ${VALHEIM_TARGET}."
 }
 
-echo "Downloading BepInExPack Valheim..."
-rm -rf "$DEPS_DIR/bepinex"
-mkdir -p "$DEPS_DIR/bepinex"
-download_thunderstore_package "$BEPINEX_API" "$DEPS_DIR/bepinex.zip"
-unzip -q "$DEPS_DIR/bepinex.zip" -d "$DEPS_DIR/bepinex"
-validate_bepinex_assemblies "$DEPS_DIR/bepinex/BepInExPack_Valheim/BepInEx/core"
+pack_download_failed() {
+  local reason="$1"
+  echo "Could not prepare BepInExPack ${VALHEIM_BEPINEX_PACKAGE} ${VALHEIM_BEPINEX_PACK_VERSION}: ${reason}" >&2
+  echo "The pinned package is ${VALHEIM_BEPINEX_URL}" >&2
+  echo "Nothing was replaced; any previously prepared pack at ${PACK_DIR} is unchanged." >&2
+  echo "Recovery: re-record the package with 'takaro-maint catalog validate --online' after re-pinning the target." >&2
+}
+
+record_loader_version() {
+  # The BepInEx loader's own assembly version -- the number a server operator sees in the
+  # log banner -- as opposed to the pack version Thunderstore publishes. They are different
+  # facts and the packaged manifest.json states both.
+  local core_dir="$1" out_file="$2" version=""
+
+  mkdir -p "$(dirname "$out_file")"
+  if command -v dotnet >/dev/null 2>&1; then
+    version="$(dotnet msbuild "${SCRIPT_DIR}/bepinex-loader-version.proj" \
+      -nologo -verbosity:minimal \
+      -p:BepInExReferencePath="$core_dir" 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  case "$version" in
+    [0-9]*) printf '%s\n' "$version" > "$out_file" ;;
+    *) printf 'unknown\n' > "$out_file" ;;
+  esac
+}
+
+# The pack is a third-party zip, so it is unpacked by a reader that refuses an entry
+# escaping the staging directory. Python rather than unzip: takaro-maint already requires
+# python3, and one dependency that is always there beats two that are not (this script also
+# runs on a CI runner and inside the portable maintenance image).
+extract_pack() {
+    python3 - "$1" "$2" <<'PYTHON'
+import os
+import sys
+import zipfile
+
+archive, destination = sys.argv[1], sys.argv[2]
+root = os.path.realpath(destination)
+os.makedirs(root, exist_ok=True)
+with zipfile.ZipFile(archive) as pack:
+    for entry in pack.namelist():
+        target = os.path.realpath(os.path.join(root, entry))
+        if target != root and not target.startswith(root + os.sep):
+            sys.exit(f"{entry} would be written outside {destination}")
+    pack.extractall(root)
+PYTHON
+}
+
+# What the pack says its own version is, straight out of the Thunderstore manifest.
+read_pack_version() {
+    python3 - "$1" <<'PYTHON'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle).get("version_number", ""))
+PYTHON
+}
+
+install_bepinex_pack() {
+  local stage_dir archive manifest declared
+
+  if [ -f "$PACK_CORE_DIR/BepInEx.dll" ] && validate_bepinex_assemblies "$PACK_CORE_DIR"; then
+    echo "Reusing the validated BepInExPack at $PACK_DIR."
+    return 0
+  fi
+
+  if ! stage_dir="$(mktemp -d "${PACK_DIR}.stage.XXXXXX")"; then
+    echo "Could not create a sibling BepInExPack staging directory for $PACK_DIR." >&2
+    return 1
+  fi
+  ACTIVE_PACK_STAGE="$stage_dir"
+  archive="$stage_dir/pack.zip"
+  ACTIVE_PACK_ARCHIVE="$archive"
+
+  echo "Downloading BepInExPack ${VALHEIM_BEPINEX_PACK_VERSION} for ${VALHEIM_TARGET}..."
+  if ! curl_retry -fsSL "$VALHEIM_BEPINEX_URL" -o "$archive"; then
+    pack_download_failed "the download failed"
+    return 4
+  fi
+
+  if ! printf '%s  %s\n' "$VALHEIM_BEPINEX_SHA256" "$archive" | sha256sum --check --status; then
+    pack_download_failed "the downloaded zip is not the sha256 the target records"
+    return 5
+  fi
+  if [ -n "${VALHEIM_BEPINEX_SIZE:-}" ]; then
+    local size
+    size="$(wc -c < "$archive" | tr -d '[:space:]')"
+    if [ "$size" != "$VALHEIM_BEPINEX_SIZE" ]; then
+      pack_download_failed "the downloaded zip is ${size} bytes, the target records ${VALHEIM_BEPINEX_SIZE}"
+      return 5
+    fi
+  fi
+
+  if ! extract_pack "$archive" "$stage_dir/pack"; then
+    pack_download_failed "the zip could not be extracted"
+    return 5
+  fi
+  rm -f "$archive"
+  ACTIVE_PACK_ARCHIVE=""
+
+  manifest="$stage_dir/pack/manifest.json"
+  if [ ! -f "$manifest" ]; then
+    pack_download_failed "the zip carries no manifest.json; it is not a Thunderstore package"
+    return 5
+  fi
+  declared="$(read_pack_version "$manifest" 2>/dev/null || true)"
+  if [ "$declared" != "$VALHEIM_BEPINEX_PACK_VERSION" ]; then
+    pack_download_failed "the pack says it is ${declared:-<unversioned>}, the target pins ${VALHEIM_BEPINEX_PACK_VERSION}"
+    return 5
+  fi
+
+  if ! validate_bepinex_assemblies "$stage_dir/pack/BepInExPack_Valheim/BepInEx/core"; then
+    return 1
+  fi
+  record_loader_version "$stage_dir/pack/BepInExPack_Valheim/BepInEx/core" "$stage_dir/pack/.takaro/loader-version"
+
+  if ! publish_directory "$stage_dir/pack" "$PACK_DIR" \
+    ACTIVE_PACK_BACKUP ACTIVE_PACK_FINAL ACTIVE_PACK_STAGE "BepInExPack"; then
+    return 1
+  fi
+  rm -rf "$stage_dir"
+  # shellcheck disable=SC2034 # read indirectly by the cleanup handler
+  ACTIVE_PACK_STAGE=""
+  echo "BepInExPack ${VALHEIM_BEPINEX_PACK_VERSION} installed for ${VALHEIM_TARGET}."
+}
+
+install_valheim_references
+install_bepinex_pack
 
 echo "Reference assemblies ready:"
-echo "  Valheim: $REFERENCE_CACHE_DIR/valheim_server_Data/Managed"
-echo "  BepInEx: $DEPS_DIR/bepinex/BepInExPack_Valheim/BepInEx/core"
+echo "  Target:  ${VALHEIM_TARGET} (${VALHEIM_FP16})"
+echo "  Valheim: ${SERVER_DIR}/valheim_server_Data/Managed"
+echo "  BepInEx: ${PACK_CORE_DIR}"
+echo "  Loader:  $(cat "$LOADER_VERSION_FILE" 2>/dev/null || echo unknown)"

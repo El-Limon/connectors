@@ -58,6 +58,26 @@ public sealed class ReleaseVersionContractTests
         Assert.IsFalse(release.Contains("sed -i", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void ReleaseScriptResolvesTheCatalogTargetAfterValidatingTheVersion()
+    {
+        var release = ReadValheimFile("scripts/build-release.sh");
+
+        var versionCheck = release.IndexOf(
+            "resolve_valheim_release_version \"$VERSION\"",
+            StringComparison.Ordinal);
+        var targetResolution = release.IndexOf(
+            "valheim_resolve_target",
+            StringComparison.Ordinal);
+
+        Assert.IsTrue(versionCheck >= 0, "build-release.sh no longer validates the version.");
+        Assert.IsTrue(
+            targetResolution > versionCheck,
+            "The catalog target must be resolved after the version is validated, so a rejected "
+            + "version never reaches takaro-maint or the network.");
+        StringAssert.Contains(release, "--target");
+    }
+
     [DataTestMethod]
     [DataRow("1.0.0", "1.0.0", "1.0.0.0")]
     [DataRow("7.8.9-rc.2+verify7", "7.8.9", "7.8.9.0")]
