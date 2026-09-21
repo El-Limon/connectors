@@ -8,6 +8,8 @@ export interface HealthStatus {
   rconConfigured: boolean;
   logTailers: number;
   modBridge?: unknown;
+  /** The catalog target this package was built for, or null in an unstamped tree. */
+  target?: unknown;
 }
 
 export class HealthServer {

@@ -533,27 +533,37 @@ def test_assemble_ignores_the_working_directory_and_ci_variables(inputs: Inputs,
 
 # -- legacy connectors -------------------------------------------------------------------
 
+#: A connector the catalog has no record for. Legacy mode is about that absence, not about any
+#: one connector, so this deliberately names no real game: every name that is one acquires a
+#: catalog record eventually, and the test below would fail on the day it does.
+LEGACY_CONNECTOR = "uncatalogued-connector"
+
 
 def test_legacy_mode_takes_the_given_files_and_writes_a_null_catalog_record(
     run: Any, catalog_copy: Path, tmp_path: Path
 ) -> None:
+    assert not (catalog_copy / "catalog" / LEGACY_CONNECTOR).exists(), (
+        f"{LEGACY_CONNECTOR} has a catalog record, so this no longer exercises legacy mode"
+    )
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "takaro-valheim-plugin.zip").write_bytes(b"plugin")
-    (dist / "takaro-valheim-companion.zip").write_bytes(b"companion")
+    plugin = dist / f"takaro-{LEGACY_CONNECTOR}-plugin.zip"
+    companion = dist / f"takaro-{LEGACY_CONNECTOR}-companion.zip"
+    plugin.write_bytes(b"plugin")
+    companion.write_bytes(b"companion")
     out = tmp_path / "assembled"
 
     code, payload, err = run(
         "release",
         "assemble",
         "--connector",
-        "valheim",
+        LEGACY_CONNECTOR,
         "--version",
         "3.0.3",
         "--channel",
         "rolling",
         "--tag",
-        "valheim-dev",
+        f"{LEGACY_CONNECTOR}-dev",
         "--dist",
         str(dist),
         "--out",
@@ -563,23 +573,23 @@ def test_legacy_mode_takes_the_given_files_and_writes_a_null_catalog_record(
         "--source-commit",
         "f" * 40,
         "--allow-dirty",
-        str(dist / "takaro-valheim-plugin.zip"),
-        str(dist / "takaro-valheim-companion.zip"),
+        str(plugin),
+        str(companion),
         repo=catalog_copy,
     )
 
     assert code == 0, err
     assert payload["mode"] == "legacy"
-    record = json.loads((out / "takaro-valheim-3.0.3.compat.json").read_text())
+    record = json.loads((out / f"takaro-{LEGACY_CONNECTOR}-3.0.3.compat.json").read_text())
     assert record["catalog"] is None
     assert record["targets"] == {}
     assert record["aliases"] == {}
     assert {asset["kind"] for asset in record["assets"]} == {"artifact"}
     assert sorted(path.name for path in out.iterdir()) == [
         "SHA256SUMS",
-        "takaro-valheim-3.0.3.compat.json",
-        "takaro-valheim-companion.zip",
-        "takaro-valheim-plugin.zip",
+        f"takaro-{LEGACY_CONNECTOR}-3.0.3.compat.json",
+        f"takaro-{LEGACY_CONNECTOR}-companion.zip",
+        f"takaro-{LEGACY_CONNECTOR}-plugin.zip",
     ]
 
 

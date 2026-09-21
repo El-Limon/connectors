@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "conan-exiles",
+  "name": "Conan Exiles",
+  "connector": "conan-exiles",
+  "platforms": ["linux"],
+  "sources": {
+    "steam": {
+      "provider": "steam",
+      "baseUrl": "https://store.steampowered.com",
+      "watch": {
+        "kind": "game",
+        "component": "conan-exiles",
+        "app": 443030,
+        "os": "linux",
+        "depots": ["443032"],
+        "channels": {
+          "public": {"branch": "public"},
+          "conan-exiles-legacy": {"branch": "legacy", "enabled": false}
+        },
+        "knownBranches": []
+      }
+    }
+  },
+  "build": {"system": "script", "projectDir": "games/conan-exiles"},
+  "componentRoles": {
+    "bridge": {
+      "description": "The Node.js sidecar (bridge + the mod-helper chat process) that runs beside the dedicated server and speaks RCON; the only shipped artifact",
+      "artifactPattern": "takaro-conan-exiles-bridge-{target}-{version}.zip"
+    }
+  },
+  "legacyAssetAliases": {"takaro-conan-exiles-bridge.zip": "linux-25356024/bridge"},
+  "devServers": {"composeFile": "conan-exiles.yml"}
+}

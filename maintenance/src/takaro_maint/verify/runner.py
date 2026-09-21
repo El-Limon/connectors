@@ -324,6 +324,12 @@ class TargetRun:
         for mount in self.container_mounts():
             argv += ["-v", mount]
         argv += [self.resolved["containerRef"]]
+        # Some servers take settings the image exposes no environment variable for -- a world
+        # name on the command line, say -- so a game may append its own arguments after the
+        # image reference. Games that need none ship no hook and get the image's own Cmd.
+        command = getattr(self.adapter, "container_command", None)
+        if command is not None:
+            argv += [str(part) for part in command(self.resolved, self.data_dir)]
         self.container_name = name
         return argv
 
@@ -361,6 +367,11 @@ class TargetRun:
         bindings = container.inspect_port_bindings()
         with self.docker_log.open("a", encoding="utf-8") as handle:
             handle.write(f"HostConfig.PortBindings={bindings}\n")
+        # Anything that can only exist once the container does -- a sidecar joining its network
+        # namespace, say -- is started here, while `before_boot` still runs against the disk.
+        after_boot = getattr(self.hooks, "after_boot", None)
+        if after_boot is not None:
+            after_boot(self, container, self.takaro_env(ws_url, extra_env))
         return container
 
     # -- checks ---------------------------------------------------------------
