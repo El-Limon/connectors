@@ -23,15 +23,15 @@ from typing import Any
 import pytest
 
 from conftest import REPO_ROOT
-from fake_docker import artifacts_for, install_docker_stub
+from fake_docker import artifacts_for, install_docker_stub, process_is_gone
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 RETAINED = ("report.json", "docker.log", "fake-takaro.log", "server.log", "install.json", "deploy.json")
 
 
 @pytest.fixture
-def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    return install_docker_stub(tmp_path, monkeypatch)
+def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Path:
+    return install_docker_stub(tmp_path, monkeypatch, request)
 
 
 def verify(run: Any, wired: Any, artifacts: Path, out: Path, *extra: str, target: str = "fabric-26.2") -> Any:
@@ -289,6 +289,8 @@ def test_sigint_removes_every_container_and_the_data_dir_and_exits_130(
 
     assert process.returncode == 130
     assert name in (docker_stub / "removed").read_text()
+    # The whole point of the interrupt path: the hung server is dead, not merely disowned.
+    assert process_is_gone(int((docker_stub / name / "pid").read_text().strip()))
     assert not data_dir.exists()
     assert (out / "fabric-26.2" / "docker.log").is_file()
 

@@ -12,7 +12,7 @@ from ..install.ledger import check_ledger
 from . import add_selection_arguments, select_one
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("ledger", help="inspect the installed-target ledger")
     inner = parser.add_subparsers(dest="ledger_command", metavar="<subcommand>")
     check = inner.add_parser("check", help="verify a game directory against the catalog")

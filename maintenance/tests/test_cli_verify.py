@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +14,7 @@ import pytest
 import websockets
 
 from conftest import REPO_ROOT
-from fake_docker import artifacts_for, install_docker_stub
+from fake_docker import artifacts_for, install_docker_stub, process_is_gone
 
 PROTOCOL = json.loads((REPO_ROOT / "games/7d2d/tests/fixtures/generic-protocol.json").read_text())
 
@@ -241,8 +244,8 @@ def test_a_run_that_observed_nothing_is_not_a_pass() -> None:
 
 
 @pytest.fixture
-def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    return install_docker_stub(tmp_path, monkeypatch)
+def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Path:
+    return install_docker_stub(tmp_path, monkeypatch, request)
 
 
 def test_a_full_stubbed_run_reaches_protocol_level(
@@ -298,6 +301,48 @@ def test_a_full_stubbed_run_reaches_protocol_level(
     }
 
 
+def test_verify_runs_install_and_deploy_against_the_catalog_it_was_asked_about(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sub-commands resolve the target from ``--repo-root``, not from the real catalog.
+
+    Without the root passed on, ``install`` resolved ``fabric-26.2`` from the repository
+    catalog and downloaded the real 61 MB inputs; the fake upstream this test wired up was
+    never asked for a byte.
+    """
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+    cache = Path(os.environ["TAKARO_MAINT_CACHE"])
+
+    code, payload, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--target",
+        "fabric-26.2",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(out),
+        "--run-id",
+        "t1",
+        "--startup-timeout",
+        "60",
+        repo=wired.root,
+    )
+    assert code == 0, payload
+
+    installed = json.loads((out / "fabric-26.2" / "install.json").read_text())
+    _, wired_target, _ = run("targets", "resolve", "--game", "minecraft", "--target", "fabric-26.2", repo=wired.root)
+    _, real_target, _ = run("targets", "resolve", "--game", "minecraft", "--target", "fabric-26.2", repo=REPO_ROOT)
+    assert installed["target"] == "fabric-26.2"
+    assert installed["fingerprint"] == wired_target["fingerprint"]
+    assert installed["fingerprint"] != real_target["fingerprint"]
+
+    oversized = [path for path in cache.rglob("*") if path.is_file() and path.stat().st_size > 1024 * 1024]
+    assert oversized == [], f"a real upstream download reached the test cache: {oversized}"
+
+
 def test_the_container_publishes_no_host_ports(run: Any, wired: Any, tmp_path: Path, docker_stub: Path) -> None:
     artifacts = artifacts_for(run, wired, tmp_path)
     run(
@@ -349,6 +394,32 @@ def test_the_container_carries_the_run_labels(run: Any, wired: Any, tmp_path: Pa
     assert any(label.startswith("tm.ttl=") for label in labels)
 
 
+@pytest.mark.parametrize("label", ["tm.run=p1", "tm.ttl=0"])
+def test_a_label_the_harness_owns_is_refused_before_anything_starts(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, label: str
+) -> None:
+    artifacts = artifacts_for(run, wired, tmp_path)
+
+    code, payload, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(tmp_path / "reports"),
+        "--run-id",
+        "t1",
+        "--label",
+        label,
+        repo=wired.root,
+    )
+
+    assert code == 2
+    assert "--run-id" in payload["error"]
+    assert not (docker_stub / "argv.jsonl").exists()
+
+
 def test_the_container_is_always_removed(run: Any, wired: Any, tmp_path: Path, docker_stub: Path) -> None:
     artifacts = artifacts_for(run, wired, tmp_path)
     run(
@@ -368,6 +439,71 @@ def test_the_container_is_always_removed(run: Any, wired: Any, tmp_path: Path, d
 
     assert (docker_stub / "removed").is_file()
     assert "rm -f" in (docker_stub / "removed").read_text().replace("-f ", "-f ")
+    # `rm` means the container is gone, not merely that `rm` was called.
+    pid = int((docker_stub / "takaro-verify-minecraft-fabric-26.2-t1" / "pid").read_text().strip())
+    assert process_is_gone(pid)
+
+
+def test_a_failed_deploy_leaves_no_data_directory_behind(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    artifacts = artifacts_for(run, wired, tmp_path)
+    next(artifacts.glob("*.jar")).unlink()  # the manifest still names it, so deploy fails
+
+    code, payload, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(tmp_path / "reports"),
+        "--run-id",
+        "t1",
+        repo=wired.root,
+    )
+
+    assert code != 0
+    assert "deploy" in payload["error"]
+    assert list(scratch.glob("takaro-verify-*")) == []
+    assert not (docker_stub / "argv.jsonl").exists()
+
+
+def test_report_dirtiness_is_scoped_to_the_connector_paths(tmp_path: Path) -> None:
+    from takaro_maint.verify.report import repo_identity
+
+    root = tmp_path / "repo"
+    (root / "catalog" / "minecraft").mkdir(parents=True)
+    (root / "catalog" / "minecraft" / "game.json").write_text("{}\n")
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "x",
+        ],
+        check=True,
+    )
+
+    watched = ["games/minecraft", "catalog/minecraft"]
+    (root / "maintenance" / "tests" / "__pycache__").mkdir(parents=True)
+    (root / "maintenance" / "tests" / "__pycache__" / "x.pyc").write_bytes(b"")
+    assert repo_identity(root, watched)[2] is False
+
+    (root / "catalog" / "minecraft" / "stray.json").write_text("{}\n")
+    assert repo_identity(root, watched)[2] is True
 
 
 def test_a_failing_check_exits_eight_and_still_writes_a_report(

@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import output
 from ..exit_codes import OK, VERIFICATION, UsageError
-from ..verify.runner import RunOptions, check_ids, cleanup_orphans, run_targets
+from ..verify.runner import RESERVED_LABELS, RunOptions, check_ids, cleanup_orphans, run_targets
 from . import add_selection_arguments, select_many
 
 # What ``--takaro hosted`` reads from the environment. Only the NAMES are ever printed.
@@ -23,7 +23,7 @@ HOSTED_ENV = (
 )
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("verify", help="run a target's verification checks against a real server")
     add_selection_arguments(parser, multiple=True)
     parser.add_argument("--artifacts", required=True, help="a build output directory with a build-manifest.json")
@@ -35,7 +35,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--takaro", default="local", choices=["local", "hosted"])
     parser.add_argument("--run-id", default="local", help="label and container-name suffix for this run")
-    parser.add_argument("--label", action="append", default=[], help="extra docker label, repeatable")
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="extra docker label, repeatable (tm.run and tm.ttl are the harness's own)",
+    )
     parser.add_argument("--keep-on-failure", action="store_true", help="keep the data dir when a check fails")
     parser.add_argument("--cleanup-orphans", action="store_true", help="remove containers from an earlier run first")
     parser.add_argument(
@@ -51,6 +56,11 @@ def _verify(args: Any) -> int:
             raise UsageError(f"--takaro hosted needs these environment variables: {', '.join(missing)}")
     if args.parallel != 1:
         raise UsageError("--parallel is reserved; only one target at a time is supported today")
+    reserved = sorted({label.split("=", 1)[0] for label in args.label} & RESERVED_LABELS)
+    if reserved:
+        raise UsageError(
+            f"--label {', '.join(reserved)}: the harness sets that label itself (tm.run from --run-id); use another key"
+        )
 
     catalog, targets = select_many(args)
     artifacts = Path(args.artifacts).expanduser().resolve()

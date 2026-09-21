@@ -50,6 +50,9 @@ class FakeReleases:
     _corrupt: set[str] = field(default_factory=set, init=False)
     _server: http.server.ThreadingHTTPServer | None = field(default=None, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
+    cdn_requests: list[dict[str, str]] = field(default_factory=list)
+    _cdn: http.server.ThreadingHTTPServer | None = field(default=None, init=False)
+    _cdn_thread: threading.Thread | None = field(default=None, init=False)
 
     # -- injected failures ----------------------------------------------------
     def fail_uploads_after(self, count: int) -> None:
@@ -62,6 +65,47 @@ class FakeReleases:
     def corrupt_download(self, name: str) -> None:
         """Serve different bytes than were uploaded, as a damaged or swapped asset would."""
         self._corrupt.add(name)
+
+    def redirect_downloads(self) -> None:
+        """Answer asset downloads with a 302 to a second host, the way GitHub does.
+
+        The second host stands in for the signed CDN URL GitHub redirects to: it records every
+        request's headers and, like a signed URL, refuses any request that carries an
+        ``Authorization`` header with 403.
+        """
+        fake = self
+
+        class CdnHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                pass
+
+            def do_GET(self) -> None:  # noqa: N802
+                fake.cdn_requests.append({key: value for key, value in self.headers.items()})
+                if self.headers.get("Authorization"):
+                    body = b'{"message":"credentials are not allowed on a signed URL"}'
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                asset_id = int(urlparse(self.path).path.rsplit("/", 1)[-1])
+                payload = fake.blobs.get(asset_id, b"")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        self._cdn = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CdnHandler)
+        self._cdn_thread = threading.Thread(target=self._cdn.serve_forever, daemon=True)
+        self._cdn_thread.start()
+
+    @property
+    def cdn_url(self) -> str:
+        assert self._cdn is not None
+        host, port = self._cdn.server_address[:2]
+        return f"http://{host}:{port}"
 
     # -- state a test builds or inspects --------------------------------------
     def add_release(
@@ -293,6 +337,14 @@ class FakeReleases:
                             self._json(204, None)
                             return
                         if "octet-stream" in (self.headers.get("Accept") or ""):
+                            if fake._cdn is not None:
+                                self._send(
+                                    302,
+                                    b"",
+                                    "application/octet-stream",
+                                    {"Location": f"{fake.cdn_url}/cdn/{asset_id}"},
+                                )
+                                return
                             payload = fake.blobs[asset_id]
                             if asset["name"] in fake._corrupt:
                                 payload = payload + b"corrupted"
@@ -325,3 +377,8 @@ class FakeReleases:
             self._server.server_close()
         if self._thread is not None:
             self._thread.join(timeout=5)
+        if self._cdn is not None:
+            self._cdn.shutdown()
+            self._cdn.server_close()
+        if self._cdn_thread is not None:
+            self._cdn_thread.join(timeout=5)

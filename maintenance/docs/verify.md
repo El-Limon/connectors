@@ -29,7 +29,7 @@ takaro-maint verify --game G [--target ID … | --all-targets] [--platform P] \
 | `--startup-timeout` | How long the server gets to reach its "Done" line. 300 s locally, 600 s in CI. |
 | `--negative` | Also boot the sibling target's artifact and require it to be refused (see below). |
 | `--takaro hosted` | Register against a real Takaro instead of the local fake (see below). |
-| `--run-id`, `--label` | The container-name suffix and the extra docker labels this run's containers carry. |
+| `--run-id`, `--label` | The container-name suffix and the extra docker labels this run's containers carry. `tm.run` and `tm.ttl` are set by the harness (from `--run-id` and the clock) and are refused as `--label` keys, so a cleanup can always find the run. |
 | `--keep-on-failure` | Keep the throwaway data directory when a check failed, for a post-mortem. |
 | `--cleanup-orphans` | Remove containers a previous run with the same run id left behind, before starting. |
 | `--parallel` | Reserved; only `1` is accepted. Two invocations give real parallelism. |

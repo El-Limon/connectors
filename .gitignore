@@ -51,3 +51,6 @@ dev-servers/**/*.bak-*
 dev-servers/ADDITIONAL-SERVERS.md
 dev-servers/compose/*-*.yml
 !dev-servers/compose/conan-exiles.yml
+
+# Campaign runtime state (locks, lane reports) lives in the private workspace, never here
+.runtime/

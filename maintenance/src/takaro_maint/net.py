@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -17,6 +18,8 @@ from .exit_codes import IntegrityError, UpstreamUnavailable
 
 USER_AGENT = f"takaro-connectors-maint/{__version__} (+https://github.com/gettakaro/connectors)"
 TIMEOUT_SECONDS = 60
+TIMEOUT_ATTEMPTS = 3
+RETRY_DELAYS_SECONDS: tuple[float, ...] = (2.0, 6.0)
 
 
 class Transport(Protocol):
@@ -84,6 +87,13 @@ def sha256_file(path: Path) -> str:
     return _hash_file(path)["sha256"]
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """A read timeout arrives as TimeoutError, a connect timeout as URLError(reason=TimeoutError)."""
+    return isinstance(exc, TimeoutError) or (
+        isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+    )
+
+
 def _fetch_to(url: str, target: Path, headers: dict[str, str]) -> dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     attempts = 0
@@ -95,12 +105,17 @@ def _fetch_to(url: str, target: Path, headers: dict[str, str]) -> dict[str, Any]
             break
         except urllib.error.HTTPError as exc:
             raise UpstreamUnavailable(f"{url} returned HTTP {exc.code}", url=url, status=exc.code) from exc
-        except TimeoutError as exc:
-            if attempts >= 2:
-                raise UpstreamUnavailable(f"{url} timed out", url=url) from exc
-            output.debug(f"timeout on {url}, retrying the same URL once")
-        except urllib.error.URLError as exc:
-            raise UpstreamUnavailable(f"{url} is unreachable: {exc.reason}", url=url) from exc
+        except (TimeoutError, urllib.error.URLError) as exc:
+            if not _is_timeout(exc):
+                reason = getattr(exc, "reason", exc)
+                raise UpstreamUnavailable(f"{url} is unreachable: {reason}", url=url) from exc
+            if attempts >= TIMEOUT_ATTEMPTS:
+                raise UpstreamUnavailable(f"{url} timed out after {attempts} attempts", url=url) from exc
+            delay = RETRY_DELAYS_SECONDS[min(attempts - 1, len(RETRY_DELAYS_SECONDS) - 1)]
+            output.debug(
+                f"timeout on {url} (attempt {attempts} of {TIMEOUT_ATTEMPTS}); retrying the same URL in {delay:g}s"
+            )
+            time.sleep(delay)
         except OSError as exc:
             raise UpstreamUnavailable(f"{url} is unreachable: {exc}", url=url) from exc
     return _hash_file(target)

@@ -12,6 +12,11 @@
     "name": {"type": "string", "minLength": 1},
     "connector": {"type": "string", "minLength": 1, "description": "release-please component name"},
     "platforms": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}},
+    "defaultPlatform": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Which platform a command that names only --game resolves to, when several platforms each declare a default target. Must be one of platforms."
+    },
     "sources": {
       "type": "object",
       "minProperties": 1,

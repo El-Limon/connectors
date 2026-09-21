@@ -40,10 +40,12 @@ on:
         type: string
 
 # Serialize same-ref runs so consecutive main pushes don't race on the rolling
-# minecraft-dev release. Release runs (caller's workflow name) are in a different group.
+# minecraft-dev release. Release runs (a tag from release-please or a recovery
+# dispatch) sit in their own group and are never cancelled by a push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: minecraft-${{ github.ref }}-${{ inputs.tag || 'ci' }}
+  # A push during a release run queues behind it; only ordinary CI runs are cancelled.
+  cancel-in-progress: ${{ inputs.tag == '' }}
 
 jobs:
   test:

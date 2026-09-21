@@ -266,24 +266,40 @@ def publish_stable(
     release_id = int(release["id"])
     remote = {str(asset["name"]): asset for asset in client.assets(release_id)}
     ordered = sorted(assets, key=lambda a: a.name)
-    actions: list[dict[str, Any]] = []
-    for position, asset in enumerate(ordered):
+
+    # Every remote asset is compared before the first upload. A conflict found half-way through
+    # the list would otherwise leave the assets uploaded before it beside the old ones — a new
+    # SHA256SUMS next to an old archive — on a release that may already be public.
+    planned: list[tuple[LocalAsset, str]] = []
+    for asset in ordered:
         found = remote.get(asset.name)
         if found is None:
+            planned.append((asset, "upload"))
+        elif _remote_matches(client, found, asset):
+            planned.append((asset, "skipped-identical"))
+        else:
+            planned.append((asset, "conflict"))
+    conflicts = [asset.name for asset, state in planned if state == "conflict"]
+    if conflicts:
+        draft = bool(release.get("draft"))
+        hint = " The release is still a draft: delete its assets and re-run." if draft else ""
+        raise ConflictError(
+            f"conflicting bytes for {', '.join(conflicts)} on {tag}: the release already has a different file "
+            f"under that name; nothing was uploaded.{hint}",
+            tag=tag,
+            asset=conflicts[0],
+            conflicts=conflicts,
+            draft=draft,
+            assets=[_action(asset, state if state == "conflict" else "not-attempted") for asset, state in planned],
+        )
+
+    actions: list[dict[str, Any]] = []
+    for asset, state in planned:
+        if state == "upload":
             client.upload(str(release["upload_url"]), asset.path)
             actions.append(_action(asset, "uploaded"))
-            continue
-        if _remote_matches(client, found, asset):
+        else:
             actions.append(_action(asset, "skipped-identical"))
-            continue
-        rest = [_action(other, "not-attempted") for other in ordered[position + 1 :]]
-        raise ConflictError(
-            f"conflicting bytes for {asset.name} on {tag}: the release already has a different file "
-            "under that name; nothing further was uploaded",
-            tag=tag,
-            asset=asset.name,
-            assets=[*actions, _action(asset, "not-attempted"), *rest],
-        )
 
     body = merge_body(str(release.get("body") or ""), render_table(record))
     if body != str(release.get("body") or ""):

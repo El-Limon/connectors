@@ -22,7 +22,7 @@ MANIFEST_ATTRS = (
 TARGET_JSON = "META-INF/takaro-target.json"
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("artifact", help="inspect built artifacts")
     inner = parser.add_subparsers(dest="artifact_command", metavar="<subcommand>")
     validate = inner.add_parser("validate", help="check that files carry this target's identity")

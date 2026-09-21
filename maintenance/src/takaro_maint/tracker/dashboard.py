@@ -66,10 +66,10 @@ class Dashboard:
 
     # -- reading --------------------------------------------------------------
     def sources(self) -> dict[str, Any]:
-        return self.data.setdefault("sources", {})  # type: ignore[no-any-return]
+        return self.data.setdefault("sources", {})
 
     def source(self, key: str) -> dict[str, Any]:
-        return self.sources().setdefault(key, {})  # type: ignore[no-any-return]
+        return self.sources().setdefault(key, {})
 
     def checkpoint(self, key: str) -> Checkpoint | None:
         """``None`` means this source has never been initialised."""
