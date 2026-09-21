@@ -272,9 +272,9 @@ namespace Oxide.Plugins
             var serverId = payload["gameServerId"]?.Value<string>()
                            ?? payload["server"]?.Value<string>("id");
             if (serverId != null)
-                LogInfo($"Identified and connected, server ID: {serverId}");
+                LogInfo($"Identified successfully, server ID: {serverId}");
             else
-                LogInfo("Identified and connected");
+                LogInfo("Identified successfully");
         }
 
         private void SendResponse(string requestId, JToken payload, string error)
@@ -566,12 +566,34 @@ namespace Oxide.Plugins
                 arr.Add(new JObject
                 {
                     ["code"] = shortName,
-                    ["name"] = shortName,
+                    ["name"] = Humanize(shortName),
                     ["description"] = ""
                 });
             }
 
             return arr;
+        }
+
+        // Entity prefabs have no localised display name the way items do — `bear`,
+        // `scientistnpc_heavy`, `wolf2` is all the server knows them by. Takaro's
+        // catalogue is read by humans, so the short name is turned into one here rather
+        // than shipped raw; the untouched short name stays in `code`.
+        private static string Humanize(string shortName)
+        {
+            if (string.IsNullOrEmpty(shortName)) return shortName;
+
+            var parts = shortName.Split(new[] { '_', '-', '.' }, StringSplitOptions.RemoveEmptyEntries);
+            var words = new List<string>(parts.Length);
+            foreach (var part in parts)
+            {
+                if (part.Equals("npc", StringComparison.OrdinalIgnoreCase))
+                {
+                    words.Add("NPC");
+                    continue;
+                }
+                words.Add(char.ToUpperInvariant(part[0]) + part.Substring(1));
+            }
+            return words.Count == 0 ? shortName : string.Join(" ", words);
         }
 
         private JToken HandleListLocations()
