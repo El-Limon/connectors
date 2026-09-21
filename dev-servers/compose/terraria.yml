@@ -22,10 +22,10 @@ services:
       HOME: /tmp
       DOTNET_CLI_HOME: /tmp
     ports:
-      # Literal, like every other rig here: dev-servers/.env.example declares no port keys,
-      # so a ${...} port would leave the lint run's placeholder in a port spec.
-      - "7777:7777/tcp"
-      - "127.0.0.1:7878:7878"
+      # dev-servers/.env.example declares no port keys for this game, so both carry the
+      # default an operator gets without setting anything; an isolated run overrides them.
+      - "${TERRARIA_PORT:-7777}:7777/tcp"
+      - "127.0.0.1:${TERRARIA_REST_PORT:-7878}:7878"
     # The image entrypoint already sets -configpath /tshock -worldselectpath
     # /worlds -additionalplugins /plugins; these args autocreate the world so
     # the server never blocks on the interactive world-selection prompt.
@@ -68,15 +68,16 @@ services:
     working_dir: /bridge
     command: ["node", "dist/index.js"]
     environment:
-      BRIDGE_CONFIG: /bridge/TakaroConfig.txt
+      BRIDGE_CONFIG: /config/TakaroConfig.txt
       TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:-}"
       TSHOCK_TOKEN: "${TERRARIA_REST_TOKEN:-}"
       HOME: /tmp
     volumes:
       # Deployed by deploy-connector.sh; the config beside it is rendered by install.sh and
-      # is a bind-mounted FILE, so it must exist before this service starts.
+      # is a bind-mounted FILE, so it must exist before this service starts. It lands
+      # outside /bridge because docker cannot create a mountpoint inside a read-only mount.
       - ../_data/terraria/bridge/TakaroTerrariaBridge:/bridge:ro
-      - ../_data/terraria/bridge/TakaroConfig.txt:/bridge/TakaroConfig.txt:ro
+      - ../_data/terraria/bridge/TakaroConfig.txt:/config/TakaroConfig.txt:ro
       - ../_data/terraria/tshock/logs:/tshock/logs:ro
     labels:
       tm.run: "${TM_RUN:-}"

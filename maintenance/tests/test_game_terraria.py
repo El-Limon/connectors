@@ -948,11 +948,16 @@ def test_the_terraria_compose_file_runs_the_bridge_in_the_server_namespace() -> 
     if subprocess.run(["docker", "version"], capture_output=True, check=False).returncode != 0:
         pytest.skip("no docker on this host")
     environment = dict(os.environ)
-    referenced = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", (DS_ROOT / "compose" / "terraria.yml").read_text()))
+    body = (DS_ROOT / "compose" / "terraria.yml").read_text()
+    # Only the references with no inline default need a value; the ones that carry `:-`
+    # are exactly what an operator who set nothing would get, which is what this renders.
+    referenced = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", body))
     declared = (DS_ROOT / ".env.example").read_text()
     for name in sorted(referenced):
         if not re.search(rf"^{name}=.", declared, re.MULTILINE):
             environment[name] = "placeholder"
+    for name in ("TERRARIA_PORT", "TERRARIA_REST_PORT", "TERRARIA_CONTAINER_NAME"):
+        environment.pop(name, None)
     environment["TERRARIA_IMAGE"] = IMAGE_REF
     environment["TERRARIA_BRIDGE_IMAGE"] = "docker.io/library/node:22.23.2-bookworm-slim"
 
@@ -970,6 +975,14 @@ def test_the_terraria_compose_file_runs_the_bridge_in_the_server_namespace() -> 
     assert services["terraria"]["image"] == IMAGE_REF
     assert services["terraria-bridge"]["network_mode"] == "service:terraria"
     assert services["terraria-bridge"]["command"] == ["node", "dist/index.js"]
+    # The bridge's config is bound outside its read-only /bridge mount: docker cannot
+    # create a mountpoint inside a read-only mount, so a config under /bridge never boots.
+    assert services["terraria-bridge"]["environment"]["BRIDGE_CONFIG"] == "/config/TakaroConfig.txt"
+    targets = {volume["target"] for volume in services["terraria-bridge"]["volumes"]}
+    assert "/config/TakaroConfig.txt" in targets
+    # Unset, the ports are the defaults an operator gets; an isolated run overrides them.
+    published = {(port["published"], port["target"]) for port in services["terraria"]["ports"]}
+    assert published == {("7777", 7777), ("7878", 7878)}
 
 
 # -- the build plumbing and CI ---------------------------------------------------------------
@@ -1168,9 +1181,7 @@ def test_after_shutdown_hands_the_data_directory_back_to_the_caller(
     assert argv[-1] == "/target"
 
 
-def test_npms_own_dot_metadata_never_reaches_a_deployable_bridge_archive(
-    run: Any, pinned: Any, tmp_path: Path
-) -> None:
+def test_npms_own_dot_metadata_never_reaches_a_deployable_bridge_archive(run: Any, pinned: Any, tmp_path: Path) -> None:
     """``npm ci`` writes node_modules/.package-lock.json, and a deploy refuses that name.
 
     The bridge archive ships its production dependency, so the release script has to prune
