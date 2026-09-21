@@ -162,8 +162,9 @@ compatibility record is stamped from the source commit's own time. Then:
 
 * an asset that is already there with **identical** bytes is `skipped-identical` — no upload,
   no delete;
-* an asset that is there with **different** bytes is a conflict: exit 7, and nothing after it in
-  the sorted asset list is attempted;
+* an asset that is there with **different** bytes is a conflict: exit 7, and nothing is
+  uploaded — every remote asset is compared before the first upload, so a release that is
+  already public is left exactly as it was;
 * a release that is already published stays published (`alreadyPublished: true`), and no
   published release or tag is ever deleted on the stable path.
 
