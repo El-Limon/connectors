@@ -418,6 +418,23 @@ def test_a_report_for_another_revision_exits_seven(run: Any, inputs: Inputs, tmp
     assert "e" * 40 in payload["error"]
 
 
+def test_a_report_from_a_dirty_tree_is_refused_for_stable_and_recorded_with_allow_dirty(
+    run: Any, inputs: Inputs, tmp_path: Path
+) -> None:
+    inputs.rewrite_report("paper-1.21.11", source={"repo": REPO, "revision": inputs.commit, "dirty": True})
+
+    code, payload, _ = assemble(run, inputs, tmp_path / "stable", "--source-commit", inputs.commit)
+    assert code == 7
+    assert "paper-1.21.11" in payload["error"]
+    assert "dirty" in payload["error"]
+
+    out = tmp_path / "rolling"
+    code, _, err = assemble(run, inputs, out, "--allow-dirty", "--source-commit", inputs.commit, channel="rolling")
+    assert code == 0, err
+    record = json.loads((out / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
+    assert record["source"]["dirty"] is True
+
+
 def test_a_gameplay_requirement_cannot_be_satisfied(run: Any, inputs: Inputs, tmp_path: Path) -> None:
     record_path = inputs.root / "catalog" / CONNECTOR / "targets" / "fabric-26.2.json"
     record = json.loads(record_path.read_text())

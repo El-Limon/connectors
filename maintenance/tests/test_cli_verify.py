@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -470,6 +471,39 @@ def test_a_failed_deploy_leaves_no_data_directory_behind(
     assert "deploy" in payload["error"]
     assert list(scratch.glob("takaro-verify-*")) == []
     assert not (docker_stub / "argv.jsonl").exists()
+
+
+def test_report_dirtiness_is_scoped_to_the_connector_paths(tmp_path: Path) -> None:
+    from takaro_maint.verify.report import repo_identity
+
+    root = tmp_path / "repo"
+    (root / "catalog" / "minecraft").mkdir(parents=True)
+    (root / "catalog" / "minecraft" / "game.json").write_text("{}\n")
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "x",
+        ],
+        check=True,
+    )
+
+    watched = ["games/minecraft", "catalog/minecraft"]
+    (root / "maintenance" / "tests" / "__pycache__").mkdir(parents=True)
+    (root / "maintenance" / "tests" / "__pycache__" / "x.pyc").write_bytes(b"")
+    assert repo_identity(root, watched)[2] is False
+
+    (root / "catalog" / "minecraft" / "stray.json").write_text("{}\n")
+    assert repo_identity(root, watched)[2] is True
 
 
 def test_a_failing_check_exits_eight_and_still_writes_a_report(
