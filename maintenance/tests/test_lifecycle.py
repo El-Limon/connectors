@@ -208,19 +208,24 @@ class Rig(transitions.Rig):
         return entry.get("state")
 
 
-def target_for(root: Path, revision: str, *, platform: str = "fabric", status: str = "candidate") -> dict[str, Any]:
-    """A catalog record for ``revision``, cloned from the maintained Fabric target.
+_PLATFORM_SOURCE = {"fabric": "fabric-26.2", "paper": "paper-1.21.11", "neoforge": "neoforge-1.21.11"}
 
-    Both the revision and the Mojang input's version move, because the identity join reads
-    both and a record that disagrees with itself would match nothing.
+
+def target_for(root: Path, revision: str, *, platform: str = "fabric", status: str = "candidate") -> dict[str, Any]:
+    """A catalog record for ``revision`` on ``platform``, cloned from the shipped record of that platform.
+
+    Both the revision and the identity input's game version move, because the identity join reads
+    both and a record that disagrees with itself would match nothing. A Paper or NeoForge clone
+    carries no ``mojang-version`` input, exactly like the shipped records.
     """
-    record = read_target(root)
+    record = read_target(root, _PLATFORM_SOURCE[platform])
     was, now = str(record["id"]), f"{platform}-{revision}"
     record["id"] = now
     record["platform"] = platform
     record["revision"] = revision
     record["default"] = False
-    record["inputs"]["game"]["version"] = revision
+    spec = next(spec for spec in record["inputs"].values() if spec["kind"] in lifecycle.MOJANG_VERSION_FIELDS)
+    spec[lifecycle.MOJANG_VERSION_FIELDS[spec["kind"]]] = revision
     record["support"] = {"status": status, "since": "2026-09-17", "evidence": [], "notes": "test fixture"}
     for component in record.get("components", []):
         component["artifact"] = str(component["artifact"]).replace(was, now)
@@ -541,10 +546,80 @@ def test_identity_steam_matches_app_branch_buildid() -> None:
     assert lifecycle.matching_targets(STEAM_MARKER, [other_branch], game_id="enshrouded", ref="main") == []
 
 
+def _paper(revision: str = "26.3", *, game_version: str | None = None) -> dict[str, Any]:
+    return _record(
+        id=f"paper-{revision}",
+        platform="paper",
+        revision=revision,
+        inputs={
+            "loader": {
+                "kind": "paper-build",
+                "project": "paper",
+                "gameVersion": game_version or revision,
+                "loaderVersion": "7",
+            }
+        },
+    )
+
+
+def _neoforge(revision: str = "26.3") -> dict[str, Any]:
+    return _record(
+        id=f"neoforge-{revision}",
+        platform="neoforge",
+        revision=revision,
+        inputs={
+            "universal": {"kind": "http-file", "path": "/x/neoforge-universal.jar"},
+            "loader": {"kind": "neoforge-installer", "gameVersion": revision, "loaderVersion": "26.3.1"},
+        },
+    )
+
+
+def test_identity_paper_and_neoforge_match_a_mojang_marker_by_game_version() -> None:
+    """A Paper or NeoForge record has no Mojang input; its loader names the game version instead."""
+    records = [_record(), _paper(), _neoforge()]
+    matched = lifecycle.matching_targets(MOJANG_MARKER, records, game_id="minecraft", ref="main")
+    assert [target.id for target in matched] == ["fabric-26.3", "neoforge-26.3", "paper-26.3"]
+
+    # The record has to agree with itself, exactly like the Mojang rule.
+    paper_26_2 = [_paper(game_version="26.2")]
+    assert lifecycle.matching_targets(MOJANG_MARKER, paper_26_2, game_id="minecraft", ref="main") == []
+    # A different game version is a different issue.
+    assert lifecycle.matching_targets(MOJANG_MARKER, [_paper("26.2")], game_id="minecraft", ref="main") == []
+    # A Steam marker never matches a Mojang-side kind.
+    assert lifecycle.matching_targets(STEAM_MARKER, [_paper(), _neoforge()], game_id="minecraft", ref="main") == []
+
+
+def test_identity_the_shipped_paper_and_neoforge_records_identify_their_game_version(repo_root: Path) -> None:
+    """The regression the fixture-based tests missed: the catalog as shipped, not a clone of the Fabric record."""
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((repo_root / "catalog" / "minecraft" / "targets").glob("*.json"))
+    ]
+    for_1_21_11 = {**MOJANG_MARKER, "rev": "1.21.11"}
+    assert [t.id for t in lifecycle.matching_targets(for_1_21_11, records, game_id="minecraft", ref="main")] == [
+        "neoforge-1.21.11",
+        "paper-1.21.11",
+    ]
+    for_26_2 = {**MOJANG_MARKER, "rev": "26.2"}
+    assert [t.id for t in lifecycle.matching_targets(for_26_2, records, game_id="minecraft", ref="main")] == [
+        "fabric-26.2"
+    ]
+
+
 def test_identity_ignores_unknown_input_kinds() -> None:
     """A loader jar is a build detail. A record with no identity input identifies nothing."""
     record = _record(inputs={"loader": {"kind": "maven-artifact", "version": "26.3"}})
     assert lifecycle.matching_targets(MOJANG_MARKER, [record], game_id="minecraft", ref="main") == []
+    # A Fabric launcher is a build detail too: a Fabric record is identified by its Mojang input.
+    assert (
+        lifecycle.matching_targets(
+            MOJANG_MARKER,
+            [_record(inputs={"loader": {"kind": "fabric-launcher", "gameVersion": "26.3"}})],
+            game_id="minecraft",
+            ref="main",
+        )
+        == []
+    )
 
 
 def test_identity_skips_retired_targets() -> None:

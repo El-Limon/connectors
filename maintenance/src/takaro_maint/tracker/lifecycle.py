@@ -52,9 +52,16 @@ LIFECYCLE_END = "<!-- takaro-maint:lifecycle:end -->"
 LIFECYCLE_MARK = "<!-- takaro-maint:lifecycle="
 LIFECYCLE_MARK_END = " -->"
 
-#: Input kinds that can identify a target as the one a marker is about. Everything else in a
-#: record's ``inputs`` (a loader jar, an API jar) is a build detail, not an identity.
-IDENTITY_KINDS = ("mojang-version", "steam-depots")
+#: Input kinds that can identify a target as the one a marker is about. A Mojang marker names a
+#: game version; each Mojang-side kind records that version under its own field name. Everything
+#: else in a record's ``inputs`` (a Fabric launcher, an API jar, a universal jar) is a build
+#: detail, not an identity.
+MOJANG_VERSION_FIELDS: dict[str, str] = {
+    "mojang-version": "version",
+    "paper-build": "gameVersion",
+    "neoforge-installer": "gameVersion",
+}
+IDENTITY_KINDS: tuple[str, ...] = (*MOJANG_VERSION_FIELDS, "steam-depots")
 
 DASH = "—"
 
@@ -217,10 +224,10 @@ def _matches(marker: dict[str, str], record: dict[str, Any]) -> bool:
         return False
     kind = str(spec["kind"])
     rev = marker.get("rev")
-    if kind == "mojang-version":
+    if kind in MOJANG_VERSION_FIELDS:
         return (
             marker.get("provider") == "mojang"
-            and str(spec.get("version")) == rev
+            and str(spec.get(MOJANG_VERSION_FIELDS[kind])) == rev
             and str(record.get("revision")) == rev
         )
     if kind == "steam-depots":
