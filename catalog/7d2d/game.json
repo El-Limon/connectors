@@ -5,7 +5,22 @@
   "connector": "7d2d",
   "platforms": ["linux"],
   "sources": {
-    "steam": {"provider": "steam", "baseUrl": "https://store.steampowered.com"}
+    "steam": {
+      "provider": "steam",
+      "baseUrl": "https://store.steampowered.com",
+      "watch": {
+        "kind": "game",
+        "component": "7d2d",
+        "app": 294420,
+        "os": "linux",
+        "depots": ["294422"],
+        "channels": {
+          "public": {"branch": "public"},
+          "latest_experimental": {"branch": "experimental", "enabled": false}
+        },
+        "knownBranches": ["regex:^v[0-9]+(\\.[0-9]+)*$", "regex:^alpha[0-9]+(\\.[0-9]+)*$"]
+      }
+    }
   },
   "build": {"system": "script", "projectDir": "games/7d2d"},
   "componentRoles": {

@@ -88,7 +88,7 @@ def _log_path(cache: Path, game: str, target_id: str) -> Path:
 
 def _app_info_log(cache: Path, app: int) -> Path:
     """steamcmd's own log, beside DepotDownloader's."""
-    return cache / "steam" / "logs" / f"app_info-{app}.log"
+    return steamcmd.log_path(cache, app)
 
 
 def _steam_watch(game_id: str) -> dict[str, Any]:

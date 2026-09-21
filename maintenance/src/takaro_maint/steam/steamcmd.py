@@ -102,6 +102,11 @@ def command() -> list[str]:
     return shlex.split(os.environ.get(COMMAND_ENV) or DEFAULT_COMMAND)
 
 
+def log_path(cache: Path, app: int) -> Path:
+    """Where this tool's runs are teed, beside DepotDownloader's own logs."""
+    return cache / "steam" / "logs" / f"app_info-{app}.log"
+
+
 def iso(epoch: int) -> str:
     """A Steam timestamp as the one clock format observations and checkpoints use."""
     return datetime.fromtimestamp(int(epoch), tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
