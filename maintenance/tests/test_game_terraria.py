@@ -1162,3 +1162,32 @@ def test_after_shutdown_hands_the_data_directory_back_to_the_caller(
     assert f"{fake_run.data_dir}:/target" in argv
     assert f"{os.getuid()}:{os.getgid()}" in argv
     assert argv[-1] == "/target"
+
+
+def test_npms_own_dot_metadata_never_reaches_a_deployable_bridge_archive(
+    run: Any, pinned: Any, tmp_path: Path
+) -> None:
+    """``npm ci`` writes node_modules/.package-lock.json, and a deploy refuses that name.
+
+    The bridge archive ships its production dependency, so the release script has to prune
+    npm's bookkeeping or every deploy of a real build stops at the path rule.
+    """
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    make_zip(
+        directory / BRIDGE_ZIP,
+        "TakaroTerrariaBridge",
+        {"dist/index.js": "bridge", "package.json": "{}", "node_modules/.package-lock.json": "{}"},
+    )
+    manifest = manifest_for(run, pinned.root, directory)
+
+    code, payload, _ = deploy(run, pinned.root, dest, manifest)
+
+    assert code == 2, payload
+    assert ".package-lock.json" in payload["error"]
+    assert not (dest / "bridge" / "TakaroTerrariaBridge").exists()
+
+    release = (REPO_ROOT / "games" / "terraria" / "scripts" / "build-release.sh").read_text()
+    assert "find \"${STAGE}/TakaroTerrariaBridge/node_modules\" -name '.*' -prune -exec rm -rf {} +" in release

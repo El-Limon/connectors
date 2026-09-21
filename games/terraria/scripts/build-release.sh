@@ -65,6 +65,10 @@ cp -R ./bridge/dist ./bridge/node_modules ./bridge/package.json ./bridge/package
       ./bridge/TakaroConfig.example.txt "${STAGE}/TakaroTerrariaBridge/"
 cp ./README.md "${STAGE}/TakaroTerrariaBridge/"
 rm -rf "${STAGE}/TakaroTerrariaBridge/dist/__tests__"
+# Every path segment a deployed archive may carry has to start with an alphanumeric, and npm
+# leaves metadata that does not (node_modules/.package-lock.json, node_modules/.bin shims).
+# Running dist/index.js needs none of it, so it does not travel.
+find "${STAGE}/TakaroTerrariaBridge/node_modules" -name '.*' -prune -exec rm -rf {} +
 cat > "${STAGE}/TakaroTerrariaBridge/README.release.txt" <<EOF
 Takaro Terraria Bridge ${VERSION}
 
