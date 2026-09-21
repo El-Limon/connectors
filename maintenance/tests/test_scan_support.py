@@ -104,27 +104,43 @@ def add_release(
 
 
 def scan_repo(catalog_copy: Path, upstream: FakeUpstream) -> Path:
-    """Point the copied catalog at the fake upstream.
+    """Point the copied catalog at the fake upstream and disable every watch it cannot serve.
 
-    Most legacy scan scenarios serve only the recorded Mojang manifest. Keep framework
-    watches enabled only when the test upstream actually serves their listing endpoint;
-    otherwise those unrelated Fabric/Paper/NeoForge sources would 404 against the
-    Mojang-only fixture. Framework readiness tests populate those endpoints first, so
-    they still exercise the full multi-source path.
+    A scan walks the whole catalog, so any watched source the fixture does not answer for
+    would fail a scenario that has nothing to do with it. Rather than naming the games and
+    sources that exist today, decide per source from what the rig actually offers: a watch
+    survives only when its source was re-pointed at this upstream and the endpoint the
+    provider reads first is already served. Scenarios that do serve those endpoints -- the
+    framework readiness ones -- keep the full multi-source path, and a scenario that wants a
+    pruned watch back puts it back itself. Adding a game or a provider to the catalog
+    therefore never has to edit this helper.
     """
     point_at(catalog_copy, upstream.base_url)
-    game_file = catalog_copy / "catalog/minecraft/game.json"
-    game = json.loads(game_file.read_text(encoding="utf-8"))
     served_paths = set(getattr(upstream, "files", {}))
-    for source in game["sources"].values():
-        watch = source.get("watch")
-        if not watch or watch.get("kind") != "framework":
-            continue
-        sentinel = watch.get("projectPath") or watch.get("metadataPath") or watch.get("gamePath")
-        if sentinel not in served_paths:
-            source.pop("watch", None)
-    game_file.write_text(json.dumps(game, indent=2) + "\n", encoding="utf-8")
+    for game_file in sorted((catalog_copy / "catalog").glob("*/game.json")):
+        game = json.loads(game_file.read_text(encoding="utf-8"))
+        dropped = False
+        for source in (game.get("sources") or {}).values():
+            if not source.get("watch"):
+                continue
+            if source.get("baseUrl") != upstream.base_url or not _watch_is_served(source["watch"], served_paths):
+                source.pop("watch")
+                dropped = True
+        if dropped:
+            game_file.write_text(json.dumps(game, indent=2) + "\n", encoding="utf-8")
     return catalog_copy
+
+
+def _watch_is_served(watch: dict[str, Any], served_paths: set[str]) -> bool:
+    """Whether the rig answers the endpoint this watch's provider reads first.
+
+    Only a watch that names such an endpoint can be checked; one that reaches its upstream
+    some other way (a tool, a client library) is left to the scenario that configured it.
+    """
+    sentinel = (
+        watch.get("manifestPath") or watch.get("projectPath") or watch.get("metadataPath") or watch.get("gamePath")
+    )
+    return sentinel is None or sentinel in served_paths
 
 
 def frozen_clock(monkeypatch: pytest.MonkeyPatch, at: str = FROZEN_NOW) -> str:
@@ -238,6 +254,32 @@ def test_the_rig_serves_the_recorded_manifest(catalog_copy: Path, monkeypatch: p
             entry = next(item for item in releases if item["id"] == revision)
             assert entry["url"].endswith(path)
             assert entry["sha1"] == hashlib.sha1(harness.upstream.files[path]).hexdigest()
+
+
+def test_the_rig_disables_every_watch_it_cannot_serve(catalog_copy: Path) -> None:
+    """A watched source the rig does not answer for is disabled, in whichever game declares it.
+
+    Both reasons a watch cannot be served are exercised at once: the records this fixture
+    never re-points still carry their real upstream, and the one it does re-points is asked
+    for an endpoint nobody put on the fake upstream.
+    """
+    unserved = {"kind": "game", "component": "unserved", "manifestPath": "/nothing-serves-this.json"}
+    with FakeUpstream() as upstream:
+        mojang_upstream(upstream)
+        game_files = sorted((catalog_copy / "catalog").glob("*/game.json"))
+        assert len(game_files) > 1, "the copied catalog holds only one game, so cross-game pruning is untested"
+        for game_file in game_files:
+            game = json.loads(game_file.read_text(encoding="utf-8"))
+            for source in game["sources"].values():
+                source["watch"] = dict(unserved)
+            game_file.write_text(json.dumps(game, indent=2) + "\n", encoding="utf-8")
+
+        scan_repo(catalog_copy, upstream)
+
+        for game_file in game_files:
+            game = json.loads(game_file.read_text(encoding="utf-8"))
+            watched = [name for name, source in game["sources"].items() if "watch" in source]
+            assert watched == [], f"{game_file.parent.name} still watches {watched}"
 
 
 # -- golden renderings --------------------------------------------------------
