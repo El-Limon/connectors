@@ -32,6 +32,8 @@ frozen, managed Python 3.12 environment. Docker is needed for `verify` and for
 | `targets list [--game G] [--platform P] [--status …] [--rig-game ID] [--format json\|table\|gha]` | List targets. `gha` prints a build matrix. |
 | `targets resolve --game G [--target ID] [--format json\|env\|gha] [--prefix P] [--out FILE]` | The full resolution: fingerprint, image refs, artifact names, URLs and deployment environment. |
 | `install --game G [--target ID] --dest DIR` | Download and verify every pinned input, stage it, swap it into place, write the ledger. |
+| `steam pin --game G [--target ID] [--record-files PATH…] [--write]` | Read what Steam serves on the branch now, report which depots moved, and re-pin the target. |
+| `steam references --game G [--target ID] --dest DIR` | Fetch only the assemblies the build compiles against from the pinned manifests, into a per-fingerprint directory. |
 | `ledger check --game G [--target ID] --dest DIR` | Does this directory really hold that target, with the recorded bytes intact? |
 | `build --game G [--target ID \| --all-targets] --version V --out DIR [--toolchain host\|container]` | Build the artifacts, validate their identity, write `build-manifest.json`, `SHA256SUMS` and per-file `.meta.json`. |
 | `artifact validate --game G --target ID FILE…` | Does this file carry that target's identity? |
@@ -77,6 +79,7 @@ line behaves the same from anywhere.
 | `TAKARO_MAINT_CACHE` | Download cache (default `~/.cache/takaro-maint`). Also `--cache-dir`. |
 | `TAKARO_MAINT_GRADLE` | Override the build command (tests use a stub). |
 | `TAKARO_MAINT_DOCKER` | Override the docker binary (tests use a stub). |
+| `TAKARO_MAINT_DEPOTDOWNLOADER` | Override the pinned DepotDownloader executable (tests use a stub). |
 | `TAKARO_MAINT_REPO` | Repository for GitHub operations. Also `--repo`. |
 | `TAKARO_MAINT_GITHUB_API_URL` | GitHub API base. Also `--api-url`. |
 | `GH_TOKEN` | GitHub token; otherwise `gh auth token` is tried. |
@@ -102,4 +105,5 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [The catalog](../catalog/README.md) — what a target record is and how to add one.
 - [Discovery](docs/discovery.md) — how `scan` turns upstream releases into deduplicated maintenance issues.
 - [Runtime verification](docs/verify.md) — what `verify` boots, checks and reports, locally and in CI.
+- [Steam exact install](docs/steam-install.md) — pinned DepotDownloader, depot manifests, staged swap and rollback for Steam-delivered servers.
 - [Releases](docs/release.md) — the release channels, the asset names, the compatibility record and how a release is recovered.

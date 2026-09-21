@@ -1,9 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Runs the Generic Connector contract harness against one catalog target's assemblies.
+#
+# Usage: test-contract.sh [--target <catalog target id>]
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 FIXTURE="${PROJECT_ROOT}/tests/fixtures/generic-protocol.json"
+# shellcheck source=lib-target.sh
+. "${SCRIPT_DIR}/lib-target.sh"
+
+# The builder mounts the target's reference directory, so the target is resolved first.
+sevend2d_parse_target_flag "$@"
+sevend2d_resolve_target "${TARGET}"
 
 docker compose --project-directory "${PROJECT_ROOT}" run --rm --no-deps \
   --volume "${FIXTURE}:/tmp/generic-protocol.json:ro" \

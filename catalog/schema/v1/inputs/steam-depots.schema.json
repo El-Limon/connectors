@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/inputs/steam-depots.schema.json",
+  "title": "Steam depot set input",
+  "description": "A whole dedicated-server installation, pinned as one content manifest per Steam depot. Steam serves no download URL, so the bytes are identified by app, branch, build and manifest ids and acquired by the pinned DepotDownloader.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "source", "hashOrigin", "app", "branch", "buildid", "os", "arch", "depots", "files", "credentials"],
+  "properties": {
+    "kind": {"const": "steam-depots"},
+    "source": {"type": "string", "minLength": 1, "description": "A game.json source whose provider is steam."},
+    "hashOrigin": {"enum": ["upstream", "self-recorded"]},
+    "app": {"type": "integer", "minimum": 1},
+    "branch": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]*$",
+      "description": "The Steam branch the build was published on, e.g. public."
+    },
+    "buildid": {"type": "integer", "minimum": 1},
+    "os": {"enum": ["linux", "windows", "macos"]},
+    "arch": {"enum": ["64", "32"]},
+    "depots": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[0-9]+$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["manifest"],
+        "properties": {
+          "manifest": {"type": "string", "pattern": "^[0-9]+$"},
+          "size": {"type": "integer", "minimum": 0},
+          "files": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "The declared files: what install verifies after downloading and what the ledger records. A subset of the depot, chosen to identify the build.",
+      "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha256"],
+        "properties": {
+          "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "size": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "credentials": {
+      "description": "Environment variable NAMES only; a value never enters the catalog. null means the anonymous Steam login serves this app.",
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false, "required": ["branchPasswordEnv"], "properties": {"branchPasswordEnv": {"type": "string", "minLength": 1}}},
+        {"type": "object", "additionalProperties": false, "required": ["accountEnv"], "properties": {"accountEnv": {"type": "string", "minLength": 1}}}
+      ]
+    }
+  }
+}

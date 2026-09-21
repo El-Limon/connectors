@@ -1,10 +1,11 @@
-"""Steam: a placeholder so the Steam-based connectors have somewhere to land."""
+"""Steam: the provider behind every Steam-delivered dedicated server."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+from ..exit_codes import UsageError
 from .base import Provider, ProviderResult
 
 
@@ -18,7 +19,11 @@ class SteamProvider(Provider):
         dest: Path,
         cache: Path,
     ) -> Path:
-        raise NotImplementedError("Steam depot downloads arrive with the 7 Days to Die target issue")
+        del input_spec, source, dest, cache
+        raise UsageError(
+            "steam-depots inputs are installed as a whole by takaro-maint install; "
+            "the game adapter drives takaro_maint.steam.install"
+        )
 
     def input_url(self, input_spec: dict[str, Any], source: dict[str, Any]) -> str | None:
         """The pseudo-URL that names exactly the depot manifests an input pins.

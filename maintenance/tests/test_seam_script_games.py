@@ -116,10 +116,23 @@ STEAM_DEPOTS_SCHEMA = {
     "title": "Steam depot set (seam-test stand-in)",
     "type": "object",
     "additionalProperties": False,
-    "required": ["kind", "source", "app", "branch", "buildid", "os", "arch", "depots", "files"],
+    "required": [
+        "kind",
+        "source",
+        "hashOrigin",
+        "app",
+        "branch",
+        "buildid",
+        "os",
+        "arch",
+        "depots",
+        "files",
+        "credentials",
+    ],
     "properties": {
         "kind": {"const": "steam-depots"},
         "source": {"type": "string", "minLength": 1},
+        "hashOrigin": {"enum": ["upstream", "self-recorded"]},
         "app": {"type": "integer", "minimum": 1},
         "branch": {"type": "string", "minLength": 1},
         "buildid": {"type": "integer", "minimum": 1},
@@ -127,6 +140,7 @@ STEAM_DEPOTS_SCHEMA = {
         "arch": {"enum": ["64", "32"]},
         "depots": {"type": "object", "minProperties": 1, "additionalProperties": True},
         "files": {"type": "object", "minProperties": 1, "additionalProperties": True},
+        "credentials": {"type": ["object", "null"]},
     },
 }
 
@@ -166,6 +180,7 @@ def _target_record() -> dict[str, Any]:
             "server": {
                 "kind": "steam-depots",
                 "source": "steam",
+                "hashOrigin": "self-recorded",
                 "app": 294420,
                 "branch": "public",
                 "buildid": 24994542,
@@ -179,6 +194,7 @@ def _target_record() -> dict[str, Any]:
                     "bin/server": {"sha256": "b" * 64, "size": 14800},
                     "lib/Managed.dll": {"sha256": "c" * 64, "size": 2048},
                 },
+                "credentials": None,
             }
         },
         "runtime": {
