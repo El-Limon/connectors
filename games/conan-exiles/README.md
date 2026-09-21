@@ -1,8 +1,11 @@
 # Takaro Conan Exiles Connector
 
-A Node.js bridge (version **1.0.0**) that runs next to a Conan Exiles dedicated server and connects
-it to Takaro over RCON and the server's log files. Validated against a **Conan Exiles Enhanced**
-Linux dedicated server (SteamCMD app `443030`). Players do not install anything.
+A Node.js bridge (version **1.0.2**) that runs next to a Conan Exiles dedicated server and connects
+it to Takaro over RCON and the server's log files. Players do not install anything.
+
+It is built against one exact server build: **Conan Exiles Dedicated Server build 25356024**
+(Steam app `443030`, branch `public`, the native Linux Enhanced server). The bridge may run beside
+another build, but nothing here says it was proven there.
 
 ## Install
 
@@ -33,20 +36,25 @@ You need:
 
 > **About the Takaro Conan mod.** This repo contains a specification for a Takaro-owned
 > `TakaroConan.pak` under `mod/TakaroConanBridge/`, but **no `.pak` is built or shipped**. Building
-> it requires the Conan Exiles DevKit (Windows + Unreal cook toolchain), so there is nothing to
-> download. Everything below works without it; chat delivery uses Enhanced Pippi instead.
+> it needs the Conan Exiles Enhanced Dev Kit (Epic Games Store, Windows) and its Unreal cook
+> toolchain; no build host for it exists in this project, so **nothing in a release is that mod**
+> and there is nothing to download. Everything below works without it; chat delivery uses Enhanced
+> Pippi instead.
 
 ### 2. Download the bridge
 
-Download **`takaro-conan-exiles-bridge.zip`** from the `conan-exiles-v1.0.0` release on the releases
-page:
+Download **`takaro-conan-exiles-bridge-linux-25356024-<version>.zip`** from the latest
+`conan-exiles-vX.Y.Z` release on the releases page:
 
 > https://github.com/gettakaro/connectors/releases
 
 Direct link pattern:
-`https://github.com/gettakaro/connectors/releases/download/conan-exiles-v<version>/takaro-conan-exiles-bridge.zip`
+`https://github.com/gettakaro/connectors/releases/download/conan-exiles-v<version>/takaro-conan-exiles-bridge-linux-25356024-<version>.zip`
 
-Use `conan-exiles-v1.0.0` or newer. Do not use the `conan-exiles-dev` pre-release; that is an
+`takaro-conan-exiles-bridge.zip` is still published next to it and is the same bytes, so an old
+bookmark keeps working. The name in the middle is the server build the bridge was built against.
+
+Use `conan-exiles-v1.0.2` or newer. Do not use the `conan-exiles-dev` pre-release; that is an
 untested rolling build.
 
 The zip contains a single folder, `TakaroConanExiles/`. That whole folder is the bridge.
@@ -58,10 +66,11 @@ go inside the Conan game folder:
 
 ```
 <anywhere>/TakaroConanExiles/
-    dist/                      # the compiled bridge
+    dist/                      # the compiled bridge and the chat helper
     scripts/
     package.json
     package-lock.json
+    takaro-target.json         # which server build this package was built for
     TakaroConfig.example.txt
     README.md
     README.release.txt
@@ -144,9 +153,16 @@ Ask the bridge's own health endpoint on the server host:
 curl http://127.0.0.1:3010/health
 ```
 
-It reports the connection state and the `gameServerId` Takaro assigned. If the registration token
-was rejected, `/health` shows `takaroIdentifyError` and the bridge stops retrying until you fix the
-token.
+It reports the connection state, the `gameServerId` Takaro assigned, and under `target` the server
+build this package was built for. If the registration token was rejected, `/health` shows
+`takaroIdentifyError` and the bridge stops retrying until you fix the token.
+
+The bridge logs the same identity on its first line, which is the quickest way to tell two installs
+apart:
+
+```text
+Takaro target: linux-25356024 (<fingerprint>) revision 25356024 connector 1.0.2 source <commit>
+```
 
 And in Takaro, the game server shows as **online** and lists your online players. If it stays
 offline, check, in order: the `registrationToken` in `TakaroConfig.txt`, that RCON accepts your
@@ -166,11 +182,17 @@ Status below comes from the recorded capability data and the live checks run on 
 real player connected. Anything that was never exercised in a live test says so.
 ✅ = works, ⚠️ = works with a caveat or is unproven, ❌ = does not work.
 
+The bridge's own end-to-end test suite re-runs the protocol rows on every build against a fake
+Conan RCON server and a fake Takaro: identify, reachability, the player list, a console command,
+the chat refusal, reconnect after a dropped socket and shutdown. That is a protocol proof, not a
+gameplay one — a row that needs a real client, a real player or Enhanced Pippi stays ⚠️ below
+until somebody checks it in game.
+
 | What | | Notes |
 |---|---|---|
-| Connection & heartbeat | ✅ | The bridge registers with Takaro and reachability checks succeed against the live server. |
-| Server restart / reconnect | ⚠️ | The bridge is built to reconnect, but recovery after a Conan restart or a network outage was not verified in a live test. |
-| Player list | ✅ | Names and Steam64 ids, read from Conan's `listplayers`. This is how Takaro loads players for Conan. |
+| Connection & heartbeat | ✅ | The bridge registers with Takaro and reachability checks succeed against the live server. Re-proven on build 25356024: the bridge identified with hosted Takaro and `testReachability` came back `connectable: true`. |
+| Server restart / reconnect | ⚠️ | Reconnect after a dropped socket is proven — the bridge test closes the socket with `1001` and the bridge identifies again, and on build 25356024 it recovered from three real `1006` closes during startup. Recovery after a *Conan* restart is still unverified. |
+| Player list | ✅ | Names and Steam64 ids, read from Conan's `listplayers`. This is how Takaro loads players for Conan. Re-proven empty on build 25356024; the populated case is the June live check. |
 | Single player lookup | ✅ | Looking up one player by their game id returns the same data as the player list. |
 | Player location | ⚠️ | Only with `databasePath` set: coordinates are read from Conan's save database. Without it, Takaro gets `0,0,0`. |
 | Player inventory | ⚠️ | Only with `databasePath` set: read from the save database. Without it, the inventory comes back empty. |
@@ -182,12 +204,12 @@ real player connected. Anything that was never exercised in a live test says so.
 | Whisper a player | ⚠️ | Pippi accepted the direct message and reported it sent; it was not confirmed on a client, and it needs the player's Conan **character** name to resolve. |
 | Give an item | ⚠️ | Spawns the item through Conan's admin relay and the server reports success; the player must be **online**, and the item actually landing in their inventory was not confirmed in game. |
 | Teleport a player | ⚠️ | Triggers Conan's teleport streaming for an **online** player; the move was not confirmed on a client. |
-| Run a console command | ✅ | Commands are sent over RCON and the raw output comes back to Takaro. |
+| Run a console command | ✅ | Commands are sent over RCON and the raw output comes back to Takaro. Re-proven on build 25356024: `help` through Takaro returned the server's full RCON command list. |
 | Kick a player | ⚠️ | The command exists on the server and the bridge sends it, but no live kick was performed. |
 | Ban a player (timed and permanent) | ⚠️ | Same: the ban command is wired up but was never executed against a live player. |
 | Unban a player | ⚠️ | Same: wired up, never executed live. |
 | Ban list | ⚠️ | Reads Conan's `listbans`. Verified against an empty list; output from a server with many bans is the weaker case and Conan's format varies by version. |
-| Shut the server down | ⚠️ | The bridge sends Conan's shutdown command, but no live shutdown was performed. |
+| Shut the server down | ✅ | Proven on build 25356024: Takaro's shutdown reached the server over RCON and the server process exited cleanly (code 0). It is **slow** — about four and a half minutes of unloading and saving between the command and `LogExit: Exiting.`, with no output for most of it. Do not assume it failed. |
 | Player joined event | ⚠️ | Derived from changes in the player list, so it can lag by up to one poll (10 s by default). Not confirmed arriving in Takaro in a live test. |
 | Player left event | ⚠️ | Same as joins: derived from the player list, not confirmed live. |
 | Player chat event | ⚠️ | See "Chat messages from players" — Enhanced Pippi only. |
@@ -212,6 +234,10 @@ real player connected. Anything that was never exercised in a live test says so.
 - **Conan's RCON throttles you.** Polling faster than the default 10 s, or running several tools
   against the same server at once, trips Conan's RCON karma and requests start being denied.
 - **No map.** Takaro's API does not support map tiles for Generic-connector servers.
+- **Shutdown takes minutes.** On build 25356024 the server closed its net driver
+  immediately, then spent about four and a half minutes unloading and saving — logging
+  nothing for most of it — before exiting. Give it five minutes before treating a Takaro
+  shutdown as failed, and set any stop timeout around it accordingly.
 
 ---
 
