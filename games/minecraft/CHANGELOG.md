@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.0](https://github.com/gettakaro/connectors/compare/minecraft-v0.1.1...minecraft-v0.2.0) (2026-09-21)
+
+
+### Features
+
+* **minecraft:** multiversion targets and portable maintenance — [#148](https://github.com/gettakaro/connectors/issues/148) phase 1 ([#239](https://github.com/gettakaro/connectors/issues/239)) ([c53b1d3](https://github.com/gettakaro/connectors/commit/c53b1d3b9aa6b5ade55abf5790d81a64ea283c3c))
+
+
+### Miscellaneous Chores
+
+* retire the legacy per-game compose files in favour of dev-servers ([#146](https://github.com/gettakaro/connectors/issues/146)) ([1f20486](https://github.com/gettakaro/connectors/commit/1f20486e470230c3c5ebb531f5827aa94ae4ba67))
+
+
+### Documentation
+
+* make connector READMEs the source of takaro.io game docs ([#218](https://github.com/gettakaro/connectors/issues/218)) ([b45d6cd](https://github.com/gettakaro/connectors/commit/b45d6cd682a61b11d485b1724e79b1e0b61e5305))
+
 ## [0.1.1](https://github.com/gettakaro/connectors/compare/minecraft-v0.1.0...minecraft-v0.1.1) (2026-09-16)
 
 
