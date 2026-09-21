@@ -47,7 +47,6 @@ publish() {
 
   : "${connector:?--connector is required}"
   : "${channel:?--channel is required}"
-  : "${tag:?--tag is required}"
 
   if [ "$channel" = "none" ] || [ -z "$tag" ]; then
     echo "publish-release: nothing to publish for ${connector}"
