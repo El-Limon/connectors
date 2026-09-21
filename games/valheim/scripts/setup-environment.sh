@@ -3,7 +3,7 @@
 #
 #   * the reference assemblies `build.references` selects, fetched from the pinned Steam
 #     depot manifests by `takaro-maint steam references` -- never a branch head, never a
-#     whole depot, never `app_update`;
+#     whole depot, and never an update to whatever Steam serves today;
 #   * the BepInExPack the target pins, downloaded from its exact versioned URL and checked
 #     against the sha256 in the record -- never Thunderstore's moving `latest`.
 #

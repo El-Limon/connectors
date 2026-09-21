@@ -16,9 +16,11 @@ services:
       args:
         TOOLCHAIN: "${VALHEIM_TOOLCHAIN:?run scripts/setup-environment.sh first}"
     volumes:
-      - ./:/app
-      # Read-only, for scripts/lib/package.sh: the release zips are packaged in here because
-      # the host has no zip and the bytes must not depend on who built them.
+      # The whole repository, read-only, with this game's directory writable inside it. The
+      # build needs the repository (scripts/lib/package.sh packages the release zips here
+      # because the bytes must not depend on who built them, and the connector's own tests
+      # read the workflow and the catalog record), and it writes only under games/valheim.
       - ../..:/repo:ro
-    working_dir: /app
+      - ./:/repo/games/valheim
+    working_dir: /repo/games/valheim
     command: ["bash", "-c", "echo 'Builder container ready' && tail -f /dev/null"]

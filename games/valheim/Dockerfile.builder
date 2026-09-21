@@ -7,13 +7,16 @@ FROM ${TOOLCHAIN}
 # No i386 runtime and no SteamCMD: the server files this plugin compiles against are fetched
 # by `takaro-maint steam references` from the pinned depot manifests, on the host, before the
 # build ever enters this image.
+# python3 is not optional tooling here: setup-environment.sh unpacks the BepInEx pack with
+# it, and both behaviour harnesses build their fixtures with it.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl file jq ripgrep unzip zip \
+  && apt-get install -y --no-install-recommends \
+     ca-certificates curl file jq python3 ripgrep unzip zip \
   && rm -rf /var/lib/apt/lists/*
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
     NUGET_PACKAGES=/tmp/nuget
 
-WORKDIR /app
+WORKDIR /repo/games/valheim
 CMD ["bash", "-c", "echo 'Builder container ready' && tail -f /dev/null"]

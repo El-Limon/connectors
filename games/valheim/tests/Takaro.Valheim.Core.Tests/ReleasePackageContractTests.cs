@@ -61,15 +61,21 @@ public sealed class ReleasePackageContractTests
         var workflow = ReadRepositoryFile(".github/workflows/valheim.yml");
         var game = ReadRepositoryFile("catalog/valheim/game.json");
 
-        // The archives are named by the catalog target now, so the script and the harness
-        // name the two roles rather than two fixed file names.
-        foreach (var source in new[] { harness, release })
-        {
-            StringAssert.Contains(source, "takaro-valheim-plugin");
-            StringAssert.Contains(source, "takaro-valheim-companion");
-        }
+        // The release script no longer spells either archive name: it takes both from the
+        // resolved target, one key per role, so a re-pin renames the artifacts on its own.
+        StringAssert.Contains(release, "VALHEIM_ARTIFACT_SERVER_PLUGIN");
+        StringAssert.Contains(release, "VALHEIM_ARTIFACT_CLIENT_COMPANION");
+        Assert.IsFalse(
+            release.Contains("takaro-valheim-plugin", StringComparison.Ordinal),
+            "the release script must not hard-code an archive name the catalog owns.");
 
-        // The old names survive as publisher aliases, declared in one place.
+        // The harness still finds one archive per role by name, whatever the target is.
+        StringAssert.Contains(harness, "takaro-valheim-plugin");
+        StringAssert.Contains(harness, "takaro-valheim-companion");
+
+        // Both patterns and both legacy aliases are declared in one place: the game record.
+        StringAssert.Contains(game, "takaro-valheim-plugin-{target}-{version}.zip");
+        StringAssert.Contains(game, "takaro-valheim-companion-{target}-{version}.zip");
         StringAssert.Contains(game, "\"takaro-valheim-plugin.zip\"");
         StringAssert.Contains(game, "\"takaro-valheim-companion.zip\"");
         StringAssert.Contains(game, "server-plugin");

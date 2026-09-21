@@ -276,6 +276,15 @@ esac
 
 # --------------------------------------------------------------------------- the harness
 
+# Every VALHEIM_* value this harness cares about is one it sets itself. A caller may already
+# have the resolved target in its environment -- build-release.sh exports it before running
+# the C# suite, which runs this file -- and an inherited VALHEIM_BEPINEX_SHA256 or
+# VALHEIM_TARGET would quietly replace a fixture with the real pin. So the harness starts
+# from a clean slate.
+while IFS= read -r inherited; do
+  [ -n "$inherited" ] && unset "$inherited"
+done < <(compgen -v VALHEIM_ 2>/dev/null || true)
+
 VALHEIM_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
 SETUP_SCRIPT="$VALHEIM_DIR/scripts/setup-environment.sh"
 MANAGED_ASSEMBLY_FIXTURE="${MANAGED_ASSEMBLY_FIXTURE:-$VALHEIM_DIR/src/Takaro.Valheim.Core/bin/Debug/net8.0/Takaro.Valheim.Core.dll}"
