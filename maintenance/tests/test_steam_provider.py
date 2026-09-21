@@ -402,6 +402,7 @@ def test_steam_pin_without_metadata_is_unchanged(run: Any, steam: Any, repo: Pat
 # the real fake tool answering as steamcmd. What is asserted is what a maintainer sees:
 # exit codes, the report on stdout, and the issues the tracker ends up holding.
 import test_scan_support as scan_support  # noqa: E402
+from conftest import REPO_ROOT  # noqa: E402
 from fake_github import FakeGitHub  # noqa: E402
 from takaro_maint import channels  # noqa: E402
 from takaro_maint.providers import steam as steam_provider  # noqa: E402
@@ -466,6 +467,19 @@ def set_watch(root: Path, watch: dict[str, Any]) -> None:
     record = json.loads(path.read_text(encoding="utf-8"))
     record["sources"]["steam"]["watch"] = watch
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
+def restore_watch(root: Path) -> None:
+    """Put the shipped Steam watch block back into a catalog copy that dropped it.
+
+    A rig built for another game's fixture is free to prune the watch blocks it cannot
+    serve, and one of them is this game's. These scenarios are precisely about a Steam
+    source sitting beside that fixture, so they ask for it back — from the record the
+    repository actually ships, never from a literal, so the block under test is the one
+    that ships.
+    """
+    shipped = json.loads((REPO_ROOT / "catalog" / GAME / "game.json").read_text(encoding="utf-8"))
+    set_watch(root, dict(shipped["sources"]["steam"]["watch"]))
 
 
 def enable_experimental(root: Path) -> None:
@@ -834,6 +848,7 @@ def test_a_failing_steam_source_keeps_the_other_sources_progressing(
 ) -> None:
     """A source that could not be read is retried next run, and quarantines nothing."""
     with readiness_rig.rig(catalog_copy, monkeypatch) as harness:
+        restore_watch(harness.root)
         steam.env(FAKE_STEAMCMD_FAIL="1")
 
         code, payload, err = harness.scan(run, "--bootstrap", "--publish")
@@ -859,6 +874,7 @@ def test_a_steam_issue_carries_no_other_games_readiness_table(
     fake_steamcmd.move_head(steam.document, "public", 25100000, {"294422": SECOND_MANIFEST}, timeupdated=1788300000)
     steam.serve()
     with readiness_rig.rig(catalog_copy, monkeypatch) as harness:
+        restore_watch(harness.root)
         code, _, err = harness.scan(run, "--bootstrap", "--publish")
 
         assert code == 0, err

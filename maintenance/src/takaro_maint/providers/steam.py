@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -324,7 +325,7 @@ class SteamProvider(Provider):
             promoted_from = self._promoted_from(checkpoint, rev, name)
             if promoted_from:
                 facts["promotedFrom"] = promoted_from
-            rolled_back_from = channels.head_event(checkpoint, (name, name), rev, _revs_of(name))
+            rolled_back_from = channels.head_event(checkpoint, (watch.component, name), rev, _revs_of(name))
             if rolled_back_from:
                 facts["rollbackFrom"] = rolled_back_from
                 rev = channels.rollback_rev(rev, rolled_back_from)
@@ -523,7 +524,7 @@ def _seen(checkpoint: dict[str, Any] | None) -> list[tuple[str, str]]:
     return entries
 
 
-def _revs_of(branch: str) -> Any:
+def _revs_of(branch: str) -> Callable[[str], bool]:
     """Which checkpoint revisions belong to one branch: the ones whose head ends in it."""
 
     def predicate(rev: str) -> bool:
