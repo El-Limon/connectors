@@ -43,11 +43,11 @@ class ReleaseClient:
                 return None
             raise
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.github.token}",
-            "User-Agent": f"takaro-connectors-maint/{__version__}",
-        }
+    def _authorise(self, request: urllib.request.Request) -> None:
+        # Unredirected: urllib forwards ordinary headers to a redirect target, and an asset
+        # download is a 302 to a signed CDN URL that must never see the bearer token.
+        request.add_unredirected_header("Authorization", f"Bearer {self.github.token}")
+        request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
 
     # -- releases -------------------------------------------------------------
     def list_releases(self) -> list[dict[str, Any]]:
@@ -134,8 +134,7 @@ class ReleaseClient:
         base = upload_url.split("{", 1)[0]
         url = f"{base}?name={_quote(file.name)}"
         request = urllib.request.Request(url, data=file.read_bytes(), method="POST")
-        for key, value in self._headers().items():
-            request.add_header(key, value)
+        self._authorise(request)
         request.add_header("Content-Type", "application/octet-stream")
         try:
             with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT_SECONDS) as response:  # noqa: S310
@@ -154,8 +153,7 @@ class ReleaseClient:
         """The asset's bytes, through the API so a draft release's assets are reachable too."""
         url = f"{self.github.api_url}/repos/{self.repo}/releases/assets/{asset['id']}"
         request = urllib.request.Request(url, method="GET")
-        for key, value in self._headers().items():
-            request.add_header(key, value)
+        self._authorise(request)
         request.add_header("Accept", "application/octet-stream")
         try:
             with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT_SECONDS) as response:  # noqa: S310
