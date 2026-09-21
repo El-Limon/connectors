@@ -249,7 +249,12 @@ jobs:
           {
             echo "### verify ${{ inputs.connector }}/${{ matrix.target.id }}"
             if [ -f "$report" ]; then
-              jq -r '"level **\(.level)** · outcome **\(.outcome)** · source `\(.source.revision[0:12])` · fingerprint `\(.target.fingerprint[0:16])` · image `\(.runtime.image.digest)` · runtime \(.runtime.loader) \(.runtime.loaderVersion) / \(.runtime.gameVersion)\n\n| check | status | ms |\n|---|---|---|"' "$report"
+              jq -r '
+                "level **\(.level)** · outcome **\(.outcome)** · source `\(.source.revision[0:12])`"
+                + " · fingerprint `\(.target.fingerprint[0:16])` · image `\(.runtime.image.digest)`"
+                + " · runtime \(.runtime.loader) \(.runtime.loaderVersion) / \(.runtime.gameVersion)"
+                + "\n\n| check | status | ms |\n|---|---|---|"
+              ' "$report"
               jq -r '.checks[] | "| \(.id) | \(.status) | \(.durationMs) |"' "$report"
             else
               echo "no report was written (the run failed before verification started)"
