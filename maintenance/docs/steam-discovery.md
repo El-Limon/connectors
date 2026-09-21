@@ -85,8 +85,10 @@ is transient in a way a retry would fix.
 
 ### Timeouts
 
-The default timeout is 120 seconds, which is minutes rather than seconds because a cold
-steamcmd downloads about 40 MB of itself before it answers anything at all.
+The default timeout is 300 seconds, which is minutes rather than seconds because a cold
+steamcmd downloads about 40 MB of itself before it answers anything at all. That is not a
+generous margin on a guess: a cold container run of app 294420 takes about two minutes,
+and a 120-second limit was measured timing out on it.
 
 ### The log
 

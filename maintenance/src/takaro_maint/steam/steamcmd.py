@@ -41,8 +41,9 @@ from . import vdf
 COMMAND_ENV = "TAKARO_MAINT_STEAMCMD"
 DEFAULT_COMMAND = "steamcmd"
 
-#: Minutes, because a cold steamcmd downloads itself before it answers.
-DEFAULT_TIMEOUT = 120.0
+#: Minutes, because a cold steamcmd downloads itself before it answers. Measured: a cold
+#: container run of app 294420 takes about two minutes, and 120 s was not enough for it.
+DEFAULT_TIMEOUT = 300.0
 DEFAULT_ATTEMPTS = 2
 
 
