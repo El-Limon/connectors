@@ -9,13 +9,17 @@ bytes instead of three scripts that drift.
 ```
 maintenance/bin/takaro-maint targets list
 maintenance/bin/takaro-maint targets resolve --game minecraft --target fabric-26.2
-maintenance/bin/takaro-maint install --game minecraft --dest /srv/minecraft
-maintenance/bin/takaro-maint build --game minecraft --version 0.1.1 --out dist
-maintenance/bin/takaro-maint deploy --game minecraft --dest /srv/minecraft --from dist/build-manifest.json
-maintenance/bin/takaro-maint verify --game minecraft --artifacts dist --out reports
+maintenance/bin/takaro-maint install --game minecraft --target fabric-26.2 --dest /srv/minecraft
+maintenance/bin/takaro-maint build --game minecraft --target fabric-26.2 --version 0.1.1 --out dist
+maintenance/bin/takaro-maint deploy --game minecraft --target fabric-26.2 --dest /srv/minecraft --from dist/build-manifest.json
+maintenance/bin/takaro-maint verify --game minecraft --target fabric-26.2 --artifacts dist --out reports
 ```
 
 `just maint <args>` is the same thing from the repository root.
+
+A game has one default target per platform (`catalog/README.md`), so a Minecraft command names
+its `--target`, or `--platform fabric|paper|neoforge` to take that platform's default; `--game`
+alone is ambiguous and exits 3 saying so.
 
 ## Requirements
 

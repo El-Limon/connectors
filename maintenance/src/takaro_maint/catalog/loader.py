@@ -101,7 +101,7 @@ class Catalog:
         target_id: str | None = None,
         platform: str | None = None,
     ) -> Target:
-        """``--target`` always wins; otherwise the single ``default: true`` record."""
+        """``--target`` wins; else the single ``default: true`` record of the game, or of ``platform``."""
         game = self.game(game_id)
         candidates = [t for t in game.targets if platform is None or t.platform == platform]
         if target_id is not None:
@@ -117,7 +117,8 @@ class Catalog:
         if not defaults:
             raise TargetError(f"{scope} declares no default target; pass --target")
         names = ", ".join(sorted(t.id for t in defaults))
-        raise TargetError(f"{scope} declares {len(defaults)} default targets ({names}); pass --target")
+        hint = "pass --target" if platform else "pass --target, or --platform to take one platform's default"
+        raise TargetError(f"{scope} declares {len(defaults)} default targets ({names}); {hint}")
 
     def selectable(
         self,
