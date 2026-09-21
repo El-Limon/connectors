@@ -66,16 +66,29 @@ def _deploy(args: Any) -> int:
 
         install_dir = dest / paths.safe_relative(component["installDir"], field="components[].installDir")
         install_dir.mkdir(parents=True, exist_ok=True)
-        for existing in sorted(install_dir.iterdir()):
-            if not existing.is_file() or existing.name == row["file"]:
-                continue
-            if existing.name in LEGACY_NAMES or any(existing.name.startswith(p) for p in LEGACY_PREFIXES):
-                existing.unlink()
-                removed.append(f"{component['installDir']}/{existing.name}")
+        superseded = [
+            existing
+            for existing in sorted(install_dir.iterdir())
+            if existing.is_file()
+            and existing.name != row["file"]
+            and (existing.name in LEGACY_NAMES or any(existing.name.startswith(p) for p in LEGACY_PREFIXES))
+        ]
 
+        # Stage, fsync and swap before removing anything: a copy that dies halfway (ENOSPC,
+        # permissions, a kill) must leave the previously deployed connector in place rather than
+        # a directory with no connector at all and a ledger that still describes the old one.
         staged = install_dir / (row["file"] + ".tmp")
-        shutil.copy2(source, staged)
+        try:
+            shutil.copy2(source, staged)
+            with staged.open("rb") as handle:
+                os.fsync(handle.fileno())
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
         os.replace(staged, install_dir / row["file"])
+        for existing in superseded:
+            existing.unlink()
+            removed.append(f"{component['installDir']}/{existing.name}")
         relative = f"{component['installDir']}/{row['file']}"
         deployed.append({"role": role, "path": relative, "sha256": row["sha256"]})
         output.info(f"deployed {relative} ({row['sha256'][:16]}…)")

@@ -52,7 +52,8 @@ def test_the_verify_job_consumes_the_build_artifact_by_target_name() -> None:
 
     assert artifact in build, "the build leg no longer uploads under the name verify downloads"
     assert artifact in verify
-    assert '--game "${{ inputs.connector }}"' in verify
+    assert '--game "$IN_CONNECTOR"' in verify
+    assert "IN_CONNECTOR: ${{ inputs.connector }}" in verify
     assert '--target "${{ matrix.target.id }}"' in verify
     assert "--artifacts dist" in verify
     assert "--out reports" in verify
@@ -164,7 +165,7 @@ def run_bodies(text: str) -> list[str]:
     bodies: list[str] = []
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        match = re.match(r"^(\s*)run:\s*(.*)$", line)
+        match = re.match(r"^(\s*)(?:-\s+)?run:\s*(.*)$", line)
         if not match:
             continue
         indent, rest = len(match.group(1)), match.group(2)
@@ -195,3 +196,17 @@ def test_the_minecraft_workflow_expands_no_input_inside_a_shell_body() -> None:
     for body in run_bodies(text):
         assert "${{ inputs." not in body, body
         assert "github.event.inputs" not in body, body
+
+
+def test_no_dispatch_input_is_expanded_inside_a_shell_body() -> None:
+    """``${{ inputs.x }}`` in a ``run:`` body is free text pasted into a shell on a token-holding runner.
+
+    The safe form is an ``env:`` entry the shell reads as ``$VAR``, which release-params.sh
+    already uses. This covers the reusable workflow as well as its callers, because the callers'
+    dispatch values arrive here as workflow inputs.
+    """
+    for name in (*CONNECTOR_WORKFLOWS, "connector-release"):
+        text = (REPO_ROOT / ".github/workflows" / f"{name}.yml").read_text()
+        for body in run_bodies(text):
+            assert "${{ inputs." not in body, f"{name}: {body}"
+            assert "github.event.inputs" not in body, f"{name}: {body}"
