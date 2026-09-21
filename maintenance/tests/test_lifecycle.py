@@ -809,6 +809,76 @@ def test_a_candidate_on_main_is_awaiting_release_and_a_candidate_in_the_release_
         )
 
 
+def test_a_candidate_on_the_ref_is_never_released_however_the_release_labels_it(
+    run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Promotion on the ref is part of what the issue asks for, and is not fingerprinted."""
+    with lifecycle_rig(catalog_copy, monkeypatch) as harness:
+        assert harness.scan(run, "--bootstrap", "--publish")[0] == 0
+        number = int(harness.issue_with(kind="support", rev="26.3")["number"])
+        record = target_for(catalog_copy, "26.3", status="candidate")
+        harness.put_target_on_main(record)
+        # The release says maintained; the catalog has not been promoted. A target's support
+        # status is deliberately outside its fingerprint, so this matches on identity.
+        stable_release(harness, "minecraft-v0.2.0", "0.2.0", {"fabric-26.3": record})
+
+        code, payload, stderr = harness.reconcile(run, "--publish")
+
+        assert code == 0, stderr
+        assert harness.state_of() == "awaiting-release"
+        assert str(harness.issue_with(kind="support", rev="26.3")["state"]) == "open"
+        assert "catalog on main has fabric-26.3 (candidate)" in reasons_of(payload, number)
+
+
+def test_a_release_missing_a_component_role_is_not_released(
+    run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``components`` are outside the fingerprint, so a new role has to be checked by name."""
+    with lifecycle_rig(catalog_copy, monkeypatch) as harness:
+        assert harness.scan(run, "--bootstrap", "--publish")[0] == 0
+        number = int(harness.issue_with(kind="support", rev="26.3")["number"])
+        shipped = target_for(catalog_copy, "26.3", status="maintained")
+        stable_release(harness, "minecraft-v0.2.0", "0.2.0", {"fabric-26.3": shipped})
+
+        # The ref gains a second component. The fingerprint does not move, so the release
+        # still matches on identity while shipping only half of what the target now asks for.
+        on_ref = json.loads(json.dumps(shipped))
+        on_ref["components"].append(
+            {"role": "companion", "artifact": "takaro-minecraft-companion-26.3-{version}.jar", "installDir": "mods"}
+        )
+        assert fp.fingerprint(on_ref) == fp.fingerprint(shipped)
+        harness.put_target_on_main(on_ref)
+
+        code, payload, stderr = harness.reconcile(run, "--publish")
+
+        assert code == 0, stderr
+        assert harness.state_of() == "awaiting-release"
+        assert "minecraft-v0.2.0 ships no companion artifact for fabric-26.3" in reasons_of(payload, number)
+
+
+def test_a_lifecycle_block_with_no_end_marker_is_left_alone(
+    run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Half a block is unrecognisable. Rewriting to end-of-body would delete what follows."""
+    with lifecycle_rig(catalog_copy, monkeypatch) as harness:
+        assert harness.scan(run, "--bootstrap", "--publish")[0] == 0
+        number = int(harness.issue_with(kind="support", rev="26.3")["number"])
+        assert harness.reconcile(run, "--publish")[0] == 0
+        issue = harness.issue_with(kind="support", rev="26.3")
+        issue["body"] = str(issue["body"]).replace(lifecycle.LIFECYCLE_END, "") + "\nmy notes live here\n"
+        body_before = str(issue["body"])
+        patches_before = harness.patches(number)
+
+        harness.open_pr(12, f"Refs #{number}")
+        code, payload, stderr = harness.reconcile(run, "--publish")
+
+        assert code == 0, stderr
+        assert [entry["reason"] for entry in payload["issues"]] == ["unrecognised-body"]
+        assert str(issue["body"]) == body_before
+        assert "my notes live here" in str(issue["body"])
+        assert harness.patches(number) == patches_before
+
+
 def test_a_stale_fingerprint_on_main_keeps_awaiting_release(
     run: Any, catalog_copy: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -846,6 +916,16 @@ def test_two_platforms_release_only_when_both_ship(
         assert harness.state_of() == "awaiting-release"
         assert payload["issues"][0]["targets"] == ["fabric-26.3", "paper-26.3"]
         assert "minecraft-v0.2.0 does not list paper-26.3" in reasons_of(payload, number)
+
+        # Once both ship, the Release row names both platforms' artifacts, not just the first.
+        harness.front.releases.releases.clear()
+        stable_release(harness, "minecraft-v0.2.0", "0.2.0", {"fabric-26.3": fabric, "paper-26.3": paper})
+        code, payload, stderr = harness.reconcile(run, "--publish")
+
+        assert code == 0, stderr
+        assert harness.state_of() == "released"
+        shipped = [item["name"] for item in harness.lifecycle_json()["release"]["artifacts"]]
+        assert shipped == sorted(_artifact_names(fabric, "0.2.0")[0][1:] + _artifact_names(paper, "0.2.0")[0][1:])
 
 
 def test_an_interrupted_close_is_completed_on_the_next_run(
@@ -912,6 +992,9 @@ def test_a_dashboard_conflict_after_issue_writes_exits_nine_and_the_rerun_is_a_n
         assert code == 0, stderr
         assert [entry["reason"] for entry in payload["issues"]] == ["unchanged"]
         assert payload["dashboard"]["updated"] is True
+        # The body was already right, so nothing was PATCHed — but the dashboard the failed
+        # run never managed to save is repaired all the same.
+        assert harness.work_state() == "awaiting-release"
 
 
 def test_an_issue_that_moved_during_the_run_is_skipped(

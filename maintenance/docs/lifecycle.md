@@ -89,6 +89,10 @@ The **Lifecycle block** sits *after* `<!-- takaro-maint:owned:end -->`:
 <!-- takaro-maint:lifecycle:end -->
 ```
 
+A Lifecycle block that begins and never ends is treated as unrecognisable, like a body with
+no state token: rewriting it to end-of-body would silently delete whatever a person wrote
+below the damaged marker.
+
 It sits outside the owned block because **the scan regenerates the owned block in full on
 every run**: anything written inside it other than the state token is erased by the next
 scan. Everything outside both blocks belongs to whoever typed it and is preserved byte for
@@ -168,9 +172,17 @@ Otherwise, per matched target, every one of these is a named reason on the issue
 - `<tag> ships <id> as candidate; promote it to maintained`
 - `<id> verified only to <executed>, requires <required>` — `required` comes from the record
   in the catalog, not from the release's claim about itself
+- `<tag> ships no <role> artifact for <id>` — a target's `components` are **not** part of its
+  fingerprint, so a target that gained a role on the ref still matches a release that only
+  ever shipped the old set; the roles are checked by name as well
 - per artifact: `asset missing: <name>`, `SHA256SUMS disagrees for <name>`,
   `size differs for <name>`, `GitHub digest differs for <name>`
 - the same presence and checksum test for the verification report the record names
+
+`released` additionally requires every matched target to be `maintained` **on the ref**, not
+only in the release record. Support status is deliberately outside the fingerprint, so a
+release claiming `maintained` cannot stand in for the catalog promotion the issue's own
+acceptance checklist ends with.
 
 No reasons means `released`.
 
@@ -186,7 +198,8 @@ No reasons means `released`.
   and the dashboard is only written when its data actually changed.
 - **The dashboard is compare-and-swap.** A concurrent edit exits 9 rather than overwriting
   someone's checkpoints. Issue writes already made in that run stand, and the rerun is a
-  no-op for them.
+  no-op for them — but it still mirrors their state into the dashboard, so the entry the
+  failed run never managed to save is repaired rather than left stale forever.
 - **No comments are ever posted**, so "no duplicate comments" holds by construction.
 - **`declined` is terminal.** A closed-as-not-planned issue is never written, even when the
   release facts would otherwise close it.

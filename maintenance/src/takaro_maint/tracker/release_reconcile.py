@@ -193,6 +193,15 @@ def verdict(facts: ReleaseFacts | None, target: MainTarget, *, connector: str) -
     if verification.get("outcome") != "pass" or rank(executed) < rank(required):
         reasons.append(f"{target.id} verified only to {executed}, requires {required}")
 
+    # A target's ``components`` are not part of its fingerprint, so a target that gained a
+    # second component on the ref still matches a release that only ever shipped the first
+    # one. The roles the catalog asks for are checked against the roles the release shipped.
+    shipped_roles = {str(artifact.get("role") or "") for artifact in entry.get("artifacts") or []}
+    for component in target.record.get("components") or []:
+        role = str(component["role"])
+        if role not in shipped_roles:
+            reasons.append(f"{tag} ships no {role} artifact for {target.id}")
+
     for artifact in entry.get("artifacts") or []:
         reasons += _artifact_reasons(facts, str(artifact["name"]), str(artifact["sha256"]), int(artifact["size"]))
     report = verification.get("report")

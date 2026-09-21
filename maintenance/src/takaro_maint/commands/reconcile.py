@@ -298,6 +298,14 @@ def _one_issue(
         entry["reason"] = "unrecognised-body"
         return
 
+    # The dashboard mirrors the decision whether or not the body needs a PATCH. A run that
+    # wrote the issue and then lost the dashboard compare-and-swap leaves a body that is
+    # already right and a dashboard that is not; without this the rerun would report
+    # "unchanged" and never repair it.
+    work = board.data.setdefault("work", {})
+    held = work.get(str(entry["identity"]))
+    work[str(entry["identity"])] = {"issue": number, "state": decision.state, "since": decision.since}
+
     closing = decision.state == lifecycle.RELEASED
     if new_body == body and not closing:
         entry["reason"] = "unchanged"
@@ -306,9 +314,6 @@ def _one_issue(
     entry["action"] = "close" if closing else "update"
     action = "close-issue" if closing else "update-issue"
     report["plan"].append({"action": action, "issue": number, "state": decision.state})
-    work = board.data.setdefault("work", {})
-    held = work.get(str(entry["identity"]))
-    work[str(entry["identity"])] = {"issue": number, "state": decision.state, "since": decision.since}
     if not args.publish:
         return
 
@@ -338,16 +343,25 @@ def _combined(
     *,
     connector: str,
 ) -> ReleaseVerdict | None:
-    """One verdict over every matched target: released only when the release ships them all."""
+    """One verdict over every matched target: released only when the release ships them all.
+
+    The detail is merged across the targets rather than taken from the first, so the issue's
+    Release row names every artifact the run actually proved, not one platform's worth of them.
+    """
     if not targets:
         return None
     reasons: list[str] = []
     release: dict[str, Any] | None = None
+    artifacts: list[dict[str, Any]] = []
     for target in targets:
         one = verdict(facts, target, connector=connector)
         reasons += [reason for reason in one.reasons if reason not in reasons]
-        if one.ok and release is None:
-            release = one.release
+        if not one.ok or one.release is None:
+            continue
+        release = release or {**one.release}
+        artifacts += [item for item in one.release["artifacts"] if item not in artifacts]
+    if release is not None:
+        release["artifacts"] = sorted(artifacts, key=lambda item: str(item["name"]))
     return ReleaseVerdict(not reasons, reasons, release)
 
 

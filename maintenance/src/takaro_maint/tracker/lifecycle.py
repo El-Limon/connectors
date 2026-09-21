@@ -281,7 +281,11 @@ def decide(facts: Facts) -> Decision:
     ignored = [ref for ref in facts.prs if not ref.counts]
     reasons: list[str] = [f"{target_id} is retired on {facts.catalog_ref}" for target_id in facts.retired]
 
-    if facts.targets and facts.release is not None and facts.release.ok:
+    # ``maintained`` on the catalog ref is part of what the issue asks for — its acceptance
+    # checklist ends with the promotion — and a target's support status is deliberately not
+    # part of its fingerprint, so a release claiming ``maintained`` cannot stand in for it.
+    promoted = all(target.status == "maintained" for target in facts.targets)
+    if facts.targets and promoted and facts.release is not None and facts.release.ok:
         return _decided(facts, RELEASED, reasons, counting, ignored, facts.release.release)
 
     if facts.targets:
@@ -397,8 +401,9 @@ def _write_state(body: str, state: str) -> str | None:
 def apply(body: str, decision: Decision) -> str | None:
     """``body`` with the state token and the Lifecycle block brought up to date.
 
-    ``None`` means the body has no owned block or no state token in it — someone edited it
-    beyond recognition, and guessing where the state used to live would destroy their writing.
+    ``None`` means the body has no owned block, no state token in it, or a Lifecycle block that
+    begins and never ends — someone edited it beyond recognition, and guessing where the block
+    used to stop would silently delete whatever they wrote below it.
     """
     updated = _write_state(body or "", decision.state)
     if updated is None:
@@ -406,7 +411,9 @@ def apply(body: str, decision: Decision) -> str | None:
     block = render_block(decision)
     before, begin, rest = updated.partition(LIFECYCLE_BEGIN)
     if not begin:
-        # No block yet, or a human deleted its markers: append one fresh block, never a second.
+        # No block yet, or a human deleted both markers: append one fresh block, never a second.
         return before.rstrip("\n") + "\n\n" + block + "\n"
     _, end, after = rest.partition(LIFECYCLE_END)
-    return before + block + (after if end else "\n")
+    if not end:
+        return None
+    return before + block + after
