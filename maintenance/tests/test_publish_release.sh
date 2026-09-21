@@ -95,9 +95,8 @@ contains "channel none is a no-op" "$(cat "$WORK/out.$CASE")" "nothing to publis
 [ ! -s "$WORK/log.$CASE" ] || fail "channel none is a no-op" "takaro-maint was called"
 pass "channel none is a no-op"
 
-# 2. An empty tag is the documented no-op. Before the one-line fix the `: "${tag:?...}"` guard
-#    above it aborted with exit 1, so this branch was unreachable from the release workflow,
-#    which passes --tag "${{ inputs.tag }}" verbatim.
+# 2. An empty tag is the documented no-op: the release workflow passes --tag "${{ inputs.tag }}"
+#    verbatim, so an unset input must reach here and publish nothing rather than abort.
 CASE_ENV=()
 root="$(fixture emptytag)"
 run_publish 0 "an empty tag is a no-op" "$root" \

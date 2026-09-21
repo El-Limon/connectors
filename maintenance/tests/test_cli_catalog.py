@@ -83,7 +83,7 @@ def test_an_input_must_match_its_kind_schema(run: Any, catalog_copy: Path) -> No
 
 
 def test_an_unknown_input_kind_is_rejected(run: Any, catalog_copy: Path) -> None:
-    """The target schema no longer lists the kinds, so the kind gate is the only thing left."""
+    """The target schema does not enumerate input kinds, so the kind gate is the only check on them."""
     record = read_target(catalog_copy)
     record["inputs"]["loader"]["kind"] = "not-a-real-kind"
     write_target(catalog_copy, record)

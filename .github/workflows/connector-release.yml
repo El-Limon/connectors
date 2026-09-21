@@ -322,7 +322,7 @@ jobs:
       - run: uv sync --frozen --project maintenance
 
       # One job assembles and publishes the whole set. Fork PRs get a read-only token, so they
-      # can't publish or comment; they build for validation only (accepted limitation).
+      # can't publish or comment; they build for validation only.
       - name: Assemble, publish and verify the complete set
         if: ${{ inputs.publish == 'stable' || inputs.publish == 'rolling' || (inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository) }}
         env:
