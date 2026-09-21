@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/build-systems/script.schema.json",
+  "title": "Script build",
+  "description": "A connector built by a shell script tracked in this repository, inside a pinned container toolchain.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["system", "script", "toolchain", "deps"],
+  "properties": {
+    "system": {"const": "script"},
+    "script": {
+      "type": "string",
+      "pattern": "^games/[a-z0-9-]+/scripts/[A-Za-z0-9._-]+\\.sh$",
+      "description": "Repository-relative path of the build script; validation requires the file to exist."
+    },
+    "toolchain": {"$ref": "../inputs/container-image.schema.json"},
+    "references": {
+      "type": "array",
+      "description": "Selectors for the pinned server files the build compiles against.",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "deps": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["coordinate", "sha256"],
+        "properties": {
+          "coordinate": {"type": "string", "pattern": "^[^:]+:[^:]+:[^:]+$"},
+          "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "resolvedCoordinate": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

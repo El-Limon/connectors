@@ -11,6 +11,7 @@ import contextlib
 import datetime as dt
 import importlib
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -49,12 +50,18 @@ CHECK_IDS = (
 
 
 def game_hooks(game: str) -> ModuleType | None:
-    """``takaro_maint.games.<game>.verify``, when the game ships verification hooks.
+    """A ``verify`` module in the game adapter's own package, when it ships one.
 
-    A game without one verifies with the base checks alone; nothing here is a hard dependency.
+    The hooks are looked up next to the adapter rather than at a path spelled out here, so
+    a game whose package is not named after its catalog id is found too. A game without
+    hooks verifies with the base checks alone; nothing here is a hard dependency.
     """
     try:
-        return importlib.import_module(f"takaro_maint.games.{game}.verify")
+        adapter = adapter_for(game)
+    except UsageError:
+        return None
+    try:
+        return importlib.import_module(f"{type(adapter).__module__}.verify")
     except ModuleNotFoundError:
         return None
 
@@ -252,13 +259,28 @@ class TargetRun:
         )
         return read_manifest(manifest_path)
 
-    def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
-        takaro_env = {
+    def takaro_env(self, ws_url: str, extra_env: dict[str, str] | None = None) -> dict[str, str]:
+        """What this run tells the connector about the Takaro it should talk to."""
+        return {
             "TAKARO_WS_URL": ws_url,
             "TAKARO_IDENTITY_TOKEN": f"takaro-verify-{self.options.run_id}",
             "TAKARO_REGISTRATION_TOKEN": self.registration_token,
             **(extra_env or {}),
         }
+
+    def container_mounts(self) -> list[str]:
+        """The ``-v`` arguments this game's server needs; one data dir bound at /data by default."""
+        mounts = getattr(self.adapter, "container_mounts", None)
+        if mounts is None:
+            return [f"{self.data_dir}:/data"]
+        return [str(mount) for mount in mounts(self.resolved, self.data_dir)]
+
+    def ready_line(self) -> re.Pattern[str]:
+        """The log line that says this game's server finished booting."""
+        return getattr(self.hooks, "READY_LINE", base_checks.DONE_LINE)  # type: ignore[no-any-return]
+
+    def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
+        takaro_env = self.takaro_env(ws_url, extra_env)
         environment = {
             "UID": str(os.getuid()),
             "GID": str(os.getgid()),
@@ -287,7 +309,9 @@ class TargetRun:
         argv += ["--add-host", "host.docker.internal:host-gateway", "--memory", "3g"]
         for key, value in sorted(environment.items()):
             argv += ["-e", f"{key}={value}"]
-        argv += ["-v", f"{self.data_dir}:/data", self.resolved["containerRef"]]
+        for mount in self.container_mounts():
+            argv += ["-v", mount]
+        argv += [self.resolved["containerRef"]]
         self.container_name = name
         return argv
 
@@ -316,6 +340,11 @@ class TargetRun:
         # port-binding inspection would otherwise find an empty list and leak it.
         self.containers.append(container)
         self.container = container
+        # Anything the server has to find on disk before it starts -- a config file the
+        # game reads instead of the environment, say -- is written here.
+        before_boot = getattr(self.hooks, "before_boot", None)
+        if before_boot is not None:
+            before_boot(self, self.takaro_env(ws_url, extra_env))
         container.start()
         bindings = container.inspect_port_bindings()
         with self.docker_log.open("a", encoding="utf-8") as handle:
@@ -371,6 +400,7 @@ class TargetRun:
                         alive,
                         self.data_dir,
                         ledger_inputs,
+                        self.ready_line(),
                     )
                 )
             else:

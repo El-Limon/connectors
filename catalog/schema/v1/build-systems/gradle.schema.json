@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/build-systems/gradle.schema.json",
+  "title": "Gradle build",
+  "description": "A connector built by this repository's Gradle build, one target project per catalog target.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["system", "gradleProject", "javaRelease", "gradleJvm", "gradleVersion", "toolchain", "plugins", "deps"],
+  "properties": {
+    "system": {"const": "gradle"},
+    "gradleProject": {"type": "string", "minLength": 1},
+    "javaRelease": {"type": "integer", "minimum": 8},
+    "gradleJvm": {"type": "integer", "minimum": 8},
+    "gradleVersion": {"type": "string", "minLength": 1},
+    "toolchain": {"$ref": "../inputs/container-image.schema.json"},
+    "plugins": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+    "deps": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["coordinate", "sha256"],
+        "properties": {
+          "coordinate": {"type": "string", "pattern": "^[^:]+:[^:]+:[^:]+$"},
+          "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "resolvedCoordinate": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

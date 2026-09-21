@@ -96,10 +96,15 @@ def check_startup(
     alive: Any,
     data_dir: Path,
     ledger_inputs: list[dict[str, Any]],
+    ready_line: re.Pattern[str] = DONE_LINE,
 ) -> CheckResult:
-    """The server finished booting, and it did not replace the bytes we pinned."""
+    """The server finished booting, and it did not replace the bytes we pinned.
+
+    ``ready_line`` is the line that says this game's server is up; the default is the one
+    a vanilla Minecraft server writes.
+    """
     with _Timer() as timer:
-        found = wait_for_line(log_file, DONE_LINE, timeout, alive)
+        found = wait_for_line(log_file, ready_line, timeout, alive)
         intact: list[str] = []
         replaced: list[str] = []
         for entry in ledger_inputs:

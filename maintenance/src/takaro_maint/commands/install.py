@@ -53,10 +53,18 @@ def _world_dirs(dest: Path, preserve: list[str]) -> list[Path]:
 def _install(args: Any) -> int:
     catalog, target = select_one(args)
     resolved = resolve(catalog, target)
+    adapter = adapter_for(target.game)
+
+    # A game whose inputs are not a list of downloads (a Steam depot set, say) owns the
+    # whole installation: staging, swap, ledger, --dry-run and --rollback included.
+    custom_install = getattr(adapter, "install", None)
+    if custom_install is not None:
+        return int(custom_install(catalog, target, resolved, args))
+
     game_record = catalog.game(target.game).record
     dest = Path(args.dest).expanduser().resolve()
     cache = paths.cache_dir()
-    preserve = adapter_for(target.game).preserve_globs(resolved)
+    preserve = adapter.preserve_globs(resolved)
 
     if args.rollback:
         raise UsageError(

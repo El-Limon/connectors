@@ -173,7 +173,11 @@ def resolve(catalog: Catalog, target: Target, *, prefix: str = "TAKARO_TARGET") 
             urls[f"{name}.manifest"] = ids.resolved_url(game.record, spec["source"], spec["manifest"]["path"])
             urls[f"{name}.server"] = ids.resolved_url(game.record, spec["server"]["source"], spec["server"]["path"])
         else:
-            urls[name] = ids.resolved_url(game.record, spec["source"], spec["path"])
+            # An input whose mechanism names no URL (a set of depot manifests, say)
+            # contributes none rather than failing the whole resolution.
+            url = ids.input_url(game.record, spec)
+            if url:
+                urls[name] = url
 
     resolved: dict[str, Any] = dict(record)
     resolved["fingerprint"] = target.fingerprint
