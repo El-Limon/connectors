@@ -148,8 +148,13 @@ def verify_release(
     *,
     connector: str | None = None,
     expect: dict[str, Path] | None = None,
+    tag: str | None = None,
 ) -> dict[str, Any]:
-    """Download every asset of ``release`` and prove it is the set the record describes."""
+    """Download every asset of ``release`` and prove it is the set the record describes.
+
+    ``tag`` is the tag the record has to claim, which is the release's own tag everywhere but a
+    staging draft, where the record already names the tag the draft is about to become.
+    """
     remote = {str(asset["name"]): asset for asset in client.assets(int(release["id"]))}
     if "SHA256SUMS" not in remote:
         raise VerificationFailed(f"{release['tag_name']} has no SHA256SUMS", tag=release["tag_name"])
@@ -166,6 +171,24 @@ def verify_release(
         )
     record_bytes = client.download(remote[candidates[0]])
     record = compat_record.loads(candidates[0], record_bytes)
+
+    # Hashes prove the bytes are intact; they say nothing about whether this set belongs here.
+    # A record copied to another tag, or assembled for another repository, is internally
+    # consistent and still describes assets that live somewhere else.
+    expected_tag = tag if tag is not None else str(release["tag_name"])
+    if str(record["tag"]) != expected_tag:
+        raise ConflictError(
+            f"the compatibility record on {release['tag_name']} is for tag '{record['tag']}', not '{expected_tag}'",
+            tag=expected_tag,
+            recordTag=str(record["tag"]),
+        )
+    if str(record["source"]["repo"]) != client.repo:
+        raise ConflictError(
+            f"the compatibility record on {release['tag_name']} was assembled for "
+            f"{record['source']['repo']}, this is {client.repo}",
+            tag=expected_tag,
+            recordRepo=str(record["source"]["repo"]),
+        )
 
     required = {str(asset["name"]) for asset in record["assets"]} | {"SHA256SUMS", str(record["self"])}
     missing = sorted(required - set(remote))
@@ -267,7 +290,7 @@ def publish_stable(
         release = client.update(release_id, tag_name=tag, body=body)
 
     verification = verify_release(
-        client, release, connector=str(record["connector"]), expect={a.name: a.path for a in assets}
+        client, release, connector=str(record["connector"]), expect={a.name: a.path for a in assets}, tag=tag
     )
 
     finalized = False
@@ -333,7 +356,7 @@ def publish_staged(
             client.upload(str(staging["upload_url"]), asset.path)
             actions.append(_action(asset, "uploaded"))
         verification = verify_release(
-            client, staging, connector=str(record["connector"]), expect={a.name: a.path for a in assets}
+            client, staging, connector=str(record["connector"]), expect={a.name: a.path for a in assets}, tag=tag
         )
     except MaintError as exc:
         left = _drop_staging(client, staging_id, staging_tag)
@@ -341,22 +364,31 @@ def publish_staged(
             exc.detail["stagingLeft"] = left
         raise
 
+    # From here the old release is being taken apart, so every step runs under one handler: a
+    # failure anywhere in the swap has to name the staging draft that holds the complete set,
+    # otherwise the operator is told only that a request failed and not that the replacement is
+    # already built and one rerun away.
     old = client.find_release(tag)
     old_id = int(old["id"]) if old else None
-    if old is not None:
-        client.delete_release(old_id)  # type: ignore[arg-type]
-    tag_existed = client.tag_commit(tag) is not None
-    if tag_existed:
-        client.delete_tag(tag)
+    removed = False
+    tag_existed = False
     try:
+        if old is not None:
+            client.delete_release(old_id)  # type: ignore[arg-type]
+            removed = True
+        tag_existed = client.tag_commit(tag) is not None
+        if tag_existed:
+            client.delete_tag(tag)
         published = client.update(
             staging_id, tag_name=tag, draft=False, prerelease=True, target_commitish=target_commit
         )
     except MaintError as exc:
+        state = "old release removed" if removed else "old release still in place"
         raise TrackerError(
-            f"old release removed; the complete new set is draft {staging_tag} (id {staging_id}); "
+            f"{state}; the complete new set is draft {staging_tag} (id {staging_id}); "
             f"rerun to publish it ({exc.message})",
             staging={"tag": staging_tag, "releaseId": staging_id},
+            replaced={"releaseId": old_id, "removed": removed},
         ) from exc
 
     return {

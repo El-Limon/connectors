@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,27 @@ def _watched(connector: str) -> list[str]:
     packaged and published, not only what goes into it.
     """
     return [f"games/{connector}", f"catalog/{connector}", "maintenance", "scripts"]
+
+
+def _commit_time(repo_root: Path, commit: str) -> int | None:
+    """The committer time of ``commit``, or ``None`` if this checkout cannot answer.
+
+    The compatibility record is stamped from this rather than from the clock: it is a property
+    of the commit being released, so every assembly of that commit agrees on it however long
+    afterwards it runs, and a recovery rerun re-assembles byte for byte what it is retrying.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", commit],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:  # pragma: no cover - no git on the machine doing the assembly
+        return None
+    value = result.stdout.strip()
+    return int(value) if result.returncode == 0 and value.isdigit() else None
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -85,6 +107,7 @@ def _assemble(args: Any) -> int:
     repo = github.resolve_repo(args.repo, repo_root)
     out = Path(args.out).expanduser().resolve()
     dist = Path(args.dist).expanduser().resolve()
+    stamp = compat_record.generated_at(_commit_time(repo_root, source_commit))
 
     if mode == "catalog":
         result = assemble_mod.assemble_catalog(
@@ -99,6 +122,8 @@ def _assemble(args: Any) -> int:
             repo=repo,
             source_commit=source_commit,
             dirty=dirty,
+            allow_dirty=args.allow_dirty,
+            stamp=stamp,
         )
     else:
         result = assemble_mod.assemble_legacy(
@@ -112,6 +137,7 @@ def _assemble(args: Any) -> int:
             repo=repo,
             source_commit=source_commit,
             dirty=dirty,
+            stamp=stamp,
         )
     output.emit("release assemble", True, **result)
     return OK
@@ -137,7 +163,7 @@ def _register_publish(subcommands: argparse._SubParsersAction) -> None:  # type:
 
 
 def _local_set(
-    assembled: Path, *, connector: str, channel: str, tag: str
+    assembled: Path, *, connector: str, channel: str, tag: str, repo: str, target_commit: str
 ) -> tuple[list[channels.LocalAsset], dict[str, Any]]:
     """Everything that can be checked before a single request goes out."""
     if not assembled.is_dir():
@@ -152,6 +178,17 @@ def _local_set(
         if record[field] != expected:
             raise ConflictError(
                 f"the assembled set is for {field} '{record[field]}', this publication is for '{expected}'"
+            )
+    # The record is the release's own account of what it is: every download link in it, and the
+    # provenance a consumer reads back, is written against one repository and one commit. Publish
+    # it anywhere else and the tag would be honest while everything hanging off it lies.
+    source = record["source"]
+    for field, expected, what in (("repo", repo, "repository"), ("commit", target_commit, "source commit")):
+        if source[field] != expected:
+            raise ConflictError(
+                f"the assembled set was built for {what} '{source[field]}', this publication is for "
+                f"'{expected}'; reassemble against this checkout",
+                **{field: source[field]},
             )
 
     sums_path = assembled / "SHA256SUMS"
@@ -184,11 +221,18 @@ def _game_record(connector: str) -> dict[str, Any] | None:
 def _publish(args: Any) -> int:
     repo_root = paths.repo_root()
     assembled = Path(args.assembled).expanduser().resolve()
-    assets, record = _local_set(assembled, connector=args.connector, channel=args.channel, tag=args.tag)
-
     repo = github.resolve_repo(args.repo, repo_root)
-    client = ReleaseClient(github.GitHub(repo, github.resolve_token(args.token), args.api_url))
     target_commit = args.target_commit or source_revision(repo_root, [])[0]
+    assets, record = _local_set(
+        assembled,
+        connector=args.connector,
+        channel=args.channel,
+        tag=args.tag,
+        repo=repo,
+        target_commit=target_commit,
+    )
+
+    client = ReleaseClient(github.GitHub(repo, github.resolve_token(args.token), args.api_url))
     run_id = args.run_id or "local-" + dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
     if args.channel == "stable":
@@ -260,7 +304,19 @@ def _verify(args: Any) -> int:
     record = document.pop("record")
     document["repo"] = repo
     document["tagCommit"] = client.tag_commit(args.tag)
+    document["sourceCommit"] = str(record["source"]["commit"])
     document["version"] = str(record["version"])
+    # The tag is the only thing a consumer starts from, so it has to agree with the commit the
+    # record says these bytes were built from. A tag that has been moved or reused since the
+    # release was published is exactly the case this catches.
+    if document["tagCommit"] is not None and document["tagCommit"] != document["sourceCommit"]:
+        raise ConflictError(
+            f"tag {args.tag} points at {document['tagCommit']}, the compatibility record on it was "
+            f"built from {document['sourceCommit']}",
+            tag=args.tag,
+            tagCommit=document["tagCommit"],
+            sourceCommit=document["sourceCommit"],
+        )
 
     if args.out:
         out = Path(args.out).expanduser().resolve()

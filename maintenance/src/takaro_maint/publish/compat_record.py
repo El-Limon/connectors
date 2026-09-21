@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,29 @@ SCHEMA = "compat-record.schema.json"
 
 #: Keys an input entry may carry beyond ``kind`` and ``url``, in the order they are written.
 _INPUT_KEYS = ("sha256", "sha1", "size", "version")
+
+
+def generated_at(commit_epoch: int | None) -> str:
+    """The record's timestamp, taken from the release's inputs rather than from the clock.
+
+    Two assemblies of the same commit, the same build outputs and the same catalog have to
+    produce the same record bytes — otherwise ``SHA256SUMS`` differs, and a stable retry that
+    should be a no-op conflicts with the assets the interrupted run already uploaded. So the
+    stamp follows ``SOURCE_DATE_EPOCH`` when the caller sets one and the source commit's own
+    commit time otherwise, exactly like ``scripts/lib/package.sh`` does for archives. A
+    checkout that can answer neither falls back to the current time and is, by construction,
+    not reproducible.
+    """
+    for candidate in (os.environ.get("SOURCE_DATE_EPOCH"), commit_epoch):
+        if candidate is None:
+            continue
+        try:
+            epoch = int(str(candidate).strip())
+        except ValueError:
+            continue
+        if epoch >= 0:
+            return dt.datetime.fromtimestamp(epoch, dt.UTC).isoformat().replace("+00:00", "Z")
+    return dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
 
 
 def record_name(connector: str, version: str) -> str:
@@ -90,6 +114,7 @@ def build(
     source_commit: str,
     source_tag: str | None,
     dirty: bool,
+    stamp: str,
     catalog: dict[str, Any] | None,
     catalog_hash: str | None,
     targets: dict[str, dict[str, Any]],
@@ -105,7 +130,7 @@ def build(
         "channel": channel,
         "tag": tag,
         "mode": mode,
-        "generatedAt": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
+        "generatedAt": stamp,
         "tool": {"name": "takaro-maint", "version": __version__},
         "source": {
             "repo": repo,

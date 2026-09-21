@@ -146,3 +146,61 @@ def test_a_tag_with_no_release_exits_eight(run: Any, fake: FakeReleases, catalog
 
     assert code == 8
     assert payload["tag"] == TAG
+
+
+def test_a_record_copied_to_another_tag_exits_seven(
+    run: Any, fake: FakeReleases, published: tuple[Path, Inputs]
+) -> None:
+    """Hashes alone cannot tell a release from a copy of one: the record has to claim this tag."""
+    directory, built = published
+    other = fake.add_release("minecraft-v9.9.9")
+    for path in sorted(directory.iterdir()):
+        fake.add_asset(other, path.name, path.read_bytes())
+    fake.add_tag("minecraft-v9.9.9", built.commit)
+
+    code, payload, _ = run(
+        "release",
+        "verify",
+        "--tag",
+        "minecraft-v9.9.9",
+        "--connector",
+        CONNECTOR,
+        "--repo",
+        REPO,
+        "--api-url",
+        fake.api_url,
+        repo=built.root,
+    )
+
+    assert code == 7
+    assert payload["recordTag"] == TAG
+
+
+def test_a_tag_that_points_somewhere_else_exits_seven(
+    run: Any, fake: FakeReleases, published: tuple[Path, Inputs]
+) -> None:
+    _, built = published
+    fake.add_tag(TAG, "d" * 40)
+
+    code, payload, _ = verify(run, fake, built.root)
+
+    assert code == 7
+    assert payload["tagCommit"] == "d" * 40
+    assert payload["sourceCommit"] == built.commit
+
+
+def test_a_record_assembled_for_another_repository_exits_seven(
+    run: Any, fake: FakeReleases, published: tuple[Path, Inputs]
+) -> None:
+    _, built = published
+    release = fake.release_for(TAG)
+    name = f"takaro-{CONNECTOR}-{VERSION}.compat.json"
+    asset = next(a for a in release["assets"] if a["name"] == name)
+    record = json.loads(fake.blobs[asset["id"]].decode())
+    record["source"]["repo"] = "someone/else"
+    fake.blobs[asset["id"]] = (json.dumps(record, indent=2) + "\n").encode()
+
+    code, payload, _ = verify(run, fake, built.root)
+
+    assert code == 7
+    assert payload["recordRepo"] == "someone/else"

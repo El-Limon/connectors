@@ -578,3 +578,86 @@ def test_legacy_aliases_are_byte_identical_copies_of_their_target(run: Any, inpu
     record = json.loads((out / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
     assert record["aliases"][alias.name]["target"] == "fabric-26.2"
     assert {a["name"] for a in record["assets"] if a["kind"] == "alias"} == {alias.name}
+
+
+# -- the same inputs assemble to the same bytes ------------------------------------------
+
+
+def test_two_assemblies_of_the_same_inputs_are_byte_identical(run: Any, inputs: Inputs, tmp_path: Path) -> None:
+    """Without this, a stable retry has nothing to recognise: every rerun would conflict."""
+    first, second = tmp_path / "first", tmp_path / "second"
+
+    assert assemble(run, inputs, first)[0] == 0
+    assert assemble(run, inputs, second)[0] == 0
+
+    left = {path.name: path.read_bytes() for path in first.iterdir()}
+    right = {path.name: path.read_bytes() for path in second.iterdir()}
+    assert left == right
+    record = json.loads((first / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
+    assert record["generatedAt"].endswith("Z")
+
+
+def test_source_date_epoch_pins_the_record_stamp(run: Any, inputs: Inputs, tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    out = tmp_path / "assembled"
+
+    assert assemble(run, inputs, out)[0] == 0
+
+    record = json.loads((out / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
+    assert record["generatedAt"] == "2023-11-14T22:13:20Z"
+
+
+# -- provenance the build recorded about itself ------------------------------------------
+
+
+def test_a_build_made_from_a_dirty_tree_is_refused_and_recorded(run: Any, inputs: Inputs, tmp_path: Path) -> None:
+    def dirty(document: dict[str, Any]) -> None:
+        document["dirty"] = True
+
+    inputs.rewrite_manifest("fabric-26.2", dirty)
+
+    code, payload, _ = assemble(run, inputs, tmp_path / "stable")
+    assert code == 7
+    assert payload["directory"] == "fabric-26.2"
+    assert "dirty tree" in payload["error"]
+
+    out = tmp_path / "rolling"
+    code, _, err = assemble(run, inputs, out, "--allow-dirty", channel="rolling")
+    assert code == 0, err
+    record = json.loads((out / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
+    assert record["source"]["dirty"] is True
+
+
+# -- one name, one file ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("colliding", ["artifact", "SHA256SUMS"])
+def test_an_alias_that_collides_with_another_asset_exits_seven(
+    run: Any, inputs: Inputs, tmp_path: Path, colliding: str
+) -> None:
+    name = inputs.targets["fabric-26.2"]["file"] if colliding == "artifact" else "SHA256SUMS"
+    _set_aliases(inputs, {name: "paper-1.21.11/server-mod"})
+
+    code, payload, _ = assemble(run, inputs, tmp_path / "assembled", "--allow-dirty", channel="pr")
+
+    assert code == 7
+    assert payload["asset"] == name
+    assert "one file per name" in payload["error"]
+
+
+@pytest.mark.parametrize("pattern", ["../escaped-{version}.jar", "/tmp/absolute-{version}.jar"])
+def test_an_alias_naming_a_path_is_refused(run: Any, inputs: Inputs, tmp_path: Path, pattern: str) -> None:
+    _set_aliases(inputs, {pattern: "fabric-26.2/server-mod"})
+
+    code, payload, _ = assemble(run, inputs, tmp_path / "assembled", "--allow-dirty", channel="pr")
+
+    assert code == 2
+    assert payload["alias"] == pattern
+    assert not (tmp_path / f"escaped-{VERSION}.jar").exists()
+
+
+def _set_aliases(inputs: Inputs, aliases: dict[str, str]) -> None:
+    game_file = inputs.root / "catalog" / CONNECTOR / "game.json"
+    game = json.loads(game_file.read_text())
+    game["legacyAssetAliases"] = aliases
+    game_file.write_text(json.dumps(game, indent=2))

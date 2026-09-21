@@ -521,3 +521,72 @@ def test_every_published_asset_hashes_to_what_the_record_says(
     record = json.loads((directory / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
     for asset in record["assets"]:
         assert hashlib.sha256(fake.asset_bytes(TAG, asset["name"])).hexdigest() == asset["sha256"]
+
+
+def test_a_freshly_assembled_retry_of_the_same_commit_is_still_a_no_op(
+    run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs], tmp_path: Path
+) -> None:
+    """Recovery re-runs `assemble` before `publish`, so the retry must recognise its own bytes."""
+    directory, _, built = assembled
+    stable_draft(fake, built.commit)
+    assert publish(run, fake, directory, built.root, "--target-commit", built.commit)[0] == 0
+
+    again = reassemble(run, built, tmp_path / "recovered", channel="stable", tag=TAG)
+    code, payload, err = publish(run, fake, again, built.root, "--target-commit", built.commit)
+
+    assert code == 0, err
+    assert {asset["action"] for asset in payload["assets"]} == {"skipped-identical"}
+
+
+@pytest.mark.parametrize(("field", "value"), [("repo", "someone/else"), ("commit", "c" * 40)])
+def test_a_set_assembled_for_another_repo_or_commit_is_refused(
+    run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs], field: str, value: str
+) -> None:
+    directory, _, built = assembled
+    record_path = directory / f"takaro-{CONNECTOR}-{VERSION}.compat.json"
+    record = json.loads(record_path.read_text())
+    record["source"][field] = value
+    record_path.write_text(json.dumps(record, indent=2) + "\n")
+    _rewrite_checksums(directory)
+
+    code, payload, _ = publish(run, fake, directory, built.root, "--target-commit", built.commit)
+
+    assert code == 7
+    assert payload[field] == value
+    assert fake.requests == []
+
+
+def test_a_swap_that_fails_after_the_old_release_is_gone_names_the_staging_draft(
+    run: Any, fake: FakeReleases, inputs: Inputs, tmp_path: Path
+) -> None:
+    directory = reassemble(run, inputs, tmp_path / "dev", channel="rolling", tag=DEV_TAG)
+    fake.add_release(DEV_TAG, prerelease=True)
+    fake.add_tag(DEV_TAG, "b" * 40)
+    fake.fail_on(r"/git/refs/tags/", "DELETE")
+
+    code, payload, _ = publish(
+        run,
+        fake,
+        directory,
+        inputs.root,
+        "--target-commit",
+        inputs.commit,
+        "--run-id",
+        "gha-7-1",
+        channel="rolling",
+        tag=DEV_TAG,
+    )
+
+    assert code == 9
+    assert payload["staging"] == {"tag": f"{DEV_TAG}.staging-gha-7-1", "releaseId": payload["staging"]["releaseId"]}
+    assert payload["replaced"]["removed"] is True
+    assert any(r["tag_name"] == f"{DEV_TAG}.staging-gha-7-1" for r in fake.releases)
+
+
+def _rewrite_checksums(directory: Path) -> None:
+    lines = [
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+        for path in sorted(directory.iterdir(), key=lambda p: p.name)
+        if path.is_file() and path.name != "SHA256SUMS"
+    ]
+    (directory / "SHA256SUMS").write_text("\n".join(lines) + "\n")

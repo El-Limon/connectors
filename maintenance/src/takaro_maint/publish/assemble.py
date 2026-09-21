@@ -81,9 +81,18 @@ def manifest_paths(dist: Path) -> list[Path]:
     return found
 
 
-def read_rows(dist: Path, *, connector: str, version: str, source_commit: str) -> list[Row]:
-    """Every manifest row, with its bytes present and re-hashed against the manifest."""
+def read_rows(
+    dist: Path, *, connector: str, version: str, source_commit: str, allow_dirty: bool
+) -> tuple[list[Row], bool]:
+    """Every manifest row, with its bytes present and re-hashed against the manifest.
+
+    Also the answer to "was any of this built from a tree that had uncommitted changes?". Each
+    build records that for itself, and a build that was dirty stays dirty however clean the
+    checkout doing the assembly happens to be — otherwise artifacts built beside uncommitted
+    edits could be moved into a fresh clone and published as a clean build of that commit.
+    """
     rows: list[Row] = []
+    built_dirty = False
     for path in manifest_paths(dist):
         manifest = read_manifest(path)
         if manifest["connector"] != connector:
@@ -101,9 +110,18 @@ def read_rows(dist: Path, *, connector: str, version: str, source_commit: str) -
                 manifestRevision=manifest["sourceRevision"],
                 sourceCommit=source_commit,
             )
+        if manifest.get("dirty"):
+            if not allow_dirty:
+                raise ConflictError(
+                    f"{path.parent.name}/build-manifest.json says the build was made from a dirty tree, "
+                    "so its artifacts cannot be attributed to a commit; rebuild from a clean checkout",
+                    directory=path.parent.name,
+                    sourceCommit=source_commit,
+                )
+            built_dirty = True
         for entry in manifest["artifacts"]:
             rows.append(_row_with_bytes(path.parent, entry))
-    return rows
+    return rows, built_dirty
 
 
 def _row_with_bytes(directory: Path, entry: dict[str, Any]) -> Row:
@@ -304,6 +322,29 @@ def prepare_out(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
 
+class Names:
+    """The names an assembly has already spoken for, so that nothing is quietly overwritten.
+
+    Every asset is copied into one flat directory and then described by one entry in the compat
+    record. If two of them land on the same name the second copy wins on disk while both entries
+    survive in the record, leaving a published sha256 that no published byte answers to. The
+    checksum file and the record itself are reserved for the same reason.
+    """
+
+    def __init__(self, reserved: list[str]) -> None:
+        self._taken = {name: "reserved" for name in reserved}
+
+    def claim(self, name: str, kind: str) -> str:
+        held = self._taken.get(name)
+        if held is not None:
+            raise ConflictError(
+                f"two assets want the name '{name}' ({held} and {kind}); a release set carries one file per name",
+                asset=name,
+            )
+        self._taken[name] = kind
+        return name
+
+
 def _asset(name: str, kind: str, path: Path, repo: str, tag: str) -> dict[str, Any]:
     digests = net.hash_file(path)
     return {
@@ -328,11 +369,15 @@ def assemble_catalog(
     repo: str,
     source_commit: str,
     dirty: bool,
+    allow_dirty: bool,
+    stamp: str,
 ) -> dict[str, Any]:
     """The full catalog-mode assembly, in the order that makes the first failure the real one."""
     game = catalog.game(connector)
     targets = catalog.selectable(connector, all_targets=True)
-    rows = read_rows(dist, connector=connector, version=version, source_commit=source_commit)
+    rows, built_dirty = read_rows(
+        dist, connector=connector, version=version, source_commit=source_commit, allow_dirty=allow_dirty
+    )
     index = index_rows(rows, targets, version=version)
     report_index = read_reports(reports)
 
@@ -341,6 +386,7 @@ def assemble_catalog(
         evidence[target.id] = evidence_for(target, index, report_index, source_commit=source_commit)
 
     prepare_out(out)
+    names = Names(["SHA256SUMS", compat_record.record_name(connector, version)])
     assets: list[dict[str, Any]] = []
     record_targets: dict[str, dict[str, Any]] = {}
     by_role_name: dict[tuple[str, str], str] = {}
@@ -351,7 +397,7 @@ def assemble_catalog(
         for component in target.record.get("components", []):
             role = str(component["role"])
             row = index[(target.id, role)]
-            destination = out / row.file
+            destination = out / names.claim(row.file, f"{target.id}/{role}")
             shutil.copy2(row.path, destination)
             by_role_name[(target.id, role)] = row.file
             asset = _asset(row.file, "artifact", destination, repo, tag)
@@ -362,7 +408,7 @@ def assemble_catalog(
         verification, report_path = evidence[target.id]
         verification = dict(verification)
         if report_path is not None:
-            name = compat_record.report_name(connector, version, target.id)
+            name = names.claim(compat_record.report_name(connector, version, target.id), "verify-report")
             shutil.copy2(report_path, out / name)
             verification["report"] = name
             assets.append(_asset(name, "verify-report", out / name, repo, tag))
@@ -379,7 +425,7 @@ def assemble_catalog(
         }
 
     aliases, skipped = _write_aliases(
-        game.record, out, by_role_name, version=version, repo=repo, tag=tag, assets=assets
+        game.record, out, by_role_name, version=version, repo=repo, tag=tag, assets=assets, names=names
     )
 
     record = compat_record.build(
@@ -391,7 +437,8 @@ def assemble_catalog(
         repo=repo,
         source_commit=source_commit,
         source_tag=tag if channel == "stable" else None,
-        dirty=dirty,
+        dirty=dirty or built_dirty,
+        stamp=stamp,
         catalog={"game": game.id, "targetIds": [target.id for target in targets]},
         catalog_hash=compat_record.catalog_sha256(game.record, {target.id: target.record for target in targets}),
         targets=record_targets,
@@ -410,6 +457,7 @@ def _write_aliases(
     repo: str,
     tag: str,
     assets: list[dict[str, Any]],
+    names: Names,
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Byte-identical copies under the names the old releases used, while consumers catch up."""
     aliases: dict[str, dict[str, Any]] = {}
@@ -420,12 +468,28 @@ def _write_aliases(
         if source_name is None:
             skipped.append(pattern)
             continue
-        name = pattern.replace("{version}", version)
+        name = names.claim(_alias_name(pattern, version), "alias")
         shutil.copy2(out / source_name, out / name)
         asset = _asset(name, "alias", out / name, repo, tag)
         assets.append(asset)
         aliases[name] = {"target": target_id, "role": role, "of": source_name, "sha256": asset["sha256"]}
     return aliases, skipped
+
+
+def _alias_name(pattern: str, version: str) -> str:
+    """An alias is one file name in the release set, never a path into the file system.
+
+    The catalog is a committed file rather than untrusted input, but it is the one assembly
+    input nothing else checks, and ``out / name`` would happily follow ``../`` out of the
+    directory or drop it entirely for an absolute key.
+    """
+    name = pattern.replace("{version}", version)
+    if not name or name != Path(name).name or name in {".", ".."}:
+        raise UsageError(
+            f"legacyAssetAliases key '{pattern}' is not a plain file name; an alias cannot name a path",
+            alias=pattern,
+        )
+    return name
 
 
 def assemble_legacy(
@@ -440,6 +504,7 @@ def assemble_legacy(
     repo: str,
     source_commit: str,
     dirty: bool,
+    stamp: str,
 ) -> dict[str, Any]:
     """A connector that has no catalog yet: the build script names its files, we publish those."""
     chosen = files or _legacy_files(dist)
@@ -450,11 +515,10 @@ def assemble_legacy(
             raise ConflictError(f"{file} is not a file")
 
     prepare_out(out)
+    names = Names(["SHA256SUMS", compat_record.record_name(connector, version)])
     assets: list[dict[str, Any]] = []
     for file in sorted(chosen, key=lambda p: p.name):
-        destination = out / file.name
-        if destination.exists():
-            raise ConflictError(f"two files named {file.name} were given")
+        destination = out / names.claim(file.name, "artifact")
         shutil.copy2(file, destination)
         assets.append(_asset(file.name, "artifact", destination, repo, tag))
 
@@ -468,6 +532,7 @@ def assemble_legacy(
         source_commit=source_commit,
         source_tag=tag if channel == "stable" else None,
         dirty=dirty,
+        stamp=stamp,
         catalog=None,
         catalog_hash=None,
         targets={},

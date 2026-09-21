@@ -67,7 +67,8 @@ that produced a differently named file does not assemble.
 `{version}`) to `"<target-id>/<role>"`, and the publisher ships a byte-identical copy under
 that old name so existing download links keep working. Aliases are kept for two stable releases
 and then removed in a catalog PR. An alias that points at a retired or absent target is skipped
-and listed in `aliasesSkipped`.
+and listed in `aliasesSkipped`. An alias key is one file name, never a path, and no two assets in
+a set may want the same name — including `SHA256SUMS` and the record itself.
 
 **Legacy connectors.** Exactly the names their build scripts produce today, unchanged:
 
@@ -99,8 +100,8 @@ jar do I want, and was it actually tested?" without the repository at hand.
 | Field | What it holds |
 |---|---|
 | `connector`, `version`, `channel`, `tag`, `mode` | Which release this is. |
-| `generatedAt`, `tool` | When it was written, and by which version of this command. |
-| `source.repo`, `source.commit`, `source.tag`, `source.dirty` | The commit every artifact was built from; `tag` is set for stable releases only. |
+| `generatedAt`, `tool` | When it was written, and by which version of this command. The stamp comes from `SOURCE_DATE_EPOCH`, else the commit time of `source.commit` — never from the clock, so two assemblies of one commit are byte-identical. |
+| `source.repo`, `source.commit`, `source.tag`, `source.dirty` | The repository and commit every artifact was built from; `tag` is set for stable releases only. `dirty` is true if the checkout that assembled **or** any build that produced an artifact had uncommitted changes. |
 | `source.catalogSha256` | One hash over `game.json` and every non-retired target record, canonicalised the way a fingerprint is, so a checkout can recompute it. |
 | `catalog` | `{game, targetIds}`, or `null` in legacy mode. |
 | `targets.<id>.platform`, `.revision`, `.status`, `.fingerprint` | Which server this target is, and the fingerprint the artifacts carry. |
@@ -134,9 +135,9 @@ jar do I want, and was it actually tested?" without the repository at hand.
 
 | Exit | Cause |
 |---|---|
-| 2 | Usage: `--out` is not empty, no compatibility record in `--assembled`, `--allow-dirty` on a stable channel, positional files outside legacy mode. |
+| 2 | Usage: `--out` is not empty, no compatibility record in `--assembled`, `--allow-dirty` on a stable channel, positional files outside legacy mode, or a `legacyAssetAliases` key that is not a plain file name. |
 | 5 | Bytes disagree with a hash that was already written down — a built file against its build manifest, or a file in the assembled set against `SHA256SUMS`. Nothing is uploaded. |
-| 7 | The set is wrong: a missing (target, role), two different builds of the same one, a fingerprint the catalog no longer has, a file name the catalog does not predict, a build manifest from another commit, a report that describes different bytes, a dirty tree, a tag that points somewhere else, or an asset already on the release with different bytes. |
+| 7 | The set is wrong: a missing (target, role), two different builds of the same one, a fingerprint the catalog no longer has, a file name the catalog does not predict, two assets wanting one name, a build manifest from another commit or from a dirty tree, a report that describes different bytes, a dirty tree, an assembled set built for another repository or commit, a record that does not claim the tag it sits on, a tag that points somewhere else, or an asset already on the release with different bytes. |
 | 8 | The evidence is missing or negative: no report for a target that requires one, `outcome: fail`, a level below what the target requires, or a target requiring `gameplay` — which this harness does not produce. |
 | 9 | GitHub: no token, or a failed request. |
 
@@ -153,7 +154,11 @@ gh workflow run minecraft.yml --ref main -f tag=minecraft-v0.1.2 -f version=0.1.
 ```
 
 The run checks out `minecraft-v0.1.2`, so the artifacts are rebuilt from the source that tag
-names rather than from whatever main has become since. Then:
+names rather than from whatever main has become since. It re-runs `release assemble` as well, and
+that re-assembly has to produce the same bytes as the interrupted one did — otherwise the retry
+would conflict with whatever the first run managed to upload. Nothing in the set is allowed to
+depend on when it was built: the archives are packaged through `scripts/lib/package.sh` and the
+compatibility record is stamped from the source commit's own time. Then:
 
 * an asset that is already there with **identical** bytes is `skipped-identical` — no upload,
   no delete;
@@ -173,6 +178,8 @@ These have no draft to fill, so the publisher builds the entire replacement firs
 2. Create a new staging draft at `<tag>.staging-<run-id>` and upload every asset to it.
 3. Verify it from GitHub.
 4. Only then delete the old release, delete the old tag, and rename the staging draft to `<tag>`.
+   Every step of that swap reports the staging draft by name if it fails, and says whether the
+   old release was already removed, so the complete set is never left unfindable.
 
 Until step 4 the previous build is intact and complete; a failure anywhere before it deletes the
 staging draft and leaves the old release exactly as it was. Nothing outside this tag's
