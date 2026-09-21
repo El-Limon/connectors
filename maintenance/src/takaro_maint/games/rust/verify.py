@@ -35,7 +35,16 @@ PROTOCOL_LINE = re.compile(r"^Protocol:\s*[0-9][0-9.]*")
 CARBON_LINE = re.compile(r"Initialized Carbon\.Startup [0-9]+(?:\.[0-9]+)+")
 #: Carbon's self-updater announces itself before it replaces anything. The hard guard is
 #: `startup.inputsIntact` over the ledger witnesses; this line is what names the cause.
-SELF_UPDATE_LINE = re.compile(r"Downloading Carbon|Updating Carbon|self-updating (?!necessary)", re.I)
+#:
+#: Carbon talks about self-updating on every boot, so the pattern has to match only the
+#: boots on which it happened. The three lines a real boot writes are
+#: "… is out of date and now self-updating - Production […] [2.0.257 -> 2.0.259]",
+#: "Updating Carbon…" and "… finished self-updating 76 files."; the two it writes when it
+#: does not are "Skipped self-updating process as it's disabled in the config." and
+#: "… is up to date, no self-updating necessary."
+SELF_UPDATE_LINE = re.compile(
+    r"now self-updating|finished self-updating|^\s*Updating Carbon\b|Downloading Carbon", re.I
+)
 
 COMPILE_BUDGET = 180.0
 ACTION_BUDGET = 30.0

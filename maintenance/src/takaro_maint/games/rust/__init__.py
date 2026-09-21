@@ -82,9 +82,15 @@ CARBON_DIRECTORIES = (
 #: Seeded only when Carbon has not written its own config yet. Carbon ships a self-updater
 #: that replaces carbon/managed/*.dll on boot as soon as a newer production build exists,
 #: which would silently unpin the framework half of this target.
+#:
+#: The shape is Carbon's own, read off a config the framework generated for itself
+#: (``SelfUpdating`` is an object, not a flag). It matters more than it looks: Carbon's
+#: preloader reads this file before it prints anything, and a document it cannot
+#: deserialise takes the whole framework down without a word in the log -- the server then
+#: boots perfectly, unmodded. Only the self-update keys are written; every other setting
+#: stays at whatever the installed Carbon's own default is.
 CARBON_CONFIG_SEED: dict[str, Any] = {
-    "SelfUpdating": False,
-    "AutoUpdate": False,
+    "SelfUpdating": {"Enabled": False, "HookUpdates": False, "RedirectUri": None},
 }
 
 #: The runtime container is a plain base image; the game is the mounted tree and this script.

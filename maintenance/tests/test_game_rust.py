@@ -274,7 +274,13 @@ def test_install_places_the_game_and_carbon_and_writes_the_ledger(
     assert os.access(dest / "runds.sh", os.X_OK)
     assert os.access(dest / "carbon/tools/environment.sh", os.X_OK)
     # Carbon's self-updater would replace the pinned assemblies on the first boot.
-    assert json.loads((dest / "carbon/config.json").read_text())["SelfUpdating"] is False
+    # Carbon's own shape: an object, not a flag. A document its preloader cannot
+    # deserialise takes the framework down silently and the server boots unmodded.
+    assert json.loads((dest / "carbon/config.json").read_text())["SelfUpdating"] == {
+        "Enabled": False,
+        "HookUpdates": False,
+        "RedirectUri": None,
+    }
 
     ledger = read_ledger(dest)
     assert ledger is not None
@@ -573,11 +579,20 @@ def test_verify_hooks_patterns_identity_and_container_shape(tmp_path: Path) -> N
     assert hooks.COMPILE_FAILED.search("Failed compiling 'TakaroConnector':")
     assert hooks.COMPILE_FAILED.search("TakaroConnector.cs(12,5): error CS0103: something")
     assert not hooks.COMPILE_FAILED.search("Loaded plugin TakaroConnector v0.0.3 by Takaro [1667ms]")
-    # Carbon says this on every boot it does *not* self-update on; it is not a self-update.
-    assert not hooks.SELF_UPDATE_LINE.search(
-        "Carbon Release is up to date, no self-updating necessary. Running Production build [2.0.259]."
-    )
-    assert hooks.SELF_UPDATE_LINE.search("Downloading Carbon 2.0.260...")
+    # Carbon talks about self-updating on every boot, so only the boots it happened on may
+    # match. All five lines are copied out of real boots.
+    for quiet in (
+        "Skipped self-updating process as it's disabled in the config.",
+        "Carbon Release is up to date, no self-updating necessary. Running Production build [2.0.259].",
+    ):
+        assert not hooks.SELF_UPDATE_LINE.search(quiet), quiet
+    for noisy in (
+        " Carbon Release is out of date and now self-updating - Production [production_build] "
+        "on Linux [2.0.257 -> 2.0.259]",
+        "Updating Carbon... ",
+        " Carbon Release finished self-updating 76 files. You're now running the latest Production build.",
+    ):
+        assert hooks.SELF_UPDATE_LINE.search(noisy), noisy
 
     adapter = adapter_for(GAME)
     assert adapter.parse_runtime_identity("Protocol: 2632.287.1") == {
@@ -665,9 +680,7 @@ def steam(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def scan(run: Any, repo: Path, fake_tracker: FakeGitHub, *flags: str) -> tuple[int, Any, str]:
-    return run(
-        "scan", "--game", GAME, "--repo", TRACKER_REPO, "--api-url", fake_tracker.api_url, *flags, repo=repo
-    )
+    return run("scan", "--game", GAME, "--repo", TRACKER_REPO, "--api-url", fake_tracker.api_url, *flags, repo=repo)
 
 
 def support_issues(fake_tracker: FakeGitHub) -> list[dict[str, Any]]:
@@ -828,9 +841,11 @@ def bash(script: str) -> str:
 
 
 def test_dev_servers_rust_rig_is_target_driven() -> None:
-    for script in [DS_ROOT / "lib/games/rust.sh", REPO_ROOT / "games/rust/start.sh", *sorted(
-        (REPO_ROOT / "games/rust/scripts").glob("*.sh")
-    )]:
+    for script in [
+        DS_ROOT / "lib/games/rust.sh",
+        REPO_ROOT / "games/rust/start.sh",
+        *sorted((REPO_ROOT / "games/rust/scripts").glob("*.sh")),
+    ]:
         completed = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, check=False)
         assert completed.returncode == 0, f"{script.name}: {completed.stderr}"
 
