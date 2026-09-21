@@ -275,7 +275,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
 
 
 def _bridge_log(run: Any) -> Path:
-    return run.out / BRIDGE_LOG  # type: ignore[no-any-return]
+    return Path(run.out) / BRIDGE_LOG
 
 
 async def _check_handshake(run: Any, fake: Any, alive: Any) -> checks.CheckResult:

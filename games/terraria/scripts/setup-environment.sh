@@ -75,12 +75,18 @@ mkdir -p "${REFS}/.takaro"
 
 # By digest. A wrong or withdrawn digest fails here; there is no tag to fall back to,
 # because a fallback would compile the plugin against bytes nobody pinned.
-if ! container=$(docker create "${TERRARIA_IMAGE}" 2>&1); then
+# stderr goes to a file rather than into the variable: on a host that does not hold the
+# image yet, `docker create` narrates the pull on stderr while printing the container id on
+# stdout, and merging the two makes the id unusable.
+create_err=$(mktemp)
+if ! container=$(docker create "${TERRARIA_IMAGE}" 2>"${create_err}"); then
     echo "error: docker could not create a container from ${TERRARIA_IMAGE}" >&2
-    echo "       ${container}" >&2
+    sed 's/^/       /' "${create_err}" >&2
     echo "       not falling back to a floating tag" >&2
+    rm -f "${create_err}"
     exit 4
 fi
+rm -f "${create_err}"
 cleanup() { docker rm -f "${container}" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
