@@ -1,11 +1,23 @@
-name: Terraria Plugin
+name: Terraria Connector
 
 on:
   push:
     branches: [main]
-    paths: ['games/terraria/**', 'scripts/**', '.github/workflows/terraria.yml']
+    paths:
+      - 'games/terraria/**'
+      - 'catalog/terraria/**'
+      - 'maintenance/**'
+      - 'scripts/**'
+      - '.github/workflows/terraria.yml'
+      - '.github/workflows/connector-release.yml'
   pull_request:
-    paths: ['games/terraria/**', 'scripts/**', '.github/workflows/terraria.yml']
+    paths:
+      - 'games/terraria/**'
+      - 'catalog/terraria/**'
+      - 'maintenance/**'
+      - 'scripts/**'
+      - '.github/workflows/terraria.yml'
+      - '.github/workflows/connector-release.yml'
   workflow_call:
     inputs:
       version:
@@ -23,70 +35,34 @@ on:
         required: true
         type: string
       tag:
-        description: Existing release tag to upload the assets to (e.g. zomboid-v1.0.1)
+        description: Existing release tag to upload the assets to (e.g. terraria-v0.2.2)
         required: true
         type: string
 
+# Serialize same-ref runs. A release or recovery run has the tag in its key, so a push to
+# main queues behind it instead of cancelling it; only ordinary CI runs are cancelled.
 concurrency:
   group: terraria-${{ github.ref }}-${{ inputs.tag || 'ci' }}
-  # A push during a release run queues behind it; only ordinary CI runs are cancelled.
   cancel-in-progress: ${{ inputs.tag == '' }}
 
 jobs:
+  # The bridge's own protocol tests are this connector's contract evidence, so they run on
+  # a release too, not only on a pull request.
   bridge-test:
-    if: ${{ !inputs.tag }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: games/terraria/bridge
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 22.x
-          cache: npm
-          cache-dependency-path: games/terraria/bridge/package-lock.json
-      - name: Install dependencies
-        run: npm ci
-      - name: Test
-        run: npm test
-      - name: Build
-        run: npm run build
-
-  package:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          # A release or recovery run builds the tag, never whatever main has become.
+          # The same commit the release job builds: a recovery run for an older tag is
+          # gated on that tag's sources, never on whatever main has become.
           ref: ${{ inputs.tag || github.ref }}
           fetch-tags: true
 
-      # The tag, the version, the manifest and the checked-out commit must all agree
-      # before anything is built.
-      - name: Release guard
-        env:
-          IN_VERSION: ${{ inputs.version }}
-          IN_TAG: ${{ inputs.tag }}
-        run: scripts/release-guard.sh terraria "$IN_VERSION" "$IN_TAG"
-
-      - name: Generate token
-        id: app-token
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          app-id: ${{ secrets.TAKARO_CI_APP_ID }}
-          private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
-        with:
-          dotnet-version: 9.0.x
-
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
@@ -94,11 +70,29 @@ jobs:
           cache: npm
           cache-dependency-path: games/terraria/bridge/package-lock.json
 
-      - name: Make scripts executable
-        run: chmod +x games/terraria/scripts/*.sh scripts/*.sh
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Set up TShock references
-        run: games/terraria/scripts/setup-environment.sh
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  params:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.params.outputs.version }}
+      tag: ${{ steps.params.outputs.tag }}
+      publish: ${{ steps.params.outputs.publish }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Resolve release params
         id: params
@@ -110,49 +104,18 @@ jobs:
           DEV_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/release-params.sh terraria >> "$GITHUB_OUTPUT"
 
-      - name: Build release artifact
-        run: games/terraria/scripts/build-release.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
-
-      - name: Build bridge release artifact
-        run: games/terraria/scripts/build-bridge-release.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
-
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-        with:
-          version: "0.12.15"
-
-      - run: uv python install
-      - run: uv sync --frozen --project maintenance
-
-      # One publisher for every connector: the set is assembled, published and read
-      # back from GitHub. `--mode legacy` means the files are named here rather than
-      # derived from a catalog, so this connector's asset names are unchanged.
-      # Fork PRs get a read-only token, so they build for validation only.
-      - name: Publish
-        if: ${{ steps.params.outputs.publish != 'none' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        shell: bash
-        run: |
-          scripts/publish-release.sh publish \
-            --connector terraria \
-            --channel "${{ steps.params.outputs.publish }}" \
-            --version "${{ steps.params.outputs.version }}" \
-            --tag "${{ steps.params.outputs.tag }}" \
-            --pr-number "${{ github.event.pull_request.number }}" \
-            --mode legacy \
-            --dist "$RUNNER_TEMP/dist" \
-            --out "$RUNNER_TEMP/assembled" \
-            -- \
-            "$RUNNER_TEMP/dist/takaro-terraria-plugin.zip" \
-            "$RUNNER_TEMP/dist/takaro-terraria-bridge.zip"
-
-      - name: Comment PR build
-        if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          scripts/comment-pr-build.sh terraria \
-            "${{ github.event.pull_request.number }}" \
-            "${{ steps.params.outputs.tag }}" \
-            "${{ steps.params.outputs.version }}" \
-            "$RUNNER_TEMP/assembled"
+  release:
+    needs: [bridge-test, params]
+    uses: ./.github/workflows/connector-release.yml
+    secrets: inherit
+    with:
+      connector: terraria
+      version: ${{ needs.params.outputs.version }}
+      tag: ${{ needs.params.outputs.tag }}
+      publish: ${{ needs.params.outputs.publish }}
+      pr_number: ${{ github.event.pull_request.number }}
+      # A Terraria run is two containers: the pinned TShock image and a Node sidecar that
+      # joins its network namespace and drives it over the REST API. The harness does that
+      # on a rig; runtime CI for this connector is deferred and the release claims contract
+      # verification, which the bridge-test job above produces.
+      runtime: false

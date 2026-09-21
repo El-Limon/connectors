@@ -5,6 +5,7 @@ import { HealthServer } from './health/server.js';
 import { logger } from './logger.js';
 import { LogTailer } from './logs/logTailer.js';
 import { TakaroWsClient } from './takaro/client.js';
+import { logConnectionState } from './takaro/connectionLog.js';
 import type { GameEventType, RequestPayload, WsMessage } from './takaro/protocol.js';
 import { TerrariaAdapter } from './terraria/adapter.js';
 import { TShockClient } from './tshock/client.js';
@@ -70,6 +71,9 @@ async function main(): Promise<void> {
   takaro.on('identifyError', (payload) => {
     logger.error(`Takaro identify error: ${JSON.stringify(payload)}`);
   });
+  // The connection state goes to the log through one place: `takaro-maint verify` reads
+  // those two lines out of this bridge's log to prove the handshake and the reconnect.
+  logConnectionState(takaro);
   takaro.on('identified', () => {
     poller.reset();
     poller.start();

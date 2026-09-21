@@ -1,13 +1,31 @@
 ---
 name: takaro-dev-terraria
 
+# TERRARIA_IMAGE and TERRARIA_BRIDGE_IMAGE are not edited here: they come from
+# catalog/terraria/targets/<id>.json through _data/.targets/terraria.env, which
+# dev-servers/scripts/install.sh writes with `takaro-maint targets resolve`. Both carry the
+# tag AND the digest, so this rig runs the same bytes CI builds against and a release pins.
+# The fallback value is a name that cannot resolve on purpose: a rig that was never
+# installed should fail loudly rather than silently pull a floating tag.
+
 services:
   terraria:
-    image: ghcr.io/pryaxis/tshock:stable
-    container_name: takaro-dev-terraria
+    image: "${TERRARIA_IMAGE:-target-not-resolved}"
+    container_name: "${TERRARIA_CONTAINER_NAME:-takaro-dev-terraria}"
+    # No `user:`. TShock has to run as root in this image: TerrariaServerAPI opens its own
+    # ServerLog.txt in /server and TShock writes /server/GeoIP.dat, neither of which is a
+    # declared volume, so a non-root run dies before it reads its configuration.
+    # install.sh reclaims ownership of _data afterwards (ds_fix_ownership).
     stdin_open: true
     tty: true
+    environment:
+      HOME: /tmp
+      DOTNET_CLI_HOME: /tmp
     ports:
+      # Literal, like every other rig here. The compose lint substitutes a placeholder for
+      # every variable dev-servers/.env.example does not declare, including one with a
+      # default, and a placeholder is not a port — so these wait on TERRARIA_PORT and
+      # TERRARIA_REST_PORT being declared there.
       - "7777:7777/tcp"
       - "127.0.0.1:7878:7878"
     # The image entrypoint already sets -configpath /tshock -worldselectpath
@@ -32,4 +50,39 @@ services:
       - ../_data/terraria/worlds:/worlds
       # TakaroTerrariaEvents.dll is deployed here by deploy-connector.sh
       - ../_data/terraria/plugins:/plugins
+    # Optional operator labels, so a campaign or a cleanup sweep can find what it started.
+    labels:
+      tm.run: "${TM_RUN:-}"
+      tm.issue: "${TM_ISSUE:-}"
+      tm.ttl: "${TM_TTL:-}"
+    restart: unless-stopped
+
+  # The connector itself. It holds the websocket to Takaro and drives TShock over the REST
+  # API on 127.0.0.1:7878 — which is the server's loopback, because it shares the server
+  # container's network namespace rather than having one of its own.
+  terraria-bridge:
+    image: "${TERRARIA_BRIDGE_IMAGE:-target-not-resolved}"
+    container_name: "${TERRARIA_CONTAINER_NAME:-takaro-dev-terraria}-bridge"
+    network_mode: "service:terraria"
+    depends_on:
+      - terraria
+    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
+    working_dir: /bridge
+    command: ["node", "dist/index.js"]
+    environment:
+      BRIDGE_CONFIG: /config/TakaroConfig.txt
+      TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:-}"
+      TSHOCK_TOKEN: "${TERRARIA_REST_TOKEN:-}"
+      HOME: /tmp
+    volumes:
+      # Deployed by deploy-connector.sh; the config beside it is rendered by install.sh and
+      # is a bind-mounted FILE, so it must exist before this service starts. It lands
+      # outside /bridge because docker cannot create a mountpoint inside a read-only mount.
+      - ../_data/terraria/bridge/TakaroTerrariaBridge:/bridge:ro
+      - ../_data/terraria/bridge/TakaroConfig.txt:/config/TakaroConfig.txt:ro
+      - ../_data/terraria/tshock/logs:/tshock/logs:ro
+    labels:
+      tm.run: "${TM_RUN:-}"
+      tm.issue: "${TM_ISSUE:-}"
+      tm.ttl: "${TM_TTL:-}"
     restart: unless-stopped
