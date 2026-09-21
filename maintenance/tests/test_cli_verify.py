@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import shlex
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 import websockets
 
-from conftest import REPO_ROOT, make_jar, sha256
+from conftest import REPO_ROOT
+from fake_docker import artifacts_for, install_docker_stub
 
 PROTOCOL = json.loads((REPO_ROOT / "games/7d2d/tests/fixtures/generic-protocol.json").read_text())
 
@@ -242,187 +240,9 @@ def test_a_run_that_observed_nothing_is_not_a_pass() -> None:
 # --------------------------------------------------------------------------- runner
 
 
-DOCKER_STUB = r"""
-import json, os, subprocess, sys, threading, time
-
-state = os.environ["STUB_STATE"]
-argv = sys.argv[1:]
-with open(state + "/argv.jsonl", "a") as handle:
-    handle.write(json.dumps(argv) + "\n")
-
-def env_of(args):
-    values = {}
-    for index, item in enumerate(args):
-        if item == "-e" and index + 1 < len(args):
-            key, _, value = args[index + 1].partition("=")
-            values[key] = value
-    return values
-
-if argv[:1] == ["network"]:
-    print("127.0.0.1")
-    sys.exit(0)
-
-if argv[:1] == ["run"]:
-    values = env_of(argv)
-    with open(state + "/env.json", "w") as handle:
-        json.dump(values, handle)
-    subprocess.Popen([sys.executable, os.environ["STUB_SERVER"], values["TAKARO_WS_URL"]],
-                     stdout=open(state + "/server.out", "w"), stderr=subprocess.STDOUT)
-    print("stub-container-id")
-    sys.exit(0)
-
-if argv[:1] == ["logs"]:
-    # Follow the file the stub server writes.
-    path = state + "/server.out"
-    while not os.path.exists(path):
-        time.sleep(0.05)
-    with open(path) as handle:
-        while True:
-            line = handle.readline()
-            if line:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-            else:
-                if os.path.exists(state + "/exited"):
-                    break
-                time.sleep(0.1)
-    sys.exit(0)
-
-if argv[:1] == ["inspect"]:
-    fmt = argv[argv.index("-f") + 1]
-    if "PortBindings" in fmt:
-        print("{}")
-    elif "Running" in fmt and "ExitCode" in fmt:
-        print("false|0" if os.path.exists(state + "/exited") else "true|0")
-    elif "Running" in fmt:
-        print("false" if os.path.exists(state + "/exited") else "true")
-    sys.exit(0)
-
-if argv[:1] == ["rm"]:
-    with open(state + "/removed", "w") as handle:
-        handle.write(" ".join(argv))
-    sys.exit(0)
-
-sys.exit(0)
-"""
-
-STUB_SERVER = r"""
-import asyncio, json, os, sys
-import websockets
-
-STATE = os.environ["STUB_STATE"]
-RUN_ID = os.environ["STUB_RUN_ID"]
-FAIL = os.environ.get("STUB_FAIL", "")
-
-ITEMS = [{"code": "minecraft:diamond_sword", "name": "Diamond Sword", "description": ""},
-         {"code": "minecraft:stone", "name": "Stone", "description": ""}]
-ENTITIES = [{"code": "minecraft:zombie", "name": "Zombie", "description": "", "type": "hostile"},
-            {"code": "minecraft:cow", "name": "Cow", "description": "", "type": "friendly"}]
-
-def log(line):
-    print(line, flush=True)
-
-async def main():
-    # The runner hands the container host.docker.internal; on this side of the stub that
-    # is the loopback address the fake Takaro is bound to.
-    url = sys.argv[1].replace("host.docker.internal", "127.0.0.1")
-    log("[Server thread/INFO]: Loading Minecraft 26.2 with Fabric Loader 0.19.5")
-    log('[Server thread/INFO]: Done (12.345s)! For help, type "help"')
-    check = {"target": "fabric-26.2", "fingerprint": os.environ["STUB_FINGERPRINT"],
-             "connectorVersion": "0.1.1",
-             "runtime": {"gameVersion": "26.1.2" if FAIL == "connector-load" else "26.2",
-                         "loader": "fabric", "loaderVersion": "0.19.5", "java": 25},
-             "policy": "enforce", "result": "ok", "reasons": []}
-    log("[Server thread/INFO]: Takaro target-check: " + json.dumps(check))
-    async with websockets.connect(url) as socket:
-        await socket.send(json.dumps({"type": "identify",
-                                      "payload": {"identityToken": os.environ.get("STUB_IDENTITY", "x"),
-                                                  "registrationToken": "y"}}))
-        async for raw in socket:
-            frame = json.loads(raw)
-            if frame.get("type") == "identifyResponse":
-                log("[Server thread/INFO]: Identified successfully")
-                continue
-            if frame.get("type") != "request":
-                continue
-            action = frame["payload"]["action"]
-            args = json.loads(frame["payload"]["args"] or "{}")
-            if action == "testReachability":
-                payload = {"connectable": True}
-            elif action == "getPlayers":
-                payload = []
-            elif action == "listItems":
-                payload = ITEMS
-            elif action == "listEntities":
-                payload = ENTITIES
-            elif action == "executeConsoleCommand":
-                log("[Server thread/INFO]: [Server] " + args["command"].split(" ", 1)[1])
-                payload = {"rawResult": "", "success": True}
-            elif action == "shutdown":
-                payload = None
-            else:
-                payload = None
-            await socket.send(json.dumps({"type": "response", "requestId": frame["requestId"],
-                                          "payload": payload}))
-            if action == "shutdown":
-                open(STATE + "/exited", "w").close()
-                return
-
-asyncio.run(main())
-"""
-
-
 @pytest.fixture
-def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    state = tmp_path / "stub"
-    state.mkdir()
-    stub = tmp_path / "docker_stub.py"
-    stub.write_text(DOCKER_STUB)
-    server = tmp_path / "stub_server.py"
-    server.write_text(STUB_SERVER)
-    monkeypatch.setenv("STUB_STATE", str(state))
-    monkeypatch.setenv("STUB_SERVER", str(server))
-    monkeypatch.setenv("STUB_RUN_ID", "t1")
-    monkeypatch.setenv("TAKARO_MAINT_DOCKER", f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))}")
-    return state
-
-
-def artifacts_for(run: Any, wired: Any, tmp_path: Path) -> Path:
-    _, resolved, _ = run("targets", "resolve", "--game", "minecraft", "--target", "fabric-26.2", repo=wired.root)
-    os.environ["STUB_FINGERPRINT"] = resolved["fingerprint"]
-    out = tmp_path / "dist"
-    out.mkdir(parents=True, exist_ok=True)
-    name = "takaro-minecraft-mod-fabric-26.2-0.1.1.jar"
-    jar = make_jar(out / name, target="fabric-26.2", fingerprint=resolved["fingerprint"], revision="26.2")
-    (out / "build-manifest.json").write_text(
-        json.dumps(
-            {
-                "schemaVersion": 1,
-                "connector": "minecraft",
-                "version": "0.1.1",
-                "sourceRevision": "deadbeef",
-                "dirty": False,
-                "builtAt": "2026-09-17T00:00:00Z",
-                "toolchain": {
-                    "image": "eclipse-temurin",
-                    "tag": "25-jdk",
-                    "digest": "sha256:" + "0" * 64,
-                    "mode": "container",
-                },
-                "artifacts": [
-                    {
-                        "role": "server-mod",
-                        "target": "fabric-26.2",
-                        "fingerprint": resolved["fingerprint"],
-                        "file": name,
-                        "sha256": sha256(jar.read_bytes()),
-                        "size": jar.stat().st_size,
-                    }
-                ],
-            }
-        )
-    )
-    return out
+def docker_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return install_docker_stub(tmp_path, monkeypatch)
 
 
 def test_a_full_stubbed_run_reaches_protocol_level(
@@ -664,26 +484,6 @@ def test_an_unknown_check_exits_two(run: Any, wired: Any, tmp_path: Path) -> Non
     assert "nonsense" in payload["error"]
 
 
-def test_hosted_mode_is_reserved(run: Any, wired: Any, tmp_path: Path) -> None:
-    artifacts = artifacts_for(run, wired, tmp_path)
-
-    code, payload, _ = run(
-        "verify",
-        "--game",
-        "minecraft",
-        "--artifacts",
-        str(artifacts),
-        "--out",
-        str(tmp_path / "reports"),
-        "--takaro",
-        "hosted",
-        repo=wired.root,
-    )
-
-    assert code == 2
-    assert "#152" in payload["error"]
-
-
 def test_a_missing_build_manifest_exits_two(run: Any, wired: Any, tmp_path: Path) -> None:
     empty = tmp_path / "nothing"
     empty.mkdir()
@@ -701,30 +501,3 @@ def test_a_missing_build_manifest_exits_two(run: Any, wired: Any, tmp_path: Path
 
     assert code == 2
     assert "build-manifest.json" in payload["error"]
-
-
-def test_the_negative_checks_are_reported_as_skipped(run: Any, wired: Any, tmp_path: Path, docker_stub: Path) -> None:
-    artifacts = artifacts_for(run, wired, tmp_path)
-    out = tmp_path / "reports"
-
-    code, _, _ = run(
-        "verify",
-        "--game",
-        "minecraft",
-        "--artifacts",
-        str(artifacts),
-        "--out",
-        str(out),
-        "--negative",
-        "--run-id",
-        "t1",
-        "--startup-timeout",
-        "60",
-        repo=wired.root,
-    )
-
-    assert code == 0
-    report = json.loads((out / "fabric-26.2" / "report.json").read_text())
-    negative = next(check for check in report["checks"] if check["id"] == "negative")
-    assert negative["status"] == "skip"
-    assert "#152" in negative["detail"]["reason"]
