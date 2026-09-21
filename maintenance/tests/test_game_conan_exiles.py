@@ -880,6 +880,8 @@ def test_compat_record_carries_the_steam_pin_and_the_legacy_alias(run: Any, repo
     assert len(re.findall(r"manifest/[0-9]+", url)) == 2, "both depots are named in the pseudo-URL"
     assert (out / ZIP_NAME).is_file()
     assert (out / "takaro-conan-exiles-bridge.zip").read_bytes() == (out / ZIP_NAME).read_bytes()
+
+
 # -- the dev-servers rig -----------------------------------------------------------------
 
 DS_ROOT = Path(__file__).resolve().parents[2] / "dev-servers"

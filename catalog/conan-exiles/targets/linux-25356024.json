@@ -9,9 +9,11 @@
     "status": "candidate",
     "since": "2026-09-21",
     "evidence": [
-      "games/conan-exiles/README.md (What works, what doesn't — live checks 2026-06-20/21 on an earlier Enhanced Linux build with Enhanced Pippi)"
+      "games/conan-exiles/README.md (What works, what doesn't \u2014 live checks 2026-06-20/21 on an earlier Enhanced Linux build with Enhanced Pippi)",
+      "games/conan-exiles/bridge/src/__tests__/bridgeContract.test.ts (contract level, every build: fake RCON + fake Takaro)",
+      "games/conan-exiles/DEVELOPMENT.md#findings-from-the-25356024-rig-lane-2026-09-21 (startup level on this pin: dev-servers rig against hosted Takaro)"
     ],
-    "notes": "Exact Steam pin of the public head observed 2026-09-21 (native Linux dedicated server, UE 5.6). The bridge was re-proven on this pin at startup level (RCON bridge, supported actions, reconnect) in an isolated run; chat delivery needs Enhanced Pippi plus the helper, the Takaro-owned TakaroConan.pak needs the Windows Epic DevKit and is not part of this target, and gameplay-level events are unverified."
+    "notes": "Exact Steam pin of the public head observed 2026-09-21 (native Linux dedicated server, UE 5.8.2, changelist 376069). The bridge was re-proven on this pin at startup level in an isolated dev-servers rig: target stamp, identify with hosted Takaro, reachability over RCON, an empty player list, a console command, reconnect after a dropped socket, and a Takaro shutdown that exits the server process cleanly (slowly: about four and a half minutes). Chat delivery needs Enhanced Pippi plus the helper, the Takaro-owned TakaroConan.pak needs the Windows Epic DevKit and is not part of this target, and gameplay-level events are unverified. `takaro-maint verify --game conan-exiles` waits for the shared runner seam that lets a game name its container command and options; the adapter already ships both hooks."
   },
   "inputs": {
     "server": {
