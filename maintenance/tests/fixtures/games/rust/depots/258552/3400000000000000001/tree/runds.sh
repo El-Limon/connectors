@@ -1,1 +1,2 @@
-runds.sh @ depot 258552 build 25400000
+#!/bin/sh
+# runds.sh @ depot 258552 build 25400000
