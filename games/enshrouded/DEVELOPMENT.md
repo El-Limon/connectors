@@ -28,42 +28,186 @@ The plugin is a dbghelp proxy because `enshrouded_server.exe` imports only `Mini
 (no work under the loader lock). It writes `<server dir>\takaro\plugin.log` and caches resolved
 account hashes in `<server dir>\takaro\accounts.json` so offline unban survives restarts.
 
+## The catalog target
+
+Everything below resolves one record: `catalog/enshrouded/targets/proton-1024233.json`. It
+names the Steam app, branch and build id, both depot manifests with the sha256 of the files
+that matter, the game image by tag **and** digest, the Proton the image carries, the builder
+image, the zig tarball by URL and sha256, and the two artifact names. No script, compose
+file or workflow here hard-codes any of those; they ask for them:
+
+```bash
+maintenance/bin/takaro-maint targets resolve --game enshrouded --format env --prefix ENSHROUDED
+```
+
+| Key | What it is |
+|---|---|
+| `ENSHROUDED_TARGET`, `ENSHROUDED_FINGERPRINT`, `ENSHROUDED_FP16` | the target id and the hash of everything pinned in it |
+| `ENSHROUDED_REVISION`, `ENSHROUDED_GAME_BUILD` | the game's own build id, `1024233` — what the server prints and the plugin pins against |
+| `ENSHROUDED_HOOKS_PROVEN_BUILD` | the build the signatures were derived on; `verify` fails when the running server reports another one |
+| `ENSHROUDED_IMAGE`, `ENSHROUDED_PROTON` | the game image by digest and the Proton inside it (`GE-Proton10-30`) |
+| `ENSHROUDED_STEAM_APP`, `_STEAM_BRANCH`, `_STEAM_BUILDID`, `_STEAM_DEPOTS` | the exact Steam pin |
+| `ENSHROUDED_TOOLCHAIN`, `ENSHROUDED_DEP_ZIG_URL`, `ENSHROUDED_DEP_ZIG_SHA256` | the builder image and the zig it installs |
+| `ENSHROUDED_SIDECAR_RUNTIME` | the `node:22-alpine@sha256:…` both sidecar Dockerfiles build FROM |
+| `ENSHROUDED_ARTIFACT_SERVER_PLUGIN`, `_ARTIFACT_SIDECAR` | the two artifact name patterns |
+| `ENSHROUDED_SERVER_EXE_SHA256` | the sha256 of the `enshrouded_server.exe` this plugin was built for |
+
+### Install the exact server
+
+```bash
+maintenance/bin/takaro-maint install --game enshrouded --dest <dest>/server
+maintenance/bin/takaro-maint ledger check --game enshrouded --dest <dest>/server
+```
+
+DepotDownloader fetches exactly the pinned manifests of depot 2278521 (the game) and depot
+1004 (the Steamworks SDK redistributable). A manifest Steam no longer serves is an error
+(exit 4), never a silent fall back to the branch head; a declared file whose hash does not
+match leaves the existing install untouched (exit 5). The install lays down
+`takaro/{plugin,sidecar}/`, `savegame/`, `logs/`, `backups/`,
+`steamapps/compatdata/2278520/` and a `takaro/PINNED.txt` that says what this directory is.
+Everything in the target's `preserve[]` — the config, the save game, the compat prefix and
+`takaro/` — survives a re-pinned install, and `--rollback` restores the `.previous` tree.
+
+### Keep the game where it is
+
+The image runs `/usr/local/etc/enshrouded/enshrouded-updater` at every container start,
+which compares the installed build with the branch head and runs `steamcmd +app_update`
+over the install when they differ. Both compose files bind-mount
+[`server/enshrouded-updater`](server/enshrouded-updater) read-only over it; that script starts the
+server and nothing else, and a test asserts it contains no update path at all. `verify`
+greps the boot log for one and fails the run if it finds one.
+
+### Moving to a new game build
+
+1. `takaro-maint steam pin --game enshrouded --metadata` to see what moved, then
+   `--record-files … --write` to re-pin the record (id and `revision` follow the new game
+   build, so the target is a new file).
+2. Re-derive the plugin's signatures against the new `enshrouded_server.exe` (the
+   enshrouded-engineer workflow; `mod/tests/run.sh` with `ENSHROUDED_EXE=` pointed at the
+   installed binary parses the anchors out of the exact binary).
+3. `takaro-maint verify --game enshrouded …` must report `plugin-health` **pass** — every
+   capability `ok`, `gameBuild` equal to the new revision.
+4. Open the PR with the new target and the evidence. Until all of that is done, the old
+   target stays the default and the readiness note in `catalog/enshrouded/game.json` says
+   why a moved head is not ready.
+
 ## Build
+
+```bash
+# both components, packaged exactly as a release ships them
+maintenance/bin/takaro-maint build --game enshrouded --version <v> --out <dir>
+```
+
+That runs `scripts/build-release.sh <version> <out> --target proton-1024233`, which builds
+`Dockerfile.builder` (the pinned Node base plus zig by hashed tarball), then cross-compiles
+`dbghelp.dll` and compiles the sidecar inside it, and packages
+`takaro-enshrouded-plugin-proton-1024233-<v>.zip` and
+`takaro-enshrouded-sidecar-proton-1024233-<v>.zip` with `pkg_zip` (fixed order, fixed
+timestamps from `SOURCE_DATE_EPOCH`), plus a `.meta.json` beside each carrying the target,
+the fingerprint and the source revision. Building twice gives identical bytes; CI checks
+that, and so does `takaro-maint artifact validate --game enshrouded <zip>`.
+
+The sidecar zip ships `sidecar/Dockerfile.release` **as** `Dockerfile`, so the folder an
+operator unpacks builds on its own from the packaged `dist/`. The source `sidecar/Dockerfile`
+compiles from `src/` and is what the dev compose builds.
+
+For a quick loop without the packaging step:
 
 ```bash
 # plugin: cross-compile dbghelp.dll with zig 0.13 (set ZIG=/path/to/zig if not on PATH)
 ./mod/build.sh                 # -> mod/build/dbghelp.dll
-./mod/tests/run.sh             # host-side plugin tests (needs docker)
+./mod/tests/run.sh             # host-side plugin tests (needs docker; pinned gcc:14 by digest)
 
 # sidecar
 cd sidecar && npm ci && npm run typecheck && npm test && npm run build
 ```
 
 `DEBUG_CORRUPT_SIG=<signature name> ./mod/build.sh` builds a debug DLL into `mod/build-debug/` with one
-signature corrupted, to exercise the degrade self-check.
+signature corrupted, to exercise the degrade self-check. That is exactly what
+`takaro-maint verify --negative` builds, so the compatibility claim is falsifiable.
 
-`mod/deploy.sh` redeploys `mod/build/dbghelp.dll` to the shared dev-servers Enshrouded container
-(stops the container for a graceful save, replaces the file in place, then compares md5 sums).
+## Deploy
 
-## Deploy (Docker)
+```bash
+maintenance/bin/takaro-maint deploy --game enshrouded --dest <dest>/server \
+    --from <dir>/build-manifest.json
+```
 
-`docker-compose.example.yml` runs `mornedhels/enshrouded-server` with `WINEDLLOVERRIDES=dbghelp=n,b` and the
-plugin bind-mounted read-only (SteamCMD updates cannot overwrite it), plus the sidecar built from `sidecar/`
-with `network_mode: service:enshrouded` (the plugin API is never exposed on the host).
+`deploy` places `dbghelp.dll` at `<dest>/server/takaro/plugin/dbghelp.dll` (atomically —
+the game loads that file) and unpacks `TakaroEnshroudedSidecar/` to
+`<dest>/server/takaro/sidecar/`, which is what the compose files build the sidecar image
+from. A zip that holds anything outside its one top-level folder is refused and nothing is
+extracted. Stop the game container first: a running server holds the DLL open.
+
+Known gap: `deploy` records only the **last** component in the ledger's `artifact`, so
+`ledger check` proves the sidecar zip's hash and not the plugin's. The plugin's own hash is
+proven by `build` (which validates every artifact against the target) and by the
+`takaro enshrouded plugin <version> starting` line `verify` requires in `plugin.log`.
+
+## Verify
+
+```bash
+maintenance/bin/takaro-maint verify --game enshrouded --artifacts <dir> --out <reports> \
+    --checks build,startup,plugin-health,sidecar-identify,sidecar-players,sidecar-catalog,\
+sidecar-console,action,reconnect,event,stop --negative
+```
+
+It boots the pinned image on the exact install with the deployed DLL and the updater
+override, starts a second container built from the **shipped** sidecar zip in the game
+container's network namespace, and reports:
+
+| Check | What it proves |
+|---|---|
+| `plugin-health` | the compatibility claim: `/health` `status: ok`, `gameBuild == 1024233`, no capability `degraded`, the plugin version this run built, and the container's Proton equal to the target's |
+| `sidecar-identify` | the sidecar reached Takaro and identified (Enshrouded's `identify`) |
+| `sidecar-players` | `testReachability` connectable with a **null** reason, `getPlayers` empty |
+| `sidecar-catalog` | `listItems`/`listEntities` non-empty, every entry with a `code` and a `name` |
+| `sidecar-console` | `executeConsoleCommand version` answers with the plugin version and game build |
+| `action` | `sendMessage` resolves end to end (nobody is online, so this proves the path, not delivery) |
+| `reconnect` | Takaro drops the socket with 1001 and the sidecar comes back and is usable |
+| `event` | a plugin log event reaches Takaro as a `gameEvent` |
+| `stop` | the server saves, supervisord respawns it, the container stops 0, no update path ran and every pinned file still hashes the same |
+| `negative-degraded-hooks` | with `--negative`: a build with one corrupted signature is reported `degraded` and **fails** the claim while the server stays alive |
+
+The base `identify`/`heartbeat`/`players`/`catalog-*`/`console`/`shutdown` checks are the
+generic runner's, and they watch the *game* server — which here never speaks to Takaro. The
+`sidecar-*` checks replace them and each says so in its detail, so an Enshrouded report
+reaches `startup` and never claims `protocol`.
+
+`--negative` needs zig on the host (`TAKARO_MAINT_ZIG=/path/to/zig`); without it the check
+is skipped with that reason rather than passed.
+
+`mod/deploy.sh` is gone; it printed the two commands above and exits 2.
+
+## Run it locally (Docker)
+
+`docker-compose.example.yml` runs the image the target pins, by tag **and** digest, with
+`WINEDLLOVERRIDES=dbghelp=n,b`, the plugin bind-mounted read-only over
+`/opt/enshrouded/server/dbghelp.dll`, `server/enshrouded-updater` bind-mounted over the
+image's updater program, and the sidecar built from `./sidecar` with
+`network_mode: service:enshrouded` (the plugin API is never exposed on the host).
 
 ```bash
 cd games/enshrouded
 cp .env.example .env              # fill in tokens and role passwords
-./mod/build.sh
-mkdir -p data/enshrouded-plugin && cp mod/build/dbghelp.dll data/enshrouded-plugin/
+../../maintenance/bin/takaro-maint install --game enshrouded --dest "$PWD/data/enshrouded/server"
+../../maintenance/bin/takaro-maint build  --game enshrouded --version dev --out /tmp/ens-dist
+../../maintenance/bin/takaro-maint deploy --game enshrouded --dest "$PWD/data/enshrouded/server" \
+    --from /tmp/ens-dist/build-manifest.json
 docker compose -f docker-compose.example.yml --env-file .env up -d --build
 docker compose -f docker-compose.example.yml logs -f
 ```
 
-To update the plugin later: rebuild, stop the game container, replace `data/enshrouded-plugin/dbghelp.dll`,
-start it again (the server holds the DLL open while running).
+To update the plugin later: stop the game container (the server holds the DLL open), run
+`build` and `deploy` again, start it.
 
 UDP 15637 is published for clients. Check `GET /health` from inside the container for per-capability status.
+
+The dev rig's `dev-servers/compose/enshrouded.yml` runs the same image and the same two
+mounts, reading `ENSHROUDED_IMAGE` from the resolved target when the rig has resolved one.
+It has no `lib/games/enshrouded.sh` install/deploy step yet, so its data directory is laid
+down with the same `takaro-maint install`/`build`/`deploy` commands as above, pointed at
+`dev-servers/_data/enshrouded/server`.
 
 ## Environment
 
@@ -136,7 +280,8 @@ Status from live testing against Takaro (oracle: Takaro MCP), last updated 2026-
 - **Admins cannot be kicked/banned by the game itself**: Enshrouded ignores kick/ban for players whose group has `canKickBan`. Plugin >= 0.4.2 lifts that check for each Takaro kick/ban; older plugins return success while nothing happens.
 - **listLocations** is implemented (1031 locations) but Takaro never calls it, so it is not observable end-to-end.
 - **Log events are not stored** by Takaro as searchable events; they only surface via rate-limit records.
-- **Signatures are pinned to game build 1024233 (Steam build 23178631).** Every hook is anchored on code shape and self-checked at load; on a game update a mismatching capability reports `degraded` in `/health` (and reachability reason) while everything else keeps working and the server keeps running. Re-derive signatures after updates.
+- **Signatures are pinned to game build 1024233 (Steam build 23178631).** Every hook is anchored on code shape and self-checked at load; on a game update a mismatching capability reports `degraded` in `/health` (and reachability reason) while everything else keeps working and the server keeps running. Re-derive signatures after updates — see "Moving to a new game build" above.
+- **Catalogue names are the server's own codes with spaces**, not localised display names: no localisation ships with the dedicated server, so `Block_Roof_T5_Granite_Ornamented` becomes `Block Roof T5 Granite Ornamented`. `verify`'s `sidecar-catalog` check enforces `name != code` and no underscores; it cannot enforce what the server does not have.
 - Takaro rounds teleport coordinates to integers; the game nudges to a free voxel. `giveItem` stacks are split (game ignores count, max 64).
 - **Discord echo**: Takaro core stores its own server messages as player-less chat, and the built-in `chatBridge` relays them back to Discord. Use the `chatBridgeNoEcho` fork (GameToDiscord skips chat without a player).
 
@@ -149,15 +294,28 @@ tags the release and bumps both `games/enshrouded/version.txt` and the annotated
 `#define TAKARO_PLUGIN_VERSION "X.Y.Z" // x-release-please-version` line in `mod/src/common.h`,
 so the plugin's `takaro enshrouded plugin <version> starting` log line always matches the tag.
 
-`.github/workflows/enshrouded.yml` does the building. It runs the sidecar tests plus
-`mod/tests/run.sh` on every PR/push, cross-compiles `dbghelp.dll` with a sha256-pinned zig 0.13.0
-and packages two assets via `scripts/build-release.sh` and `scripts/build-sidecar-release.sh`:
+`.github/workflows/enshrouded.yml` runs the sidecar typecheck and tests plus
+`mod/tests/run.sh` on every PR/push, and then hands the packaging to the shared
+`connector-release.yml`, which resolves the target, builds it twice and compares the bytes,
+and publishes:
 
-- `takaro-enshrouded-plugin.zip` — `TakaroEnshrouded/dbghelp.dll` + `README.txt`
-- `takaro-enshrouded-sidecar.zip` — `TakaroEnshroudedSidecar/` with `dist/`, `package.json`,
-  `package-lock.json`, `Dockerfile`, `.dockerignore`, `.env.example`, `README.release.txt`
+- `takaro-enshrouded-plugin-proton-1024233-<v>.zip` — `TakaroEnshrouded/dbghelp.dll` + `README.txt`
+- `takaro-enshrouded-sidecar-proton-1024233-<v>.zip` — `TakaroEnshroudedSidecar/` with `dist/`,
+  `package.json`, `package-lock.json`, `Dockerfile` (the release one), `.dockerignore`,
+  `.env.example`, `README.release.txt`
+- a `.meta.json` beside each, `SHA256SUMS`, and the legacy names
+  `takaro-enshrouded-plugin.zip` / `takaro-enshrouded-sidecar.zip` as aliases of exactly
+  those bytes
+- `takaro-enshrouded-<v>.compat.json` — what this release was built against: the Steam pin
+  with both depot manifests, the image digest, the fingerprint, and
+  `verification.required: "contract"` with `executed: null`
 
-Where they go depends on the trigger (`scripts/release-params.sh`): a PR gets a disposable
-`pr-<n>-enshrouded` pre-release plus a sticky PR comment, a push to main refreshes the rolling
-`enshrouded-dev` pre-release, and a release-please release calls this workflow through
-`release-please.yml`'s `release-enshrouded` job to attach both zips to the real tag.
+`runtime: false`: the server is a Windows binary under Proton on top of an 8.8 GB depot set,
+which a hosted runner cannot boot, so CI claims contract verification only and the runtime
+proof comes from `takaro-maint verify --game enshrouded` run locally against the exact
+target. Onboarding that to CI is tracked separately.
+
+Where a release goes depends on the trigger (`scripts/release-params.sh`): a PR gets a
+disposable `pr-<n>-enshrouded` pre-release plus a sticky PR comment, a push to main refreshes
+the rolling `enshrouded-dev` pre-release, and a release-please release calls this workflow
+through `release-please.yml`'s `release-enshrouded` job to attach the assets to the real tag.

@@ -1,8 +1,16 @@
 # Takaro Enshrouded Connector
 
 A server-side-only connector (plugin + sidecar) that connects an Enshrouded dedicated
-server to Takaro. Tested against game build **1024233** (Steam build 23178631) running in the
-`mornedhels/enshrouded-server` Docker image; players do not install anything.
+server to Takaro. Players do not install anything.
+
+It is built against one exact server: game build **1024233** (Steam app 2278520, branch
+`public`, Steam build 23178631) running under **GE-Proton10-30** in
+`mornedhels/enshrouded-server:1.7.2-proton`. That is the build every result in the table
+below was proven on. The plugin finds game code by shape rather than by fixed addresses, so
+it loads on other builds too — but on another build the affected capabilities self-check as
+`degraded` in `/health`, and nothing here says they work there. **Keep the game server on
+the build the plugin was released for**, and read "A game update can switch a feature off"
+under Known issues before you let anything update it.
 
 The plugin alone cannot talk to Takaro, and the sidecar alone cannot read player positions,
 inventories, items or entities. Install both.
@@ -32,11 +40,17 @@ From the latest `enshrouded-vX.Y.Z` release on the releases page:
 
 Download both files:
 
-- **`takaro-enshrouded-plugin.zip`** — the game-server plugin (`dbghelp.dll` proxy)
-- **`takaro-enshrouded-sidecar.zip`** — the sidecar that talks to Takaro
+- **`takaro-enshrouded-plugin-proton-1024233-<version>.zip`** — the game-server plugin
+  (`dbghelp.dll` proxy)
+- **`takaro-enshrouded-sidecar-proton-1024233-<version>.zip`** — the sidecar that talks to
+  Takaro
+
+The name in the middle is the server the connector was built against: Proton, game build
+1024233. `takaro-enshrouded-plugin.zip` and `takaro-enshrouded-sidecar.zip` are still
+published next to them and are the same bytes, so an old bookmark keeps working.
 
 Direct link pattern:
-`https://github.com/gettakaro/connectors/releases/download/enshrouded-v<version>/takaro-enshrouded-plugin.zip`
+`https://github.com/gettakaro/connectors/releases/download/enshrouded-v<version>/takaro-enshrouded-plugin-proton-1024233-<version>.zip`
 
 The two **"Source code (zip/tar.gz)"** links GitHub adds to every release are an archive of this
 whole repository, not the connector — do not download those. Also do not use the `enshrouded-dev`
@@ -46,7 +60,7 @@ pre-release or a `pr-<number>-enshrouded` build; those are untested rolling buil
 
 Stop the game server first — a running server holds `dbghelp.dll` open.
 
-**Plugin.** `takaro-enshrouded-plugin.zip` contains one folder:
+**Plugin.** The plugin zip contains one folder:
 
 ```
 TakaroEnshrouded/
@@ -57,9 +71,9 @@ TakaroEnshrouded/
 The game server loads `dbghelp.dll` as a **dbghelp proxy**, so it has to sit next to
 `enshrouded_server.exe` and the server has to be told to prefer it over the system copy. With
 `docker-compose.example.yml`, copy **the DLL itself** (not the folder around it) to
-`data/enshrouded-plugin/dbghelp.dll`.
+`data/enshrouded/server/takaro/plugin/dbghelp.dll`.
 
-**Sidecar.** `takaro-enshrouded-sidecar.zip` contains one folder, `TakaroEnshroudedSidecar/`, with
+**Sidecar.** The sidecar zip contains one folder, `TakaroEnshroudedSidecar/`, with
 `dist/`, `package.json`, `package-lock.json`, `Dockerfile`, `.dockerignore`, `.env.example` and
 `README.release.txt`. `docker-compose.example.yml` builds the sidecar image from `./sidecar`, so
 unzip it next to the compose file and **rename the folder to `sidecar`**:
@@ -68,23 +82,36 @@ unzip it next to the compose file and **rename the folder to `sidecar`**:
 <your compose dir>/
     docker-compose.example.yml
     .env
+    server/
+        enshrouded-updater     <- from this folder in the repository (see below)
     sidecar/                   <- TakaroEnshroudedSidecar renamed
         Dockerfile
         dist/
         package.json
         package-lock.json
     data/
-        enshrouded/            (game server data, created by the container)
-        enshrouded-plugin/
-            dbghelp.dll        <- from takaro-enshrouded-plugin.zip
+        enshrouded/
+            server/            (game server data, created by the container)
+                takaro/
+                    plugin/
+                        dbghelp.dll   <- from the plugin zip
         enshrouded-sidecar/    (sidecar cursor/online state, created by the container)
 ```
 
 ```bash
-mkdir -p data/enshrouded-plugin data/enshrouded-sidecar
-cp /path/to/TakaroEnshrouded/dbghelp.dll data/enshrouded-plugin/
+mkdir -p data/enshrouded/server/takaro/plugin data/enshrouded-sidecar
+cp /path/to/TakaroEnshrouded/dbghelp.dll data/enshrouded/server/takaro/plugin/
 mv /path/to/TakaroEnshroudedSidecar ./sidecar
 ```
+
+**The updater override.** The image runs its own updater program at every container start:
+it asks Steam what the branch head is and, when that differs from the installed build, runs
+`steamcmd +app_update` over the install. On a plugin pinned to one build that is exactly
+what must not happen, so `docker-compose.example.yml` bind-mounts
+[`server/enshrouded-updater`](server/enshrouded-updater) (tracked next to this README) read-only over
+the image's copy. It starts the server and does nothing else. Copy that one file next to
+your compose file, keep it executable, and never run
+`supervisorctl start enshrouded-force-update` inside the container.
 
 If you would rather not use Docker for the sidecar, run it with Node.js 22 instead:
 `npm ci --omit=dev && node dist/index.js`, with the same environment variables the compose service
@@ -92,10 +119,12 @@ sets (see `README.release.txt` inside the zip). It must reach the plugin on
 `http://127.0.0.1:18890`, i.e. run on the game server's network.
 
 The compose file bind-mounts the DLL **read-only** to `/opt/enshrouded/server/dbghelp.dll`, so
-SteamCMD updates of the game cannot overwrite or delete it, and sets
+nothing inside the container can overwrite or delete it, and sets
 `WINEDLLOVERRIDES: "dbghelp=n,b"` on the game container so the server loads this DLL instead of the
-system one. If you use your own compose file or a native Windows server, you must reproduce both of
-those yourself.
+system one. It also pins the image by digest
+(`mornedhels/enshrouded-server:1.7.2-proton@sha256:85978a10…`), because a newer image carries a
+different Proton. If you use your own compose file or a native Windows server, you must reproduce
+all of that yourself.
 
 ### 4. Configure
 
@@ -171,16 +200,20 @@ means a game update moved code the plugin hooks (see Known issues).
 ```bash
 docker compose -f docker-compose.example.yml stop enshrouded
 # replace the DLL in place, keeping the bind mount valid
-cp /path/to/new/TakaroEnshrouded/dbghelp.dll data/enshrouded-plugin/dbghelp.dll
+cp /path/to/new/TakaroEnshrouded/dbghelp.dll data/enshrouded/server/takaro/plugin/dbghelp.dll
 # replace the sidecar folder with the new one, then rebuild
 rm -rf sidecar && mv /path/to/new/TakaroEnshroudedSidecar ./sidecar
 docker compose -f docker-compose.example.yml up -d --build
 ```
 
 Download both zips from the same release and upgrade them together. Your `.env`, the world in
-`data/enshrouded/` and the sidecar state in `data/enshrouded-sidecar/` (event cursor, online
-players) survive the upgrade — keep the cursor file so events are not replayed. Confirm the new
-version in the `takaro enshrouded plugin <version> starting` log line.
+`data/enshrouded/server/savegame/` and the sidecar state in `data/enshrouded-sidecar/` (event
+cursor, online players) survive the upgrade — keep the cursor file so events are not replayed.
+Confirm the new version in the `takaro enshrouded plugin <version> starting` log line.
+
+A release is named for the server build it was made for. If a release's name carries a game
+build other than the one your server runs, update the server to that build in the same
+maintenance window — plugin and game build belong together.
 
 ## What works, what doesn't
 
@@ -233,7 +266,11 @@ plugin **0.4.2**) with a real game client connected.
 - **A game update can switch a feature off.** The plugin finds game code by shape and self-checks at
   load; after a game update a mismatching feature reports `degraded` in `/health` and in Takaro's
   reachability reason, while the server and everything else keep running. It then needs a new
-  plugin build with re-derived signatures.
+  plugin build with re-derived signatures. The compose file in this folder is set up so the game
+  can only move when you decide it does: the image is pinned by digest, the install comes from
+  exactly the pinned Steam manifests, and the image's own updater program is replaced by
+  `server/enshrouded-updater`. If you host the server some other way, keep automatic game updates
+  off there too.
 - **Player names are Steam persona names**, not the in-game character names.
 
 ---
