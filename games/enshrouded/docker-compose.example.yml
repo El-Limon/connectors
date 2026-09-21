@@ -1,7 +1,19 @@
 name: enshrouded-takaro
 services:
+  # The exact server the Takaro plugin is built for. The image is pinned by tag AND digest
+  # and must stay equal to catalog/enshrouded/targets/proton-1024233.json (a test asserts
+  # it): a newer image would carry a different Proton, and a newer game build would move
+  # the code the plugin hooks by signature.
+  #
+  # The game files under ./data/enshrouded/server come from
+  #   maintenance/bin/takaro-maint install --game enshrouded --dest ./data/enshrouded/server
+  # which downloads exactly the pinned depot manifests, and NOT from the image's SteamCMD.
+  # ./server/enshrouded-updater (tracked next to this file) replaces the image's updater
+  # program, which would otherwise compare the installed build against the branch head at
+  # every container start and update over it. There is deliberately no UPDATE_CRON,
+  # RESTART_CRON, GAME_BRANCH or STEAMCMD_ARGS here.
   enshrouded:
-    image: mornedhels/enshrouded-server:latest
+    image: mornedhels/enshrouded-server:1.7.2-proton@sha256:85978a10f88a85ab0a0aa92e9821d30424895d38bf81fe543532451219c42d0d
     container_name: enshrouded-server
     restart: unless-stopped
     stop_grace_period: 2m
@@ -33,9 +45,12 @@ services:
       WINEDLLOVERRIDES: "dbghelp=n,b"
       TAKARO_PLUGIN_TOKEN: "${TAKARO_ENSHROUDED_PLUGIN_TOKEN:?required}"
     volumes:
-      - ./data/enshrouded:/opt/enshrouded
-      # Takaro plugin (dbghelp.dll proxy) mounted read-only so SteamCMD updates cannot overwrite/remove it
-      - ./data/enshrouded-plugin/dbghelp.dll:/opt/enshrouded/server/dbghelp.dll:ro
+      - ./data/enshrouded/server:/opt/enshrouded/server
+      # Takaro plugin (dbghelp.dll proxy), placed by `takaro-maint deploy` and mounted
+      # read-only so nothing inside the container can replace it.
+      - ./data/enshrouded/server/takaro/plugin/dbghelp.dll:/opt/enshrouded/server/dbghelp.dll:ro
+      # No boot of this server ever runs SteamCMD.
+      - ./server/enshrouded-updater:/usr/local/etc/enshrouded/enshrouded-updater:ro
     logging:
       driver: json-file
       options:
@@ -44,9 +59,11 @@ services:
 
   # Takaro sidecar (connector bridge). Shares the game container's network namespace so the plugin's
   # loopback-only API (127.0.0.1:18890) is reachable and never exposed on the host.
+  # ./sidecar is the TakaroEnshroudedSidecar folder from takaro-enshrouded-sidecar-*.zip,
+  # renamed: the Dockerfile it ships builds from the packaged dist/ and needs no sources.
   enshrouded-takaro:
     build: ./sidecar
-    image: takaro-enshrouded-sidecar:latest
+    image: takaro-enshrouded-sidecar:local
     container_name: enshrouded-takaro-sidecar
     restart: unless-stopped
     network_mode: "service:enshrouded"
@@ -65,7 +82,7 @@ services:
       TAKARO_CURSOR_FILE: /data/event-cursor.json
       SIDECAR_HEALTH_PORT: "18891"
     volumes:
-      - ./data/enshrouded:/opt/enshrouded:ro
+      - ./data/enshrouded/server:/opt/enshrouded/server:ro
       - ./data/enshrouded-sidecar:/data
     logging:
       driver: json-file
