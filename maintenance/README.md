@@ -38,6 +38,9 @@ frozen, managed Python 3.12 environment. Docker is needed for `verify` and for
 | `deploy --game G [--target ID] --dest DIR --from build-manifest.json` | Put the built artifact into an installed game directory and record it in the ledger. |
 | `verify --game G [--target ID] --artifacts DIR --out DIR` | Boot the target in a container against a local fake Takaro and run the checks; writes a verification report. |
 | `docs render --game G [--write]` | Regenerate the target table in `games/<g>/README.md`. |
+| `release assemble --connector C --version V --channel stable\|rolling\|pr --tag TAG --dist DIR --out DIR [--reports DIR]` | Turn the per-target builds and verification reports into one complete release directory: artifacts, legacy aliases, reports, `SHA256SUMS` and the compatibility record. |
+| `release publish --connector C --channel … --tag TAG --assembled DIR` | Upload that directory, read it back from GitHub, and finalise the release. Never clobbers: identical bytes are skipped, conflicting bytes stop the run. |
+| `release verify --tag TAG [--connector C] [--expect DIR] [--out DIR]` | Download every asset of a release and prove it is the set its compatibility record describes. |
 
 Selection is the same everywhere: `--target` wins; without it the single `default: true` record
 for the game (and `--platform`, when given) is used. Zero or two defaults is an error rather than
@@ -99,3 +102,4 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [The catalog](../catalog/README.md) — what a target record is and how to add one.
 - [Discovery](docs/discovery.md) — how `scan` turns upstream releases into deduplicated maintenance issues.
 - [Runtime verification](docs/verify.md) — what `verify` boots, checks and reports, locally and in CI.
+- [Releases](docs/release.md) — the release channels, the asset names, the compatibility record and how a release is recovered.
