@@ -8,8 +8,8 @@
   "support": {
     "status": "maintained",
     "since": "2026-09-17",
-    "evidence": ["takaro-maint verify 2026-09-17: protocol level on Minecraft 26.1.2 / Fabric Loader 0.19.3 / Java 25 (gettakaro/connectors#150)", "takaro-maint verify 2026-09-21: protocol level against the local fake Takaro (connector load, identify, heartbeat, reconnect, players, catalogues, console, shutdown, restart, sibling-jar refusal) and one hosted identify, reachability, player listing and shutdown against Takaro (gettakaro/connectors#152)"],
-    "notes": "Backport target for servers still on Minecraft 26.1.2 (gettakaro/connectors#150). Fabric Loader 0.19.3 is the tested minimum. Gameplay evidence with a real client is still pending (gettakaro/connectors#174)."
+    "evidence": ["takaro-maint verify 2026-09-17: protocol level on Minecraft 26.1.2 / Fabric Loader 0.19.3 / Java 25 (gettakaro/connectors#150)", "takaro-maint verify 2026-09-21: protocol level against the local fake Takaro (connector load, identify, heartbeat, reconnect, players, catalogues, console, shutdown, restart, sibling-jar refusal) and one hosted identify, reachability, player listing and shutdown against Takaro (gettakaro/connectors#152)", "takaro-maint gameplay 2026-09-21: recorded real-client gameplay through Takaro on this target - join, chat, inventory read, item grant, teleport and leave (gettakaro/connectors#152, gettakaro/connectors#174)"],
+    "notes": "Backport target for servers still on Minecraft 26.1.2 (gettakaro/connectors#150). Fabric Loader 0.19.3 is the tested minimum. Real-client gameplay (join, chat, inventory read, item grant, teleport, leave) is recorded for this target."
   },
   "inputs": {
     "game": {
