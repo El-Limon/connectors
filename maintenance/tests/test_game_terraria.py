@@ -1287,6 +1287,10 @@ def test_a_default_run_drops_the_checks_this_connector_cannot_answer(run: Any, r
     selected = set(fake_run.options.only)
     assert selected.isdisjoint(hooks.UNSUPPORTED_CHECKS)
     assert selected == set(check_ids("terraria")) - set(hooks.UNSUPPORTED_CHECKS)
+    # Each dropped check names the Terraria check that stands in for it, and the report
+    # carries that map under `handshake` -- the runner's own skip reason cannot say it.
+    assert set(hooks.UNSUPPORTED_CHECKS) == {"connector-load", "identify", "catalog-items", "catalog-entities"}
+    assert all(reason for reason in hooks.UNSUPPORTED_CHECKS.values())
     # Everything Terraria does answer is still in, including the base lifecycle.
     assert {"build", "startup", "heartbeat", "players", "console", "shutdown"} <= selected
     assert set(hooks.CHECK_IDS) <= selected

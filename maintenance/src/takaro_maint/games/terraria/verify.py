@@ -330,6 +330,9 @@ async def _check_handshake(run: Any, fake: Any, alive: Any) -> checks.CheckResul
                 "Terraria's equivalent of `identify` + `connector-load`: the plugin logs its load "
                 "in the server log and the bridge logs 'Identified successfully' in its own"
             ),
+            # The report's own record of why four base checks read `skip`: the runner can
+            # only say "not selected by --checks", which does not say who did the selecting.
+            "standsInFor": dict(UNSUPPORTED_CHECKS),
             "problems": problems,
         },
         {"file": BRIDGE_LOG, "line": identified[0]} if identified else {"file": BRIDGE_LOG},
