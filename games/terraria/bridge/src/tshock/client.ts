@@ -73,10 +73,15 @@ export class TShockClient {
     // /v2/server/broadcast answers 200 and reaches the players, but writes nothing to the
     // server console, so an operator reading the log never sees what Takaro said. The
     // /broadcast command reaches the same players and logs "(Server Broadcast) <message>"
-    // (verified against TShock 6.1.0).
-    const result = await this.rawCommand(`/broadcast ${message}`);
-    if (!result.success) return result;
-    return { success: true, rawResult: result.rawResult || 'The message was broadcasted successfully' };
+    // (verified against TShock 6.1.0). It needs the tshock.broadcast permission, which a
+    // least-privilege REST user may not have -- so the endpoint stays as the fallback
+    // rather than chat delivery failing over a log line.
+    const viaCommand = await this.rawCommand(`/broadcast ${message}`);
+    if (viaCommand.success) {
+      return { success: true, rawResult: viaCommand.rawResult || 'The message was broadcasted successfully' };
+    }
+    const data = await this.get('/v2/server/broadcast', { token: await this.getToken(), msg: message }, true);
+    return { success: statusOk(data), rawResult: responseText(data) };
   }
 
   async rawCommand(command: string): Promise<CommandResult> {

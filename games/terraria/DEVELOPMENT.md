@@ -114,6 +114,11 @@ which is the common setup and needs no extra configuration. For a more narrowly 
 `takaro.admin` explicitly: without it `teleportPlayer` fails, `getPlayerLocation` reports `0,0,0`,
 and `getPlayerInventory` returns an empty list, all rather than failing loudly.
 
+`sendMessage` runs TShock's own `/broadcast`, so the message reaches the server console as well
+as the players — that command needs `tshock.broadcast`. When the REST user does not hold it the
+bridge falls back to `/v2/server/broadcast`, which reaches the players but logs nothing, so chat
+delivery never depends on the permission.
+
 ## Bridge
 
 ### Build

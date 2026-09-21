@@ -48,6 +48,7 @@ before(async () => {
       // failure text in `response`. These are verbatim responses captured from a live server.
       const failures: Record<string, string> = {
         '/bad': 'Invalid command entered. Type /help for a list of valid commands.',
+        '/broadcast denied': 'You do not have access to this command.',
         '/give "19" "CodexTest" 7': 'Player does not have free slots!',
         '/give 19 NoSuchPlayer 1': 'Invalid player!',
         '/give notanitem CodexTest 1': 'Invalid item type!',
@@ -130,6 +131,9 @@ test('executes raw commands, broadcast, ban, unban, and guarded shutdown with to
   // A broadcast runs as /broadcast so it reaches the server console as well as the players.
   assert.deepEqual(await client.broadcast('hello'), { success: true, rawResult: 'ran /broadcast hello' });
   assert.ok(seen.some((entry) => entry.includes('cmd=%2Fbroadcast+hello') || entry.includes('cmd=%2Fbroadcast%20hello')));
+  // A REST user without tshock.broadcast still delivers, through the endpoint.
+  assert.deepEqual(await client.broadcast('denied'), { success: true, rawResult: 'Broadcasted denied' });
+  assert.ok(seen.some((entry) => entry.includes('/v2/server/broadcast') && entry.includes('msg=denied')));
   assert.equal((await client.createBan({ name: 'BadPlayer', reason: 'test' })).success, true);
   assert.equal((await client.destroyBan({ user: 'BadPlayer', type: 'user' })).success, true);
   assert.equal((await client.shutdown(false)).success, true);

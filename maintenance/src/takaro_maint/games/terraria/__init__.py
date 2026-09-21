@@ -208,8 +208,8 @@ class TerrariaAdapter:
         elif component["role"] == "bridge":
             self._deploy_bridge(install_dir, artifact)
 
-    def _entries(self, artifact: Path, folder: str) -> list[str]:
-        """Every zip entry, checked to be inside ``folder`` before anything is extracted."""
+    def _entries(self, artifact: Path, folder: str, required: tuple[str, ...]) -> list[str]:
+        """Every zip entry, checked before anything is extracted: inside ``folder``, and complete."""
         with zipfile.ZipFile(artifact) as archive:
             names = archive.namelist()
         entries: list[str] = []
@@ -223,11 +223,16 @@ class TerrariaAdapter:
                 )
             paths.safe_relative(relative, field="artifact zip entry")
             entries.append(relative)
+        # An archive that unpacks cleanly but holds nothing the server can load would
+        # otherwise be reported as a successful deploy.
+        missing = [f"{folder}/{name}" for name in required if f"{folder}/{name}" not in entries]
+        if missing:
+            raise ConflictError(f"{artifact.name} is missing {', '.join(missing)}; nothing was extracted")
         return entries
 
     def _deploy_plugin(self, install_dir: Path, artifact: Path) -> None:
         """TShock loads ``plugins/<name>.dll`` from the top level, so the one DLL lands there."""
-        self._entries(artifact, PLUGIN_FOLDER)
+        self._entries(artifact, PLUGIN_FOLDER, (PLUGIN_DLL,))
         target = install_dir / PLUGIN_DLL
         staged = install_dir / (PLUGIN_DLL + ".tmp")
         with zipfile.ZipFile(artifact) as archive, archive.open(f"{PLUGIN_FOLDER}/{PLUGIN_DLL}") as source:
@@ -240,7 +245,7 @@ class TerrariaAdapter:
 
     def _deploy_bridge(self, install_dir: Path, artifact: Path) -> None:
         """The bridge folder is replaced wholesale; ``bridge/TakaroConfig.txt`` is never touched."""
-        self._entries(artifact, BRIDGE_FOLDER)
+        self._entries(artifact, BRIDGE_FOLDER, ("dist/index.js", "package.json"))
         folder = install_dir / BRIDGE_FOLDER
         # Staged, not extracted over the live folder: a truncated or corrupt archive would
         # otherwise delete a working bridge and leave half of a broken one behind.

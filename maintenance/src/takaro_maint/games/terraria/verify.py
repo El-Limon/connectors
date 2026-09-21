@@ -18,12 +18,13 @@ a declared volume, so a ``--user`` run dies before it has read its configuration
 therefore leaves root-owned files behind in its data directory, and ``after_shutdown`` gives
 them back to the calling user with a throwaway container.
 
-*Which checks are honest here.* ``identify`` and ``connector-load`` look for lines in the
-*server* log that this connector does not write — it writes them in its own log — so they
-are not run; ``handshake`` is the equivalent and says so in its detail. ``catalog-items``
-spot-checks a Minecraft id, so ``items`` replaces it with Terraria's; ``catalog-entities``
-would assert a registry Terraria does not have, so ``entities`` states that limit instead.
-A Terraria report therefore reaches ``startup`` and never claims ``protocol``.
+*Which checks are honest here.* Four base checks cannot be satisfied by this connector, and
+``before_boot`` takes them out of a run that named no ``--checks`` rather than letting them
+fail: see ``UNSUPPORTED_CHECKS``. ``handshake`` is the equivalent of ``identify`` plus
+``connector-load`` and says so in its detail, ``items`` replaces ``catalog-items`` with a
+Terraria spot check, and ``entities`` states the limit ``catalog-entities`` would assert
+against. A Terraria report therefore reaches ``startup`` and never claims ``protocol``.
+A caller that names ``--checks`` gets exactly what it named, including any of the four.
 """
 
 from __future__ import annotations
@@ -42,6 +43,15 @@ from ... import output
 from ...verify import checks, checks_lifecycle, runner
 
 CHECK_IDS = ("handshake", "items", "entities", "action", "references", "reconnect")
+
+#: Base checks this connector cannot satisfy, and the Terraria check that stands in for each.
+#: A run that names no ``--checks`` would otherwise spend four timeouts failing on them.
+UNSUPPORTED_CHECKS = {
+    "connector-load": "the load line is in the server log but the connector is the bridge; `handshake` asserts both",
+    "identify": "the bridge logs its identify in its own log, not the server's; `handshake` asserts it there",
+    "catalog-items": "spot-checks a Minecraft item id; `items` spot-checks a Terraria one",
+    "catalog-entities": "asserts an entity registry Terraria does not have; `entities` states that limit",
+}
 
 #: TShock's own "the listener is up" line, as the server writes it.
 READY_LINE = re.compile(r"Server started")
@@ -128,8 +138,23 @@ def render_bridge_config(data_dir: Path, takaro_env: dict[str, str], rest_token:
 # --------------------------------------------------------------------------- boot hooks
 
 
+def select_checks(run: Any) -> None:
+    """Narrow a default run to the checks this connector can answer.
+
+    The runner runs every check unless ``--checks`` names a subset, and four of its base
+    checks look for things Terraria does not have. Left alone they would turn the obvious
+    command into four guaranteed failures, so a run that named nothing gets everything else.
+    """
+    if run.options.only is not None:
+        return
+    run.options.only = [check for check in runner.check_ids("terraria") if check not in UNSUPPORTED_CHECKS]
+    for check, reason in sorted(UNSUPPORTED_CHECKS.items()):
+        output.info(f"not running {check}: {reason}")
+
+
 def before_boot(run: Any, takaro_env: dict[str, str]) -> None:
     """Both configuration files, before the server container exists."""
+    select_checks(run)
     run.rest_token = secrets.token_urlsafe(24)
     tshock = render_tshock_config(run.data_dir, run.rest_token)
     bridge = render_bridge_config(run.data_dir, takaro_env, run.rest_token, run.options.run_id)

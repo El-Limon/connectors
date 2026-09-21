@@ -105,10 +105,13 @@ def _sort_key(tag: str) -> list[tuple[int, int, str]]:
     """
     key: list[tuple[int, int, str]] = []
     for part in re.split(r"[.-]", tag):
-        if part.isdigit():
-            key.append((0, int(part), ""))
-        else:
-            key.append((1, 0, part))
+        # Each run of digits is its own number: "pre10" has to sort after "pre9", which it
+        # does not while the whole word is compared as a string.
+        for token in re.findall(r"\d+|\D+", part):
+            if token.isdigit():
+                key.append((0, int(token), ""))
+            else:
+                key.append((1, 0, token))
     return key
 
 
@@ -214,6 +217,13 @@ class OciRegistryProvider(Provider):
             raise UpstreamUnavailable(
                 f"{url}: digest header disagrees with the manifest body "
                 f"(header {str(published).strip()}, body {digest})",
+                url=url,
+            )
+        # Asking by digest is the whole point of a pinned observation, so the bytes that
+        # come back have to be the bytes that digest names -- a header is not evidence.
+        if reference.startswith("sha256:") and reference != digest:
+            raise UpstreamUnavailable(
+                f"{url}: the body does not hash to the digest it was fetched by (asked for {reference}, got {digest})",
                 url=url,
             )
         if not isinstance(document, dict):
@@ -334,7 +344,16 @@ class OciRegistryProvider(Provider):
             if not config_digest:
                 raise UpstreamUnavailable(f"{url}: the platform manifest names no config blob", url=url)
             blob_url = f"{base}/v2/{repository}/blobs/{config_digest}"
-            config, _, _ = self._get_json(blob_url, "application/json")
+            config, _, blob = self._get_json(blob_url, "application/json")
+            # The labels this reports become the observation's facts; unhashed bytes from a
+            # proxy could put any version, revision or date in them.
+            blob_digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+            if blob_digest != config_digest:
+                raise UpstreamUnavailable(
+                    f"{blob_url}: the config blob does not hash to the digest the manifest names "
+                    f"(manifest {config_digest}, body {blob_digest})",
+                    url=blob_url,
+                )
         except Exception:
             # The scan is about to mark this whole source failed; a readiness row built
             # from the listing it already recorded would be a claim on a broken source.

@@ -480,6 +480,7 @@ class FakeOptions:
     def __init__(self, run_id: str = "tm148-163") -> None:
         self.run_id = run_id
         self.labels = ["tm.issue=163"]
+        self.only: list[str] | None = None
 
 
 class FakeRun:
@@ -890,6 +891,37 @@ def test_oci_registry_enrich_reads_labels_from_the_platform_config() -> None:
     assert enriched.facts["releaseTime"] == "2026-03-11T18:48:45.415Z"
 
 
+def test_oci_registry_refuses_bytes_that_do_not_hash_to_the_digest_they_were_fetched_by() -> None:
+    """Fetching by digest is the pin; a body that is not those bytes is not the image."""
+    from takaro_maint.exit_codes import MaintError
+
+    readiness.reset_registry()
+    provider = provider_for("oci-registry")
+
+    # A platform manifest swapped for another real manifest: well-formed, wrong bytes.
+    with FakeUpstream() as upstream:
+        serve_registry(upstream)
+        upstream.add(f"/v2/{REPOSITORY}/manifests/{PLATFORM_DIGEST}", index_bytes("6.0.0"))
+        source = oci_source(upstream.base_url)
+        observation = provider.observe(source).observations[0]
+        with pytest.raises(MaintError) as manifest_error:
+            provider.enrich(observation, source)
+    assert manifest_error.value.code == 4
+    assert "does not hash to the digest it was fetched by" in str(manifest_error.value)
+
+    # The config blob the manifest names, replaced with someone else's labels.
+    readiness.reset_registry()
+    with FakeUpstream() as upstream:
+        serve_registry(upstream)
+        upstream.add(f"/v2/{REPOSITORY}/blobs/{CONFIG_DIGEST}", b'{"config": {"Labels": {"a": "b"}}}')
+        source = oci_source(upstream.base_url)
+        observation = provider.observe(source).observations[0]
+        with pytest.raises(MaintError) as blob_error:
+            provider.enrich(observation, source)
+    assert blob_error.value.code == 4
+    assert "the config blob does not hash to the digest the manifest names" in str(blob_error.value)
+
+
 def test_no_provider_names_a_game() -> None:
     """The provider is generic: a second game pointing at a registry writes no Python."""
     for module in sorted(Path(REPO_ROOT / "maintenance/src/takaro_maint/providers").glob("*.py")):
@@ -1239,3 +1271,68 @@ def test_a_corrupt_bridge_archive_leaves_the_working_bridge_in_place(run: Any, p
     assert "CRC" in stderr, stderr
     assert live.read_text() == "bridge"
     assert not (dest / "bridge" / ".TakaroTerrariaBridge.incoming").exists()
+
+
+def test_a_default_run_drops_the_checks_this_connector_cannot_answer(run: Any, repo: Path, tmp_path: Path) -> None:
+    """The obvious command must not be four guaranteed failures."""
+    from takaro_maint.verify.runner import check_ids
+
+    resolved = resolve(run, repo)
+    fake_run = FakeRun(tmp_path, resolved)
+    assert fake_run.options.only is None
+
+    hooks.before_boot(fake_run, TAKARO_ENV)
+
+    assert fake_run.options.only is not None
+    selected = set(fake_run.options.only)
+    assert selected.isdisjoint(hooks.UNSUPPORTED_CHECKS)
+    assert selected == set(check_ids("terraria")) - set(hooks.UNSUPPORTED_CHECKS)
+    # Everything Terraria does answer is still in, including the base lifecycle.
+    assert {"build", "startup", "heartbeat", "players", "console", "shutdown"} <= selected
+    assert set(hooks.CHECK_IDS) <= selected
+
+    # A caller that named its own set gets exactly that set, untouched.
+    chosen = FakeRun(tmp_path / "second", resolved)
+    chosen.options.only = ["startup", "identify"]
+    hooks.before_boot(chosen, TAKARO_ENV)
+    assert chosen.options.only == ["startup", "identify"]
+
+
+@pytest.mark.parametrize(
+    ("role", "contents"),
+    [
+        ("plugin", {"README.txt": "nothing here"}),
+        ("bridge", {"README.md": "nothing here"}),
+    ],
+)
+def test_an_archive_without_what_the_server_loads_is_refused(
+    run: Any, pinned: Any, tmp_path: Path, role: str, contents: dict[str, str]
+) -> None:
+    """A zip that unpacks cleanly and holds nothing loadable is not a deploy."""
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    folder = "TakaroTerrariaEvents" if role == "plugin" else "TakaroTerrariaBridge"
+    name = PLUGIN_ZIP if role == "plugin" else BRIDGE_ZIP
+    (plugin_zip if role == "bridge" else bridge_zip)(directory)
+    make_zip(directory / name, folder, contents)
+
+    code, payload, _ = deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))
+
+    assert code == 7, payload
+    assert "is missing" in json.dumps(payload), payload
+    # Only the role under test: the deploy command applies roles one at a time, so the
+    # other one may already have landed. That partial-upgrade window is the core's.
+    landed = (
+        dest / "plugins" / "TakaroTerrariaEvents.dll" if role == "plugin" else dest / "bridge" / "TakaroTerrariaBridge"
+    )
+    assert not landed.exists()
+
+
+def test_prerelease_tags_sort_by_number_not_by_string() -> None:
+    from takaro_maint.providers.oci_registry import _sort_key
+
+    tags = ["6.0.0-pre9", "6.0.0-pre10", "6.0.0-pre2", "6.0.0"]
+
+    assert sorted(tags, key=_sort_key) == ["6.0.0", "6.0.0-pre2", "6.0.0-pre9", "6.0.0-pre10"]
+    assert max(tags, key=_sort_key) == "6.0.0-pre10"
