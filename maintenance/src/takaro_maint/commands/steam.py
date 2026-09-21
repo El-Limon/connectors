@@ -43,7 +43,7 @@ def selects(relative: str, selectors: list[str]) -> bool:
     return False
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("steam", help="pin and fetch Steam-delivered server files")
     inner = parser.add_subparsers(dest="steam_command", metavar="<subcommand>")
 
@@ -504,7 +504,7 @@ def _read_marker(dest: Path) -> dict[str, Any] | None:
     if not marker.is_file():
         return None
     try:
-        return json.loads(marker.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+        return json.loads(marker.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ConflictError(f"{marker} is not valid JSON ({exc}); delete the directory and fetch again") from exc
 

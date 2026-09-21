@@ -15,14 +15,14 @@ from .. import paths
 
 
 @cache
-def _registry(schema_dir: str) -> Registry:  # type: ignore[type-arg]
+def _registry(schema_dir: str) -> Registry:
     directory = Path(schema_dir)
     resources = []
     for file in sorted(directory.rglob("*.schema.json")):
         document = json.loads(file.read_text(encoding="utf-8"))
         resource = Resource.from_contents(document, default_specification=DRAFT202012)
         resources.append((document["$id"], resource))
-    return Registry().with_resources(resources)  # type: ignore[return-value,arg-type]
+    return Registry().with_resources(resources)
 
 
 def load_schema(name: str) -> dict[str, Any]:

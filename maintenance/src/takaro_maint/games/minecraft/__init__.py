@@ -125,7 +125,7 @@ class MinecraftAdapter:
         for module in platforms().values():
             parsed = module.parse_runtime_identity(log_line)
             if parsed is not None:
-                return parsed  # type: ignore[no-any-return]
+                return parsed
         return None
 
     def preserve_globs(self, resolved: dict[str, Any]) -> list[str]:

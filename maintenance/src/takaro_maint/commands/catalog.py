@@ -13,7 +13,7 @@ from ..catalog import ids, load, validate_catalog
 from ..exit_codes import OK, IntegrityError, UsageError
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("catalog", help="validate the catalog and record upstream hashes")
     inner = parser.add_subparsers(dest="catalog_command", metavar="<subcommand>")
 

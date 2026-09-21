@@ -21,7 +21,7 @@ LEGACY_NAMES = ("TakaroMinecraft.jar",)
 LEGACY_PREFIXES = ("takaro-minecraft-mod-", "takaro-fabric-", "takaro-paper-", "takaro-neoforge-")
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("deploy", help="deploy a built artifact into an installed game directory")
     add_selection_arguments(parser)
     parser.add_argument("--dest", required=True, help="the installed game directory")
@@ -67,16 +67,29 @@ def _deploy(args: Any) -> int:
 
         install_dir = dest / paths.safe_relative(component["installDir"], field="components[].installDir")
         install_dir.mkdir(parents=True, exist_ok=True)
-        for existing in sorted(install_dir.iterdir()):
-            if not existing.is_file() or existing.name == row["file"]:
-                continue
-            if existing.name in LEGACY_NAMES or any(existing.name.startswith(p) for p in LEGACY_PREFIXES):
-                existing.unlink()
-                removed.append(f"{component['installDir']}/{existing.name}")
+        superseded = [
+            existing
+            for existing in sorted(install_dir.iterdir())
+            if existing.is_file()
+            and existing.name != row["file"]
+            and (existing.name in LEGACY_NAMES or any(existing.name.startswith(p) for p in LEGACY_PREFIXES))
+        ]
 
+        # Stage, fsync and swap before removing anything: a copy that dies halfway (ENOSPC,
+        # permissions, a kill) must leave the previously deployed connector in place rather than
+        # a directory with no connector at all and a ledger that still describes the old one.
         staged = install_dir / (row["file"] + ".tmp")
-        shutil.copy2(source, staged)
+        try:
+            shutil.copy2(source, staged)
+            with staged.open("rb") as handle:
+                os.fsync(handle.fileno())
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
         os.replace(staged, install_dir / row["file"])
+        for existing in superseded:
+            existing.unlink()
+            removed.append(f"{component['installDir']}/{existing.name}")
         # A game whose artifact is not loaded as it lands -- an archive the server expects
         # unpacked, say -- unpacks it here, once the file itself is in place.
         after_deploy = getattr(adapter_for(target.game), "after_deploy", None)

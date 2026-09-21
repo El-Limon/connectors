@@ -10,14 +10,26 @@
 ds_maint() { "${REPO_ROOT}/maintenance/bin/takaro-maint" "$@"; }
 
 # ds_target <rig-game-id> -> the catalog target id driving it, empty when there is none.
+# A failing tool is not the same answer as a game with no target. An empty result from a
+# successful call means "this game is not catalog-driven"; a failure means the rig cannot tell,
+# and must stop rather than skip every catalog check below and boot whatever is on disk. The
+# caller runs this in a command substitution, so the failure is reported by exit status.
 ds_target() {
-    ds_maint targets list --rig-game "$1" --format json 2>/dev/null \
-        | python3 -c 'import json,sys
-try:
-    targets = json.load(sys.stdin)["targets"]
-except Exception:
-    targets = []
+    local listing
+    if ! listing="$(ds_maint targets list --rig-game "$1" --format json)"; then
+        ds_warn "takaro-maint targets list --rig-game ${1} failed; see the error above"
+        return 1
+    fi
+    printf '%s' "$listing" | python3 -c 'import json,sys
+targets = json.load(sys.stdin)["targets"]
 print(targets[0]["id"] if targets else "")'
+}
+
+# ds_target_failed <rig-game-id> — the message every caller of ds_target stops with.
+# ds_die has to run in the caller, not inside the command substitution, or the exit is swallowed.
+ds_target_failed() {
+    ds_die "cannot resolve the catalog target for ${1}; the rig will not touch a game whose
+  catalog target it could not read."
 }
 
 # The catalog game a rig game belongs to (minecraft-fabric -> minecraft).
@@ -36,7 +48,7 @@ ds_target_dest() { ds_dispatch_or "$(ds_data_dir "$1")" ds_target_dest "$1"; }
 # Resolve the target into the env file compose reads.
 ds_write_target_env() {
     local game="$1" target
-    target="$(ds_target "$game")"
+    target="$(ds_target "$game")" || ds_target_failed "$game"
     [ -n "$target" ] || return 0
     mkdir -p "${DS_DATA}/.targets"
     ds_maint targets resolve \
@@ -50,7 +62,7 @@ ds_write_target_env() {
 # Refuse to start a target-driven game whose data dir does not hold that target.
 ds_preflight_target() {
     local game="$1" target
-    target="$(ds_target "$game")"
+    target="$(ds_target "$game")" || ds_target_failed "$game"
     [ -n "$target" ] || return 0
     if [ ! -f "$(ds_target_env_file "$game")" ]; then
         ds_die "${game} is driven by catalog target ${target} but has no resolved environment.

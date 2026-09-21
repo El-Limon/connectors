@@ -35,6 +35,11 @@ def source_revision(repo_root: Path, watched: list[str]) -> tuple[str, bool]:
     return head, bool(status)
 
 
+def watched_paths(game_id: str) -> list[str]:
+    """The paths whose uncommitted changes make a build or a verification of ``game_id`` dirty."""
+    return [f"games/{game_id}", f"catalog/{game_id}"]
+
+
 def artifact_row(role: str, target_id: str, fingerprint: str, file: Path) -> dict[str, Any]:
     digests = net.hash_file(file)
     return {
@@ -96,4 +101,4 @@ def read_manifest(path: Path) -> dict[str, Any]:
     errors = schema.errors_for("build-manifest.schema.json", manifest)
     if errors:
         raise ConflictError(f"{path} is not a valid build manifest: " + "; ".join(errors))
-    return manifest  # type: ignore[no-any-return]
+    return manifest
