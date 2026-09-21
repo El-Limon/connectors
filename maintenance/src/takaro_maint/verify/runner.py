@@ -168,6 +168,12 @@ class Container:
         subprocess.run([*docker_command(), "rm", "-f", self.name], capture_output=True, check=False)
 
 
+#: Label keys the harness sets itself: the run id is what `--cleanup-orphans` and the CI
+#: `docker rm` step filter on, the TTL is the abandoned-container safety net. Docker keeps the
+#: last value of a repeated key, so a caller-supplied one would silently replace them.
+RESERVED_LABELS: frozenset[str] = frozenset({"tm.run", "tm.ttl"})
+
+
 def cleanup_orphans(run_id: str) -> list[str]:
     result = subprocess.run(
         [*docker_command(), "ps", "-aq", "--filter", f"label=tm.run={run_id}"],

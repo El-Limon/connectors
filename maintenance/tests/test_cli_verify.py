@@ -392,6 +392,32 @@ def test_the_container_carries_the_run_labels(run: Any, wired: Any, tmp_path: Pa
     assert any(label.startswith("tm.ttl=") for label in labels)
 
 
+@pytest.mark.parametrize("label", ["tm.run=p1", "tm.ttl=0"])
+def test_a_label_the_harness_owns_is_refused_before_anything_starts(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, label: str
+) -> None:
+    artifacts = artifacts_for(run, wired, tmp_path)
+
+    code, payload, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(tmp_path / "reports"),
+        "--run-id",
+        "t1",
+        "--label",
+        label,
+        repo=wired.root,
+    )
+
+    assert code == 2
+    assert "--run-id" in payload["error"]
+    assert not (docker_stub / "argv.jsonl").exists()
+
+
 def test_the_container_is_always_removed(run: Any, wired: Any, tmp_path: Path, docker_stub: Path) -> None:
     artifacts = artifacts_for(run, wired, tmp_path)
     run(
