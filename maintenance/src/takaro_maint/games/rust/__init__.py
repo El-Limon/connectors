@@ -15,12 +15,14 @@ in and named as the container's command.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import tarfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,9 @@ REFERENCES_ROOT = "games/rust/_data/rust-binaries"
 CARBON_REFERENCES_ROOT = "games/rust/_data/carbon-refs"
 DIST_ROOT = "games/rust/_data/dist"
 BUILD_SCRIPT = "games/rust/scripts/build-release.sh"
+#: What the release script records beside each artifact. The generic build writes its own
+#: ``<artifact>.meta.json`` over the script's, so this build's pins live under their own name.
+PROVENANCE_SUFFIX = ".provenance.json"
 LAUNCHER = "games/rust/start.sh"
 ASSEMBLY_CSHARP = "RustDedicated_Data/Managed/Assembly-CSharp.dll"
 
@@ -118,9 +123,19 @@ def _carbon_spec(resolved: dict[str, Any]) -> dict[str, Any]:
 def _carbon_download_url(spec: dict[str, Any]) -> str:
     """github.com's own download URL for the asset, which serves the bytes to any client.
 
-    The API's asset-id URL is the immutable coordinate for a re-uploaded tag, but it
-    answers with JSON unless the request asks for ``application/octet-stream``; the pin
-    that matters is the recorded sha256, which both this URL and that one satisfy.
+    The API's asset-id URL is the immutable coordinate for a re-uploaded tag, but it answers
+    with JSON unless the request asks for ``application/octet-stream``, and neither
+    ``catalog validate --online`` nor ``setup-environment.sh`` (both of which re-fetch this
+    string and re-hash it) can ask for that. So the tag URL is what is recorded, and the pin
+    that matters is the recorded sha256.
+
+    The price is stated in the record's ``support.notes`` and is worth stating here too:
+    Carbon re-uploads ``production_build`` in place, and on the day it does, this URL serves
+    different bytes, the sha256 gate refuses them, and this target can no longer be installed
+    from anything it records. Recovering it then means a new target pinning the new bytes --
+    or teaching the shared ``github-release`` provider to fetch an asset-id URL with an
+    ``Accept: application/octet-stream`` header, which is the only immutable coordinate
+    GitHub offers and is not this adapter's to add.
     """
     return f"https://github.com/{spec['repo']}/releases/download/{spec['tag']}/{spec['asset']}"
 
@@ -160,11 +175,47 @@ def _carbon_is_stale(dest: Path, target: Any) -> bool:
     return bool(check_ledger(dest, target.record, target.fingerprint))
 
 
-def _invalidate(dest: Path) -> None:
-    """Make the Steam half's fast path miss, so the whole install is redone."""
+@contextlib.contextmanager
+def _ledger_set_aside(dest: Path) -> Iterator[None]:
+    """Make the Steam half's fast path miss, without destroying the install's identity.
+
+    ``install_exact`` answers ``already-installed`` from the ledger alone, so a tree whose
+    Carbon rows are stale has to be made to miss it. Deleting the ledger would do that, but
+    a re-install that then fails -- a 404 on the Carbon asset, bytes that disagree with the
+    recorded sha256, an archive that will not unpack -- leaves the old install byte-identical
+    and unable to say what it is, so ``ledger check`` can no longer answer for a tree that is
+    perfectly fine. The ledger is therefore moved *beside* the install (never inside it,
+    where ``preserve`` would carry it into the next tree) and put back on any failure.
+    """
     ledger = ledger_path(dest)
+    if not ledger.is_file():
+        yield
+        return
+    aside = dest.with_name(dest.name + ".stale-ledger")
+    os.replace(ledger, aside)
+    try:
+        yield
+    except BaseException:
+        # `install_exact` puts the retired tree back without its ledger, because it was
+        # already gone when the install started; this is what makes that tree whole again.
+        _put_ledger_back(dest, aside, ledger)
+        raise
+    # A finished install has written its own ledger, and the stale one has nothing left to
+    # say; anything else means the tree is still the one this ledger describes.
     if ledger.is_file():
-        ledger.unlink()
+        aside.unlink(missing_ok=True)
+    else:
+        _put_ledger_back(dest, aside, ledger)
+
+
+def _put_ledger_back(dest: Path, aside: Path, ledger: Path) -> None:
+    """Return the set-aside ledger to an install that is still there, or drop it."""
+    if dest.is_dir():
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(aside, ledger)
+    else:
+        # No install left to describe: a ledger on its own would claim one that is not there.
+        aside.unlink(missing_ok=True)
 
 
 def _install_carbon(staging: Path, spec: dict[str, Any], source: dict[str, Any], cache: Path) -> None:
@@ -317,6 +368,12 @@ class RustAdapter:
         ``toolchain`` and ``gradle_args`` are accepted for parity with the Gradle games and
         change nothing: the host has no .NET SDK, and determinism here comes from
         ``SOURCE_DATE_EPOCH`` and a clean stage rather than from a task graph.
+
+        ``out`` is the release directory the caller then copies the artifact into and writes
+        its own generic ``<artifact>.meta.json`` in. The script's ``<artifact>.provenance.json``
+        -- the Carbon pin, the depot manifests, the Assembly-CSharp hash and the toolchain
+        digest this build actually used -- is carried there too, because nothing downstream
+        would otherwise take it out of ``games/rust/_data/dist``.
         """
         del toolchain, gradle_args
         dist = repo_root / DIST_ROOT / resolved["fp16"]
@@ -343,8 +400,13 @@ class RustAdapter:
         if completed.returncode != 0:
             output.error(log[-8000:])
             raise BuildFailed(f"{BUILD_SCRIPT} exited {completed.returncode}", target=str(resolved["id"]))
-        del out
-        return BuildResult(artifacts=self.artifact_paths(resolved, version, repo_root), log=log)
+        artifacts = self.artifact_paths(resolved, version, repo_root)
+        out.mkdir(parents=True, exist_ok=True)
+        for produced in artifacts.values():
+            provenance = produced.with_name(produced.name + PROVENANCE_SUFFIX)
+            if provenance.is_file():
+                shutil.copy2(provenance, out / provenance.name)
+        return BuildResult(artifacts=artifacts, log=log)
 
     # -- runtime --------------------------------------------------------------
     def runtime_env(self, resolved: dict[str, Any], takaro: dict[str, str]) -> dict[str, str]:
@@ -388,25 +450,25 @@ class RustAdapter:
         source = _source_record(catalog, target.game, spec)
         dry_run = bool(getattr(args, "dry_run", False))
 
-        # The Steam half answers `already-installed` out of the declared depot files alone.
-        # Carbon is not in the depot, so its rows are checked here before that answer is
-        # trusted; a stale one falls through to a full install, which re-runs post_install.
-        if not dry_run and _carbon_is_stale(dest, target):
-            output.info("the Carbon half of this install is missing or stale; installing it again")
-            _invalidate(dest)
-
         def post_install(staging: Path) -> None:
             _install_carbon(staging, spec, source, cache)
 
-        document = steam_install.install_exact(
-            target,
-            dest=dest,
-            preserve=self.preserve_globs(resolved),
-            cache=cache,
-            log=log,
-            dry_run=dry_run,
-            post_install=post_install,
-        )
+        # The Steam half answers `already-installed` out of the declared depot files alone.
+        # Carbon is not in the depot, so its rows are checked here before that answer is
+        # trusted; a stale one falls through to a full install, which re-runs post_install.
+        stale = not dry_run and _carbon_is_stale(dest, target)
+        if stale:
+            output.info("the Carbon half of this install is missing or stale; installing it again")
+        with _ledger_set_aside(dest) if stale else contextlib.nullcontext():
+            document = steam_install.install_exact(
+                target,
+                dest=dest,
+                preserve=self.preserve_globs(resolved),
+                cache=cache,
+                log=log,
+                dry_run=dry_run,
+                post_install=post_install,
+            )
         if document["status"] == "installed":
             document["inputs"] = _append_carbon_rows(dest, spec)
         output.emit("install", True, **document)

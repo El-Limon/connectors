@@ -471,7 +471,15 @@ def write_build_stub(repo: Path, fingerprint: str, *, name: str = ARTIFACT) -> N
         f'"$version" "$version" > "$out/{name}"\n'
         f'cat > "$out/{name}.meta.json" <<JSON\n'
         f'{{"target": "{TARGET}", "fingerprint": "{fingerprint}", "connectorVersion": "$version", '
-        f'"game": "rust", "platform": "carbon", "revision": "25353106"}}\n'
+        f'"provenance": "{name}.provenance.json"}}\n'
+        "JSON\n"
+        # The second document is the point of the pair: `takaro-maint build` writes its own
+        # generic sidecar over the .meta.json name, so the build's pins live beside it.
+        f'cat > "$out/{name}.provenance.json" <<JSON\n'
+        f'{{"schemaVersion": 1, "target": "{TARGET}", "fingerprint": "{fingerprint}", '
+        f'"game": "rust", "platform": "carbon", "revision": "25353106", '
+        f'"carbon": {{"tag": "production_build", "sha256": "{"b" * 64}"}}, '
+        f'"gameBuild": {{"buildid": 25353106}}, "toolchain": "sdk@sha256:abc"}}\n'
         "JSON\n",
         encoding="utf-8",
     )
@@ -491,8 +499,19 @@ def test_build_selects_the_exact_cs_name_and_meta(run: Any, repo: Path, tmp_path
     assert [row["role"] for row in payload["artifacts"]] == ["plugin"]
     assert payload["artifacts"][0]["file"] == ARTIFACT
     assert (out / ARTIFACT).is_file()
-    assert (out / f"{ARTIFACT}.meta.json").is_file()
     assert ARTIFACT in (out / "SHA256SUMS").read_text()
+
+    # The generic sidecar is written over the script's .meta.json name, so the build's own
+    # pins -- the Carbon asset, the depot build, the toolchain digest -- would be lost if
+    # they lived only there. They travel in the .provenance.json beside it instead.
+    generic = json.loads((out / f"{ARTIFACT}.meta.json").read_text())
+    assert generic["fingerprint"] == resolved["fingerprint"]
+    assert "carbon" not in generic
+    provenance = json.loads((out / f"{ARTIFACT}.provenance.json").read_text())
+    assert provenance["fingerprint"] == resolved["fingerprint"]
+    assert provenance["carbon"]["tag"] == "production_build"
+    assert provenance["gameBuild"]["buildid"] == 25353106
+    assert provenance["toolchain"]
     manifest = json.loads((out / "build-manifest.json").read_text())
     assert manifest["artifacts"][0]["fingerprint"] == resolved["fingerprint"]
 
@@ -904,3 +923,91 @@ def test_rust_workflow_delegates_to_connector_release() -> None:
     assert "rust-refs-${{ steps.target.outputs.fp16 }}" in workflow
     assert "app_update" not in workflow
     assert "docker build" not in workflow
+
+
+def test_a_bare_verify_run_selects_only_the_checks_this_target_proves() -> None:
+    """The generic ladder carries four checks Rust cannot pass; nobody has to remember them.
+
+    Without this, `takaro-maint verify --game rust` -- exactly as DEVELOPMENT.md documents it,
+    with no `--checks` -- would select `connector-load` (a line only the Minecraft connector
+    writes), `catalog-items`/`catalog-entities` (Minecraft spot values) and the base
+    `shutdown` (an exit code Rust's Unity teardown does not give), and fail on all four.
+    """
+    from dataclasses import dataclass, field
+
+    from takaro_maint.verify.runner import RunOptions, check_ids
+
+    record = json.loads((REPO_ROOT / f"catalog/{GAME}/targets/{TARGET}.json").read_text(encoding="utf-8"))
+
+    @dataclass
+    class StubTarget:
+        record: dict[str, Any] = field(default_factory=lambda: record)
+
+    @dataclass
+    class StubRun:
+        target: Any = field(default_factory=StubTarget)
+        options: RunOptions = field(
+            default_factory=lambda: RunOptions(artifacts=Path("dist"), out=Path("reports"), run_id="r")
+        )
+
+    selection = hooks.default_checks(StubRun())
+    assert selection == ["build", *record["verification"]["separate"]]
+
+    run = StubRun()
+    hooks.before_boot(run, {})
+    assert run.options.only == selection
+    for unreachable in ("connector-load", "catalog-items", "catalog-entities", "shutdown"):
+        assert unreachable in check_ids(GAME), unreachable
+        assert unreachable not in run.options.only, unreachable
+    # Everything the hooks add, and the base checks Rust does pass, are in.
+    assert set(hooks.CHECK_IDS) <= set(run.options.only)
+    assert {"startup", "identify", "heartbeat", "players", "console"} <= set(run.options.only)
+
+    # An explicit --checks is left exactly as it was written: naming a check is asking for it.
+    named = StubRun()
+    named.options = RunOptions(artifacts=Path("dist"), out=Path("reports"), run_id="r", only=["shutdown"])
+    hooks.before_boot(named, {})
+    assert named.options.only == ["shutdown"]
+
+
+def test_a_failed_carbon_repair_leaves_the_install_and_its_ledger_intact(
+    run: Any, repo: Path, dd_log: Path, upstream: Any, tmp_path: Path
+) -> None:
+    """The one path that re-installs a tree the ledger still describes has to be safe too.
+
+    A drifted Carbon half is the only way `install` asks the Steam layer to redo an install
+    whose fingerprint already matches, so it is the only path on which the ledger of a good
+    install is at risk. AC4 asks for a failed preparation to leave the install as it was --
+    which includes leaving it able to say what it is.
+    """
+    dest = tmp_path / "rust_dedicated"
+    assert install(run, repo, dest)[0] == 0
+    ledger_file = dest / ".takaro" / "installed-target.json"
+    ledger_before = ledger_file.read_bytes()
+
+    witness = dest / "carbon" / "managed" / "Carbon.dll"
+    witness.write_bytes(witness.read_bytes() + b"carbon self-updated under the pin")
+    before = tree_hash(dest)
+    # The record is untouched, so the fingerprint still matches and the repair path is taken;
+    # what fails is the fetch. (The blob cache is content-addressed and would answer happily.)
+    upstream.status_overrides[ASSET_PATH] = 500
+    shutil.rmtree(Path(os.environ["TAKARO_MAINT_CACHE"]) / "blobs", ignore_errors=True)
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code != 0, payload
+    assert tree_hash(dest) == before
+    assert ledger_file.read_bytes() == ledger_before
+    assert list(dest.parent.glob(f"{dest.name}.stale-ledger")) == []
+    assert staging_siblings(dest) == []
+    # And it is still a tree `ledger check` can answer for: it fails on the drifted Carbon
+    # DLL, not on a missing ledger.
+    code, payload, _ = run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=repo)
+    assert code == 7, payload
+    assert "Carbon.dll" in json.dumps(payload)
+
+    # Once upstream answers again the repair completes and takes the set-aside ledger with it.
+    upstream.status_overrides.pop(ASSET_PATH)
+    assert install(run, repo, dest)[0] == 0
+    assert list(dest.parent.glob(f"{dest.name}.stale-ledger")) == []
+    assert run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=repo)[0] == 0

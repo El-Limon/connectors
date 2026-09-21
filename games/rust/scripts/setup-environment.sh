@@ -32,15 +32,68 @@ printf '%s  %s\n' "${RUST_ASSEMBLY_CSHARP_SHA256}" "${GAME_REFS}/Assembly-CSharp
     || { echo "error: ${GAME_REFS}/Assembly-CSharp.dll is not the one ${RUST_TARGET} pins" >&2; exit 5; }
 
 # Carbon's own assemblies, from the pinned release asset. A directory left over from
-# another fingerprint is refused rather than compiled against.
+# another fingerprint is refused rather than compiled against, and so is one whose
+# assemblies no longer hash to what the record beside them says.
 MARKER="${CARBON_REFS}/.takaro/carbon-references.json"
 if [ -f "${MARKER}" ] && [ -z "${FORCE}" ]; then
-    RECORDED=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["fingerprint"])' "${MARKER}")
-    if [ "${RECORDED}" != "${RUST_FINGERPRINT}" ]; then
-        echo "error: ${CARBON_REFS} holds the Carbon references for ${RECORDED:0:16}; this target is ${RUST_FP16}." >&2
-        echo "       Stale Carbon reference cache. Pass --force to replace it." >&2
-        exit 7
-    fi
+    CARBON_REFS="${CARBON_REFS}" RUST_FINGERPRINT="${RUST_FINGERPRINT}" \
+        python3 - "${MARKER}" <<'CHECK'
+import hashlib, json, os, pathlib, sys
+
+marker = pathlib.Path(sys.argv[1])
+root = pathlib.Path(os.environ["CARBON_REFS"])
+wanted = os.environ["RUST_FINGERPRINT"]
+try:
+    record = json.loads(marker.read_text(encoding="utf-8"))
+except (OSError, ValueError) as exc:
+    print(f"error: {marker} is not a readable Carbon reference record ({exc})", file=sys.stderr)
+    print("       Corrupt Carbon reference cache. Pass --force to replace it.", file=sys.stderr)
+    raise SystemExit(5)
+
+recorded = str(record.get("fingerprint") or "")
+if recorded != wanted:
+    print(f"error: {root} holds the Carbon references for {recorded[:16]}; this target is {wanted[:16]}.", file=sys.stderr)
+    print("       Stale Carbon reference cache. Pass --force to replace it.", file=sys.stderr)
+    raise SystemExit(7)
+
+# The record names every assembly the compile links against, with its sha256 and size, so the
+# cache is trusted only once the bytes on disk are still those assemblies -- and only if
+# nothing has been added beside them. In CI this directory comes back from actions/cache.
+entries = record.get("files")
+if not entries:
+    print(f"error: {marker} records no assemblies, so it cannot vouch for {root}", file=sys.stderr)
+    print("       Corrupt Carbon reference cache. Pass --force to replace it.", file=sys.stderr)
+    raise SystemExit(5)
+
+problems = []
+recorded_names = set()
+for entry in entries:
+    name = pathlib.PurePosixPath(str(entry.get("path") or "")).name
+    recorded_names.add(name)
+    path = root / name
+    if not name or not path.is_file():
+        problems.append(f"{entry.get('path')!r} is recorded but is not in the directory")
+        continue
+    payload = path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != str(entry["sha256"]) or len(payload) != int(entry["size"]):
+        problems.append(
+            f"{name} is {digest[:16]} ({len(payload)} bytes), not the recorded "
+            f"{str(entry['sha256'])[:16]} ({entry['size']} bytes)"
+        )
+for found in sorted(p.name for p in root.glob("*.dll") if p.is_file()):
+    if found not in recorded_names:
+        problems.append(f"{found} is in the directory but not in the record")
+
+if problems:
+    print(f"error: {root} is not the Carbon reference set its own record describes:", file=sys.stderr)
+    for problem in problems:
+        print(f"       {problem}", file=sys.stderr)
+    print("       Altered Carbon reference cache. Pass --force to replace it.", file=sys.stderr)
+    raise SystemExit(5)
+
+print(f"verified {len(entries)} Carbon assemblies against {marker.name}")
+CHECK
     echo "Carbon references for ${RUST_TARGET} are already in ${CARBON_REFS}"
 else
     ARCHIVE="./_data/${RUST_CARBON_ASSET}"

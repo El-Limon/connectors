@@ -81,14 +81,19 @@ plugin API is `internal`) and runs `dotnet build -c Release` inside the pinned S
 `build-release.sh` runs both of the above, then stamps the version into the `[Info(...)]` attribute,
 prepends a two-line identity header (target, fingerprint, source revision, Carbon digest, Rust build
 and depot manifests, `Assembly-CSharp.dll` sha256 — no timestamps, so two builds of one commit are
-byte-identical) and writes `takaro-rust-plugin-carbon-25353106-<version>.cs` plus a `.meta.json`.
+byte-identical) and writes `takaro-rust-plugin-carbon-25353106-<version>.cs` plus a `.meta.json`
+(which target these bytes belong to, for `artifact validate`) and a `.provenance.json` (the
+Carbon pin, the depot manifests, the `Assembly-CSharp.dll` sha256 and the toolchain digest this
+build used). They are two documents because `takaro-maint build --out DIR` writes its own
+generic sidecar under the `.meta.json` name when it copies the artifact into a release
+directory; the adapter carries the `.provenance.json` there alongside it.
 
 **`[Info]` only takes three integers.** Oxide's `VersionNumber`, which Carbon uses to read the
 attribute, parses the version as `int.int.int`, and it throws inside the attribute's constructor on
 anything else — which Carbon reports as `Invalid plugin format in 'TakaroConnector.cs'. Namespace
 must be Carbon|Oxide.Plugins …`, a message about something that is not wrong. So a dev or PR version
 (`0.0.5-dev.abc1234`) is reduced to its numeric head (`0.0.5`) for the attribute, and the exact build
-is carried by the artifact's file name, its identity header and its `.meta.json` — none of which any
+is carried by the artifact's file name, its identity header and its `.provenance.json` — none of which any
 framework parses. `verify`'s `carbon-compile` check reduces the recorded connector version the same
 way before comparing it with the version the server logged.
 
@@ -248,7 +253,10 @@ What it does **not** prove, and what therefore stays ⚠️ in the README: every
 but only Carbon is booted), and hosted Takaro over TLS. Those need a client session.
 
 `connector-load`, `catalog-items` and `catalog-entities` are Minecraft-specific check ids — they
-look for lines and spot values only that connector writes — and are never selected for Rust.
+look for lines and spot values only that connector writes — and, with the base `shutdown` that
+`stop` replaces, are never selected for Rust. A bare `verify --game rust` runs exactly the set
+the target record's `verification.separate` names (plus `build`); an explicit `--checks` is left
+as written, including one that names a check this game cannot pass.
 
 ## Discovery and readiness
 

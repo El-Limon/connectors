@@ -10,17 +10,23 @@ first match. And Rust's catalogues are this game's own, so ``items`` and ``entit
 replace the Minecraft-shaped ``catalog-items``/``catalog-entities`` and spot-check Rust
 names.
 
-``connector-load`` is never selected: it looks for a target-check line only the Minecraft
-connector writes. The coverage boundary this run proves is in games/rust/README.md.
+``connector-load``, ``catalog-items``, ``catalog-entities`` and the base ``shutdown`` are
+never selected by default: the first looks for a target-check line only the Minecraft
+connector writes, the two catalogue checks spot-check Minecraft names, and ``shutdown``
+gates on an exit code that Rust's Unity teardown does not give. :func:`default_checks` is
+what keeps them out, from the target record's own ``verification.separate``. The coverage
+boundary this run proves is in games/rust/README.md.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ... import output
 from ...install.ledger import read_ledger
 from ...verify import checks, checks_lifecycle
 
@@ -101,6 +107,52 @@ def _deployed_version(run: Any) -> str | None:
 
 
 # --------------------------------------------------------------------------- local hooks
+
+
+def default_checks(run: Any) -> list[str] | None:
+    """What a bare ``takaro-maint verify --game rust`` runs, from the target record.
+
+    ``verification.separate`` names the checks this target proves on its own -- ``startup``
+    plus every id in :data:`CHECK_IDS` -- and this is what consumes it. The generic ladder
+    also carries four checks a Rust run cannot pass (``connector-load``, ``catalog-items``,
+    ``catalog-entities`` and the base ``shutdown``, which the adapter's own ``stop``
+    replaces), so they are never selected by default; ``build`` reads the artifacts and not
+    the server, so it always is. ``None`` means "select everything", which is what a target
+    that declares no ``separate`` list asks for.
+    """
+    record = run.target.record.get("verification") or {}
+    separate = [str(check) for check in record.get("separate") or ()]
+    if not separate:
+        return None
+    return ["build", *separate]
+
+
+def _select_default_checks(run: Any) -> None:
+    """Narrow this run's selection when the caller named no ``--checks``.
+
+    An explicit ``--checks`` is left exactly as it was written, including a selection that
+    asks for a check this game cannot pass: naming it is asking for it.
+    """
+    if run.options.only is not None:
+        return
+    selection = default_checks(run)
+    if selection is None:
+        return
+    # `replace` rather than a field assignment: one RunOptions is shared by every target of
+    # the command, and one target's default must not narrow the next one's.
+    run.options = replace(run.options, only=selection)
+    output.info("checks: " + ", ".join(selection) + " (this target's own set; --checks narrows it further)")
+
+
+def before_boot(run: Any, takaro_env: dict[str, str]) -> None:
+    """Settle this run's check selection before anything the selection governs runs.
+
+    ``build`` is recorded before the boot and is in the default selection either way; every
+    other check this narrows runs after this hook. Rust needs nothing else on disk here --
+    the connector reads its Takaro credentials from the container's environment.
+    """
+    del takaro_env
+    _select_default_checks(run)
 
 
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:

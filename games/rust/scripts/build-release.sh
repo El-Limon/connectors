@@ -4,7 +4,7 @@
 #   1. prepare the pinned game and Carbon assemblies,
 #   2. compile-check the source against them (the authoritative build for the fingerprint),
 #   3. stage the source with <version> in its [Info] attribute and an identity header,
-# under the catalog's own artifact name, with a .meta.json beside it.
+# under the catalog's own artifact name, with a .meta.json and a .provenance.json beside it.
 #
 # Usage: build-release.sh <version> <out-dir> [--target <catalog target id>]
 set -euo pipefail
@@ -38,8 +38,8 @@ ARTIFACT="${RUST_ARTIFACT/\{version\}/${VERSION}}"
 # string as three integers, so a dev or PR version ("0.0.5-dev.abc1234") throws inside the
 # attribute's constructor and Carbon refuses the whole file with
 # "Invalid plugin format in 'TakaroConnector.cs'". The numeric head is what the attribute
-# gets; the exact build is in the artifact's name, its header and its .meta.json, none of
-# which any framework parses.
+# gets; the exact build is in the artifact's name, its header and its .provenance.json, none
+# of which any framework parses.
 INFO_VERSION=$(printf '%s' "${VERSION}" | sed -E 's/^([0-9]+(\.[0-9]+)*).*$/\1/')
 case "${INFO_VERSION}" in
   ''|*[!0-9.]*) INFO_VERSION="0.0.0" ;;
@@ -67,9 +67,14 @@ SOURCE_REVISION="${TAKARO_SOURCE_REVISION:-$(git -C "${REPO_ROOT}" rev-parse HEA
         mod/TakaroConnector.cs
 } > "${OUT_DIR}/${ARTIFACT}"
 
-# `takaro-maint artifact validate` reads this file: a .cs has no manifest to stamp.
-cat > "${OUT_DIR}/${ARTIFACT}.meta.json" <<JSON
+# What this build was made from, in full. It is deliberately *not* the .meta.json:
+# `takaro-maint build --out DIR` writes its own generic sidecar under that exact name when
+# it copies the artifact into a release directory, so anything recorded only there is lost.
+# The adapter carries this file along instead, and `publish assemble` re-derives the same
+# pins into the compat record.
+cat > "${OUT_DIR}/${ARTIFACT}.provenance.json" <<JSON
 {
+  "schemaVersion": 1,
   "target": "${RUST_TARGET}",
   "fingerprint": "${RUST_FINGERPRINT}",
   "connectorVersion": "${VERSION}",
@@ -95,5 +100,18 @@ cat > "${OUT_DIR}/${ARTIFACT}.meta.json" <<JSON
 }
 JSON
 
+# `takaro-maint artifact validate` reads this file: a .cs has no manifest to stamp. It says
+# only which target these bytes belong to, because that is all a generic sidecar can also
+# say -- the build's own pins are in the .provenance.json beside it.
+cat > "${OUT_DIR}/${ARTIFACT}.meta.json" <<JSON
+{
+  "target": "${RUST_TARGET}",
+  "fingerprint": "${RUST_FINGERPRINT}",
+  "connectorVersion": "${VERSION}",
+  "provenance": "${ARTIFACT}.provenance.json"
+}
+JSON
+
 echo "  -> ${OUT_DIR}/${ARTIFACT}"
+echo "  -> ${OUT_DIR}/${ARTIFACT}.provenance.json"
 sha256sum "${OUT_DIR}/${ARTIFACT}"
