@@ -12,10 +12,12 @@ capability, on a game build other than the pinned one and on the wrong Proton, e
 the server process is perfectly alive -- and ``--negative`` proves that failure happens by
 booting a deliberately corrupted build.
 
-The base ``identify``/``heartbeat``/``players``/``catalog-*``/``console``/``shutdown``
-checks look for lines and answers that arrive from the *sidecar* here, so they stay out of
-an Enshrouded run and each ``sidecar-*`` check says which one it replaces. That is why an
-Enshrouded report reaches ``startup`` and never claims ``protocol``.
+The base ``connector-load``/``identify``/``heartbeat``/``players``/``catalog-*``/
+``console``/``shutdown`` checks look for lines and answers that arrive from the *sidecar*
+here, so they stay out of an Enshrouded run -- :func:`default_checks` is what keeps them
+out, from the target record's own ``verification.separate`` -- and each ``sidecar-*`` check
+says which one it replaces. That is why an Enshrouded report reaches ``startup`` and never
+claims ``protocol``.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import os
 import re
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -80,12 +83,50 @@ SIDECAR_FOLDER = Path("takaro") / "sidecar" / "TakaroEnshroudedSidecar"
 # --------------------------------------------------------------------------- run setup
 
 
+def default_checks(run: Any) -> list[str] | None:
+    """What a bare ``takaro-maint verify --game enshrouded`` runs, from the target record.
+
+    ``verification.separate`` names the checks this target proves on its own -- ``startup``
+    plus every id in :data:`CHECK_IDS` -- and this is what consumes it. The rest of the
+    generic ladder watches the *game* container for a connector that lives in the sidecar,
+    so on Enshrouded those checks cannot pass and are never selected by default; ``build``
+    reads the artifacts and not the server, so it always is. ``None`` means "select
+    everything", which is what a target that declares no ``separate`` list asks for.
+    """
+    record = run.target.record.get("verification") or {}
+    separate = [str(check) for check in record.get("separate") or ()]
+    if not separate:
+        return None
+    return ["build", *separate]
+
+
+def _select_default_checks(run: Any) -> None:
+    """Narrow this run's selection when the caller named no ``--checks``.
+
+    An explicit ``--checks`` is left exactly as it was written, including a selection that
+    asks for a check this game cannot pass: naming it is asking for it.
+    """
+    if run.options.only is not None:
+        return
+    selection = default_checks(run)
+    if selection is None:
+        return
+    # `replace` rather than a field assignment: one RunOptions is shared by every target of
+    # the command, and one target's default must not narrow the next one's.
+    run.options = replace(run.options, only=selection)
+    output.info("checks: " + ", ".join(selection) + " (this target's own set; --checks narrows it further)")
+
+
 def before_boot(run: Any, takaro_env: dict[str, str]) -> Path:
-    """The plugin's only configuration, written where it looks for it.
+    """This run's check selection and the plugin's only configuration, before the boot.
+
+    ``before_boot`` is the first hook an Enshrouded run reaches and every check the default
+    selection leaves out runs after it, so the selection is settled here.
 
     The token never reaches the docker command line: the plugin reads it from this file
     when ``TAKARO_PLUGIN_TOKEN`` is unset, and the sidecar is given the same derived value.
     """
+    _select_default_checks(run)
     path = run.data_dir / PLUGIN_CONFIG
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"token": plugin_token(takaro_env)}) + "\n", encoding="utf-8")

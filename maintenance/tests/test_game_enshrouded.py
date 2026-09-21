@@ -631,13 +631,39 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
     from takaro_maint import paths
     from takaro_maint.exit_codes import ConflictError
     from takaro_maint.games.enshrouded import plugin_token
-    from takaro_maint.verify.runner import check_ids
+    from takaro_maint.verify.runner import RunOptions, check_ids
+
+    class Target:
+        record = _record()
 
     class Run:
         data_dir = tmp_path
+        target = Target()
+
+        def __init__(self, only: list[str] | None = None) -> None:
+            self.options = RunOptions(artifacts=tmp_path, out=tmp_path, run_id="test", only=only)
 
     takaro_env = {"TAKARO_REGISTRATION_TOKEN": "a-throwaway-registration-token"}
-    written = hooks.before_boot(Run(), takaro_env)
+    run = Run()
+    written = hooks.before_boot(run, takaro_env)
+
+    # A bare `verify --game enshrouded` runs this target's own checks and nothing else: the
+    # base protocol ladder watches the game container for a connector that is in the sidecar.
+    assert run.options.only == ["build", *Target.record["verification"]["separate"]]
+    assert set(hooks.CHECK_IDS) < set(run.options.only)
+    assert "startup" in run.options.only
+    for base in ("connector-load", "identify", "heartbeat", "players", "catalog-items", "console", "shutdown"):
+        assert base not in run.options.only
+    # One RunOptions is shared by every target of a command; narrowing replaces, never mutates.
+    shared = RunOptions(artifacts=tmp_path, out=tmp_path, run_id="test")
+    other = Run()
+    other.options = shared
+    hooks.before_boot(other, takaro_env)
+    assert shared.only is None and other.options.only is not None
+    # An explicit --checks is taken literally, including a check this game cannot pass.
+    named = Run(only=["stop"])
+    hooks.before_boot(named, takaro_env)
+    assert named.options.only == ["stop"]
 
     assert written == tmp_path / "takaro" / "plugin.json"
     assert oct(written.stat().st_mode)[-3:] == "600"
@@ -702,18 +728,34 @@ def test_every_container_selector_is_pinned_and_never_schedules_updates() -> Non
         """The file without its comments: naming what is absent is what the comments are for."""
         return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
+    def dll_mount(source: str) -> str:
+        """The plugin bind, long syntax: compose must refuse a missing DLL, not create one.
+
+        A short-syntax bind lets the docker daemon create the source, so a compose up on a
+        tree `takaro-maint install`/`deploy` has not laid down yet makes a DIRECTORY named
+        dbghelp.dll and the server boots with no plugin loaded.
+        """
+        return (
+            "      - type: bind\n"
+            f"        source: {source}\n"
+            "        target: /opt/enshrouded/server/dbghelp.dll\n"
+            "        read_only: true\n"
+            "        bind:\n"
+            "          create_host_path: false\n"
+        )
+
     for relative, mounts in (
         (
             "dev-servers/compose/enshrouded.yml",
             (
-                "../_data/enshrouded/server/takaro/plugin/dbghelp.dll:/opt/enshrouded/server/dbghelp.dll:ro",
+                dll_mount("../_data/enshrouded/server/takaro/plugin/dbghelp.dll"),
                 "../../games/enshrouded/server/enshrouded-updater:/usr/local/etc/enshrouded/enshrouded-updater:ro",
             ),
         ),
         (
             "games/enshrouded/docker-compose.example.yml",
             (
-                "./data/enshrouded/server/takaro/plugin/dbghelp.dll:/opt/enshrouded/server/dbghelp.dll:ro",
+                dll_mount("./data/enshrouded/server/takaro/plugin/dbghelp.dll"),
                 "./server/enshrouded-updater:/usr/local/etc/enshrouded/enshrouded-updater:ro",
             ),
         ),
@@ -728,6 +770,18 @@ def test_every_container_selector_is_pinned_and_never_schedules_updates() -> Non
     # The rig reads the resolved target when it has one and the pinned image when it does not.
     rig = (REPO_ROOT / "dev-servers/compose/enshrouded.yml").read_text(encoding="utf-8")
     assert f'"${{ENSHROUDED_IMAGE:-{image}}}"' in rig
+
+    # No bind on the install tree may create its own source: an empty tree is not an install.
+    for relative, sources in (
+        ("dev-servers/compose/enshrouded.yml", ("../_data/enshrouded/server",)),
+        ("games/enshrouded/docker-compose.example.yml", ("./data/enshrouded/server",)),
+    ):
+        text = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        for source in sources:
+            blocks = [b for b in text.split("- type: bind") if f"source: {source}\n" in b]
+            assert blocks, f"{relative} does not bind {source} in long syntax"
+            for block in blocks:
+                assert "create_host_path: false" in block, f"{relative}: {source} may create its own source"
 
     for relative in ("games/enshrouded/sidecar/Dockerfile", "games/enshrouded/sidecar/Dockerfile.release"):
         froms = [line.split()[1] for line in (REPO_ROOT / relative).read_text().splitlines() if line.startswith("FROM")]

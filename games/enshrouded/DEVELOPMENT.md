@@ -147,17 +147,22 @@ proven by `build` (which validates every artifact against the target) and by the
 ## Verify
 
 ```bash
-maintenance/bin/takaro-maint verify --game enshrouded --artifacts <dir> --out <reports> \
-    --checks build,startup,plugin-health,sidecar-identify,sidecar-players,sidecar-catalog,\
-sidecar-console,action,reconnect,event,stop,negative-degraded-hooks --negative
+maintenance/bin/takaro-maint verify --game enshrouded --artifacts <dir> --out <reports> --negative
 ```
 
-`--checks` is not optional here. The generic runner's `identify`, `heartbeat`, `players`,
-`catalog-*` and `console` checks watch the *game* server, which in Enshrouded never speaks
-to Takaro, and they run before the sidecar exists -- so a bare `verify --game enshrouded`
-fails on checks that could not have passed. Name the list above. `negative-degraded-hooks`
-has to be in it as well as `--negative`: the flag decides whether the degraded boot runs,
-`--checks` decides whether the check is selected at all.
+With no `--checks`, the run selects `build` plus the target record's
+`verification.separate` -- `startup`, `plugin-health`, `sidecar-identify`,
+`sidecar-players`, `sidecar-catalog`, `sidecar-console`, `action`, `reconnect`, `event`,
+`stop`, `negative-degraded-hooks` -- and the run prints that list. The generic runner's
+`connector-load`, `identify`, `heartbeat`, `players`, `catalog-*`, `console` and `shutdown`
+checks watch the *game* server, which in Enshrouded never speaks to Takaro, and they run
+before the sidecar exists, so they are left out (the report records them as skipped) and
+each `sidecar-*` check says which one it replaces.
+
+`--checks` narrows that set further and is taken literally, so naming one of the left-out
+ids selects it and it will fail. `negative-degraded-hooks` is selected by default but still
+needs `--negative`: the flag decides whether the degraded boot runs, `--checks` decides
+whether the check is selected at all.
 
 `--label tm.run=...` and `--label tm.ttl=...` are refused: the harness sets both itself
 (`tm.run` from `--run-id`). Pass only your own keys.
@@ -215,9 +220,12 @@ UDP 15637 is published for clients. Check `GET /health` from inside the containe
 
 The dev rig's `dev-servers/compose/enshrouded.yml` runs the same image and the same two
 mounts, reading `ENSHROUDED_IMAGE` from the resolved target when the rig has resolved one.
-It has no `lib/games/enshrouded.sh` install/deploy step yet, so its data directory is laid
-down with the same `takaro-maint install`/`build`/`deploy` commands as above, pointed at
-`dev-servers/_data/enshrouded/server`.
+It has no `lib/games/enshrouded.sh` install/deploy step yet -- `dev-servers/scripts/install.sh
+enshrouded` answers "unknown game" -- so its data directory is laid down with the same
+`takaro-maint install`/`build`/`deploy` commands as above, pointed at
+`dev-servers/_data/enshrouded/server`. Both game-tree binds set `create_host_path: false`,
+so a `docker compose up` before that install stops with "bind source path does not exist"
+instead of creating an empty tree and a directory named `dbghelp.dll`.
 
 ## Environment
 

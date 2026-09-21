@@ -45,10 +45,23 @@ services:
       WINEDLLOVERRIDES: "dbghelp=n,b"
       TAKARO_PLUGIN_TOKEN: "${TAKARO_ENSHROUDED_PLUGIN_TOKEN:?required}"
     volumes:
-      - ./data/enshrouded/server:/opt/enshrouded/server
+      # `create_host_path: false` on both: lay the tree down first (README step 3 --
+      # `mkdir -p data/enshrouded/server/takaro/plugin` and copy the DLL there). Without
+      # it compose would create a DIRECTORY named dbghelp.dll and the server would boot
+      # with no plugin loaded; with it compose stops at "bind source path does not exist".
+      - type: bind
+        source: ./data/enshrouded/server
+        target: /opt/enshrouded/server
+        bind:
+          create_host_path: false
       # Takaro plugin (dbghelp.dll proxy), placed by `takaro-maint deploy` and mounted
       # read-only so nothing inside the container can replace it.
-      - ./data/enshrouded/server/takaro/plugin/dbghelp.dll:/opt/enshrouded/server/dbghelp.dll:ro
+      - type: bind
+        source: ./data/enshrouded/server/takaro/plugin/dbghelp.dll
+        target: /opt/enshrouded/server/dbghelp.dll
+        read_only: true
+        bind:
+          create_host_path: false
       # No boot of this server ever runs SteamCMD.
       - ./server/enshrouded-updater:/usr/local/etc/enshrouded/enshrouded-updater:ro
     logging:
@@ -82,7 +95,12 @@ services:
       TAKARO_CURSOR_FILE: /data/event-cursor.json
       SIDECAR_HEALTH_PORT: "18891"
     volumes:
-      - ./data/enshrouded/server:/opt/enshrouded/server:ro
+      - type: bind
+        source: ./data/enshrouded/server
+        target: /opt/enshrouded/server
+        read_only: true
+        bind:
+          create_host_path: false
       - ./data/enshrouded-sidecar:/data
     logging:
       driver: json-file

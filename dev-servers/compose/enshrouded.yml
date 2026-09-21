@@ -49,10 +49,25 @@ services:
       WINEDLLOVERRIDES: "dbghelp=n,b"
       TAKARO_PLUGIN_TOKEN: "${TAKARO_ENSHROUDED_PLUGIN_TOKEN:?required}"
     volumes:
-      - ../_data/enshrouded/server:/opt/enshrouded/server
+      # Both binds refuse to be created: `create_host_path: false` makes compose stop with
+      # "bind source path does not exist" instead of laying down an empty tree and a
+      # DIRECTORY named dbghelp.dll -- a rig that boots with the plugin silently absent.
+      # The install is `takaro-maint install --game enshrouded --dest
+      # dev-servers/_data/enshrouded/server` and the plugin is `takaro-maint deploy`; there
+      # is no `dev-servers/scripts/install.sh enshrouded` dispatch yet.
+      - type: bind
+        source: ../_data/enshrouded/server
+        target: /opt/enshrouded/server
+        bind:
+          create_host_path: false
       # Takaro plugin (dbghelp.dll proxy), placed by `takaro-maint deploy` and mounted
       # read-only so nothing inside the container can replace it.
-      - ../_data/enshrouded/server/takaro/plugin/dbghelp.dll:/opt/enshrouded/server/dbghelp.dll:ro
+      - type: bind
+        source: ../_data/enshrouded/server/takaro/plugin/dbghelp.dll
+        target: /opt/enshrouded/server/dbghelp.dll
+        read_only: true
+        bind:
+          create_host_path: false
       # No boot of this rig ever runs SteamCMD.
       - ../../games/enshrouded/server/enshrouded-updater:/usr/local/etc/enshrouded/enshrouded-updater:ro
     logging:
@@ -87,7 +102,12 @@ services:
       SIDECAR_HEALTH_PORT: "18891"
       DEBUG: "1"
     volumes:
-      - ../_data/enshrouded/server:/opt/enshrouded/server:ro
+      - type: bind
+        source: ../_data/enshrouded/server
+        target: /opt/enshrouded/server
+        read_only: true
+        bind:
+          create_host_path: false
       - ../_data/enshrouded-sidecar:/data
     logging:
       driver: json-file
