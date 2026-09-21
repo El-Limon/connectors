@@ -42,6 +42,10 @@ DEPS_DIR="${VALHEIM_DEPS_DIR:-${DATA_DIR}/deps}"
 PACK_DIR="${DEPS_DIR}/bepinex/${VALHEIM_FP16}"
 PACK_CORE_DIR="${PACK_DIR}/BepInExPack_Valheim/BepInEx/core"
 LOADER_VERSION_FILE="${PACK_DIR}/.takaro/loader-version"
+# Written from the staged pack the moment its zip has been hash-checked, and re-checked
+# before the prepared pack is reused. The zip itself is not kept, so this is how a later
+# run knows the prepared tree is still the content of the sha256 the target records.
+PACK_CHECKSUM_FILE=".takaro/pack.sha256"
 
 REQUIRED_VALHEIM_ASSEMBLIES=(
   assembly_valheim.dll
@@ -166,6 +170,18 @@ validate_bepinex_assemblies() {
   done
 }
 
+references_match_pin() {
+  # The one pinned digest the target records for the reference set. The fetch path checks
+  # it before publishing, and the reuse path checks it again: bytes that were validated
+  # once are not thereby the bytes this target pins, and a cache is only a cache of this
+  # target while assembly_valheim.dll still hashes to what the record says.
+  local managed_dir="$1"
+
+  [ -n "${VALHEIM_ASSEMBLY_VALHEIM_SHA256:-}" ] || return 0
+  printf '%s  %s\n' "$VALHEIM_ASSEMBLY_VALHEIM_SHA256" "$managed_dir/assembly_valheim.dll" \
+    | sha256sum --check --status
+}
+
 reference_cache_is_owned() {
   local cache_dir="$1"
   local marker="$cache_dir/$REFERENCE_CACHE_MARKER_NAME"
@@ -274,7 +290,7 @@ reference_fetch_failed() {
 
 install_valheim_references() {
   local server_install_dir="$SERVER_DIR"
-  local managed_dir stage_dir stage_managed_dir status=0
+  local managed_dir stage_dir stage_managed_dir status=0 drifted=false
 
   if [[ "$server_install_dir" != /* ]]; then
     server_install_dir="$(pwd)/$server_install_dir"
@@ -282,8 +298,12 @@ install_valheim_references() {
   managed_dir="$server_install_dir/valheim_server_Data/Managed"
 
   if validate_managed_assemblies "$managed_dir"; then
-    echo "Reusing validated Valheim references read-only at $managed_dir."
-    return 0
+    if references_match_pin "$managed_dir"; then
+      echo "Reusing validated Valheim references read-only at $managed_dir."
+      return 0
+    fi
+    echo "Cached $managed_dir/assembly_valheim.dll is not the one ${VALHEIM_TARGET} pins; re-fetching." >&2
+    drifted=true
   fi
 
   if ! ensure_reference_cache_write_is_safe "$server_install_dir"; then
@@ -304,6 +324,12 @@ install_valheim_references() {
     return 1
   fi
   stage_managed_dir="$stage_dir/valheim_server_Data/Managed"
+  # Drifted bytes are not repaired in place: the fetch is given an empty directory, so what
+  # it publishes is the depot's content and nothing that was already there. Only the
+  # assemblies go -- anything else a caller keeps in an owned cache is still staged above.
+  if [ "$drifted" = true ]; then
+    rm -rf "$stage_managed_dir"
+  fi
 
   echo "Fetching the Valheim compile references pinned by ${VALHEIM_TARGET} (${VALHEIM_FP16})..."
   # `if ! cmd` would report the negation's status, not the tool's, and the exit code is
@@ -330,12 +356,9 @@ install_valheim_references() {
 
   # The one assembly whose hash decides whether this plugin can be built at all. There is
   # no override: an override would assert nothing about the build it let through.
-  if [ -n "${VALHEIM_ASSEMBLY_VALHEIM_SHA256:-}" ]; then
-    if ! printf '%s  %s\n' "$VALHEIM_ASSEMBLY_VALHEIM_SHA256" "$stage_managed_dir/assembly_valheim.dll" \
-      | sha256sum --check --status; then
-      echo "error: $stage_managed_dir/assembly_valheim.dll is not the one ${VALHEIM_TARGET} pins" >&2
-      return 5
-    fi
+  if ! references_match_pin "$stage_managed_dir"; then
+    echo "error: $stage_managed_dir/assembly_valheim.dll is not the one ${VALHEIM_TARGET} pins" >&2
+    return 5
   fi
 
   if ! printf '%s\n' "$REFERENCE_CACHE_MARKER_CONTENT" > "$stage_dir/$REFERENCE_CACHE_MARKER_NAME"; then
@@ -412,12 +435,39 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 PYTHON
 }
 
+record_pack_checksums() {
+  # Every file the pack publishes, hashed. `.takaro/` is this script's own bookkeeping and
+  # is excluded: it is written after the download, so it is not part of what arrived.
+  local pack_root="$1"
+  ( cd "$pack_root" \
+    && mkdir -p "$(dirname "$PACK_CHECKSUM_FILE")" \
+    && find . -type f -not -path "./.takaro/*" -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 -r sha256sum > "$PACK_CHECKSUM_FILE" )
+}
+
+pack_matches_pin() {
+  # What the fetch path proved, re-proved: the tree still declares the pinned version and
+  # still hashes as the checked zip's content. A pack that was corrupted, truncated or
+  # hand-edited since is not reused, however managed its assemblies look.
+  local pack_root="$1" declared
+
+  [ -f "$pack_root/$PACK_CHECKSUM_FILE" ] || return 1
+  [ -f "$pack_root/manifest.json" ] || return 1
+  declared="$(read_pack_version "$pack_root/manifest.json" 2>/dev/null || true)"
+  [ "$declared" = "$VALHEIM_BEPINEX_PACK_VERSION" ] || return 1
+  ( cd "$pack_root" && sha256sum --check --status "$PACK_CHECKSUM_FILE" )
+}
+
 install_bepinex_pack() {
   local stage_dir archive manifest declared
 
   if [ -f "$PACK_CORE_DIR/BepInEx.dll" ] && validate_bepinex_assemblies "$PACK_CORE_DIR"; then
-    echo "Reusing the validated BepInExPack at $PACK_DIR."
-    return 0
+    if pack_matches_pin "$PACK_DIR"; then
+      echo "Reusing the validated BepInExPack at $PACK_DIR."
+      return 0
+    fi
+    echo "The prepared pack at $PACK_DIR is no longer the ${VALHEIM_BEPINEX_PACK_VERSION} zip ${VALHEIM_TARGET} pins; re-downloading." >&2
   fi
 
   if ! stage_dir="$(mktemp -d "${PACK_DIR}.stage.XXXXXX")"; then
@@ -469,6 +519,10 @@ install_bepinex_pack() {
     return 1
   fi
   record_loader_version "$stage_dir/pack/BepInExPack_Valheim/BepInEx/core" "$stage_dir/pack/.takaro/loader-version"
+  if ! record_pack_checksums "$stage_dir/pack"; then
+    pack_download_failed "the extracted pack could not be checksummed"
+    return 5
+  fi
 
   if ! publish_directory "$stage_dir/pack" "$PACK_DIR" \
     ACTIVE_PACK_BACKUP ACTIVE_PACK_FINAL ACTIVE_PACK_STAGE "BepInExPack"; then

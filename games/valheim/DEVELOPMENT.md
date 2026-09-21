@@ -74,6 +74,12 @@ Fetch the target's inputs and build both release archives, in the pinned .NET SD
 `VALHEIM_BUILD_TOOLCHAIN=host` keeps the build in place rather than re-execing into the
 SDK image, and then needs `dotnet`, `zip`, `unzip`, `jq`, `rg` and `file` locally.
 
+Through the maintenance CLI the same build is `takaro-maint build --game valheim
+--toolchain container`. Pass that flag: only `VALHEIM_BUILD_TOOLCHAIN` selects where this
+game compiles, while `--toolchain` is what `build-manifest.json` records as
+`toolchain.mode`, and its default (`host`) would make the manifest name a build
+environment this connector never uses.
+
 Build one half by hand against references you already have:
 
 ```bash
@@ -94,9 +100,14 @@ dotnet build mod/src/Takaro.Valheim.Companion/Takaro.Valheim.Companion.csproj \
 
 ## Re-pinning
 
-Valheim patches often, and BepInExPack moves on its own schedule. `takaro-maint scan`
-watches both and files one maintenance issue per move, because `catalog/valheim/game.json`
-declares a Steam `watch` block and a Thunderstore one.
+Valheim patches often, and BepInExPack moves on its own schedule, and
+`catalog/valheim/game.json` declares a watch block for each. They do not deliver the same
+thing. The Steam watch is a `game` watch: `takaro-maint scan` files one maintenance issue
+per build it sees. The Thunderstore watch is a `framework` watch, and a framework
+observation is reconciled into the game issue of the game version it is for -- which
+Thunderstore does not publish for BepInExPack. So a moved pack is recorded as a head
+observation and nothing else: read it out of `takaro-maint scan` (or the readiness state)
+and re-pin by hand with step 3 below.
 
 1. `takaro-maint steam pin --game valheim` — what does Steam serve on `public` now?
    `changed` lists the depots that moved.

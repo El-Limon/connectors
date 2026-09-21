@@ -805,6 +805,37 @@ test_a_prepared_pack_is_not_downloaded_again() {
   assert_equals 1 "$(call_count)" "a validated reference cache must not be fetched again" || return 1
 }
 
+test_a_drifted_reference_cache_is_not_reused() {
+  run_setup drifted-references first_success
+  assert_equals 0 "$RUN_STATUS" "the first run should prepare a reference cache" || return 1
+  assert_equals 1 "$(call_count)" "the first run fetches the references once" || return 1
+
+  # Still a real managed assembly -- just no longer the one the target pins. Validation
+  # alone cannot tell the difference, which is why the pinned digest is checked again.
+  printf 'tampered\n' >> "$RUN_CASE_DIR/server/valheim_server_Data/Managed/assembly_valheim.dll"
+
+  run_setup drifted-references first_success
+  assert_equals 0 "$RUN_STATUS" "the second run should repair the drifted cache" || return 1
+  assert_equals 2 "$(call_count)" "a cache that is not the pinned bytes must be fetched again" || return 1
+  assert_output_contains "is not the one ${STUB_TARGET} pins" "the run must say why the cache was rejected" || return 1
+}
+
+test_a_drifted_pack_is_downloaded_again() {
+  run_setup drifted-pack first_success
+  assert_equals 0 "$RUN_STATUS" "the first run should prepare a pack" || return 1
+  assert_equals 1 "$(curl_count)" "the first run downloads the pack once" || return 1
+
+  # Not one of the two core assemblies: the loader shim the game runs through, which
+  # assembly validation never looks at.
+  printf 'tampered\n' >> "$(pack_dir)/BepInExPack_Valheim/doorstop_libs/libdoorstop_x64.so"
+
+  run_setup drifted-pack first_success
+  assert_equals 0 "$RUN_STATUS" "the second run should replace the drifted pack" || return 1
+  assert_equals 2 "$(curl_count)" "a pack that is no longer the checked zip must be downloaded again" || return 1
+  assert_output_contains "no longer the ${PACK_VERSION} zip" "the run must say why the pack was rejected" || return 1
+  assert_no_pack_temporary_state || return 1
+}
+
 test_failed_atomic_publication_rolls_back_and_next_run_retries() {
   local case_dir="$TMP_ROOT/atomic-publication"
   mkdir -p "$case_dir/server/worlds_local"
@@ -888,6 +919,8 @@ for test_case in \
   test_missing_file_command_fails_preflight \
   test_valid_existing_cache_skips_the_fetch \
   test_a_prepared_pack_is_not_downloaded_again \
+  test_a_drifted_reference_cache_is_not_reused \
+  test_a_drifted_pack_is_downloaded_again \
   test_failed_atomic_publication_rolls_back_and_next_run_retries \
   test_failed_first_publication_does_not_forge_cache_ownership \
   test_signal_after_first_atomic_rename_restores_old_install \

@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -401,19 +402,50 @@ class ValheimAdapter:
             return
 
         folder = install_dir / PLUGIN_FOLDER
-        with zipfile.ZipFile(artifact) as archive:
-            for name in archive.namelist():
-                relative = name.rstrip("/")
-                if not relative:
-                    continue
-                if not relative.startswith(f"{PLUGIN_FOLDER}/"):
+        install_dir.mkdir(parents=True, exist_ok=True)
+        # Unpacked beside the install rather than over it: a CRC error, a full disk or an
+        # interrupt part-way through the extraction would otherwise leave a half-written
+        # plugin folder where a working one used to be, with the ledger still naming the
+        # artifact that is no longer there. The staging area is outside BepInEx/plugins so
+        # a crash cannot leave the chainloader a second copy of the assemblies to load.
+        staging_root = dest / ".takaro" / "deploy"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f"{PLUGIN_FOLDER}.", dir=staging_root))
+        try:
+            with zipfile.ZipFile(artifact) as archive:
+                for name in archive.namelist():
+                    relative = name.rstrip("/")
+                    if not relative:
+                        continue
+                    if not relative.startswith(f"{PLUGIN_FOLDER}/"):
+                        raise ConflictError(
+                            f"{artifact.name} holds '{name}', outside the single {PLUGIN_FOLDER}/ folder; "
+                            "nothing was extracted"
+                        )
+                    paths.safe_relative(relative, field="artifact zip entry")
+                try:
+                    archive.extractall(staging)
+                except (zipfile.BadZipFile, OSError) as exc:
                     raise ConflictError(
-                        f"{artifact.name} holds '{name}', outside the single {PLUGIN_FOLDER}/ folder; "
-                        "nothing was extracted"
-                    )
-                paths.safe_relative(relative, field="artifact zip entry")
-            shutil.rmtree(folder, ignore_errors=True)
-            archive.extractall(install_dir)
+                        f"{artifact.name} could not be unpacked ({exc}); the installed {PLUGIN_FOLDER} is untouched"
+                    ) from exc
+            unpacked = staging / PLUGIN_FOLDER
+            if not unpacked.is_dir():
+                raise ConflictError(f"{artifact.name} unpacked without a {PLUGIN_FOLDER}/ folder; nothing was replaced")
+            # The previous folder moves aside first and is only dropped once the new one is
+            # in place, so the swap has no window in which neither exists.
+            previous = staging / f"{PLUGIN_FOLDER}.previous"
+            replaced = folder.exists()
+            if replaced:
+                folder.rename(previous)
+            try:
+                unpacked.rename(folder)
+            except OSError:
+                if replaced:
+                    previous.rename(folder)
+                raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
         cache = dest / CHAINLOADER_CACHE
         if cache.is_file():
             cache.unlink()

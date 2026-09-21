@@ -318,6 +318,24 @@ normalize_and_zip() {
   pkg_zip "$STAGE" "$folder_name" "$OUT_DIR/$archive_name"
 }
 
+# The output directory is per target, not per version, so the previous build of another
+# version is still sitting in it -- and two archives of one role are ambiguous about which
+# bytes a release meant, which is why the packaging check below refuses them. Drop the
+# earlier output of exactly these two roles (the names come from the target record, with
+# the version wildcarded) before writing this build's.
+drop_previous_role_archives() {
+  local template="$1" pattern
+  pattern="${template/\{version\}/*}"
+  find "$OUT_DIR" -maxdepth 1 -type f \
+    \( -name "$pattern" -o -name "${pattern}.meta.json" \) \
+    ! -name "$SERVER_ARCHIVE" ! -name "${SERVER_ARCHIVE}.meta.json" \
+    ! -name "$COMPANION_ARCHIVE" ! -name "${COMPANION_ARCHIVE}.meta.json" \
+    -delete
+}
+
+drop_previous_role_archives "$VALHEIM_ARTIFACT_SERVER_PLUGIN"
+drop_previous_role_archives "$VALHEIM_ARTIFACT_CLIENT_COMPANION"
+
 normalize_and_zip TakaroValheim "$SERVER_ARCHIVE"
 normalize_and_zip TakaroValheimCompanion "$COMPANION_ARCHIVE"
 

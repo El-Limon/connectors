@@ -43,9 +43,11 @@ deploy_valheim() {
     trap 'rm -rf "$tmp"' RETURN
 
     ds_info "Building both Valheim roles for ${target} (.NET SDK in the pinned image)..."
+    # --toolchain container is what the build really does (the script re-execs into the
+    # pinned SDK image), and it is what build-manifest.json records.
     ds_maint build --game valheim --target "$target" \
         --version "$("${REPO_ROOT}/scripts/dev-version.sh" valheim)" \
-        --out "$tmp"
+        --out "$tmp" --toolchain container
     ds_maint deploy --game valheim --target "$target" \
         --dest "$(ds_target_dest valheim)" \
         --from "${tmp}/build-manifest.json"

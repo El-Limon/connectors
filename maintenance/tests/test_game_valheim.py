@@ -721,6 +721,44 @@ def test_a_plugin_zip_with_a_second_top_level_folder_is_refused(
     assert not (dest / "BepInEx" / "plugins" / "Other").exists()
 
 
+def test_a_plugin_zip_that_fails_half_way_leaves_the_installed_plugin_in_place(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    """The extraction is staged: an archive that dies mid-read must not take the live plugin."""
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    directory = tmp_path / "dist"
+    role_zip(directory / PLUGIN_ZIP, "TakaroValheim")
+    role_zip(directory / COMPANION_ZIP, "TakaroValheimCompanion")
+    manifest = manifest_for(run, repo, directory)
+    assert (
+        run("deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(manifest), repo=repo)[0]
+        == 0
+    )
+    installed = dest / "BepInEx" / "plugins" / "TakaroValheim" / "TakaroValheim.dll"
+    assert installed.read_text() == "assembly"
+
+    # A well-formed zip whose stored bytes no longer match their CRC: the entry list reads
+    # fine, so the refusal can only come out of the extraction itself.
+    stored = b"a" * 4096
+    with zipfile.ZipFile(directory / PLUGIN_ZIP, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("TakaroValheim/TakaroValheim.dll", stored)
+        archive.writestr("TakaroValheim/manifest.json", json.dumps({"name": "TakaroValheim"}))
+    raw = bytearray((directory / PLUGIN_ZIP).read_bytes())
+    raw[raw.index(stored) + 16] ^= 0xFF
+    (directory / PLUGIN_ZIP).write_bytes(bytes(raw))
+    manifest = manifest_for(run, repo, directory)
+
+    code, payload, _ = run(
+        "deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(manifest), repo=repo
+    )
+
+    assert code == 7, payload
+    assert installed.read_text() == "assembly"
+    assert sorted(path.name for path in installed.parent.iterdir()) == ["TakaroValheim.dll", "manifest.json"]
+    assert list((dest / ".takaro" / "deploy").iterdir()) == []
+
+
 # --------------------------------------------------------------------------- hooks
 
 
