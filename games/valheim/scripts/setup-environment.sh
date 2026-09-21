@@ -366,9 +366,12 @@ record_loader_version() {
 
   mkdir -p "$(dirname "$out_file")"
   if command -v dotnet >/dev/null 2>&1; then
+    # The SDK writes unrelated chatter ("An issue was encountered verifying workloads") to
+    # stdout, so the version is picked out by shape rather than by being the only line.
     version="$(dotnet msbuild "${SCRIPT_DIR}/bepinex-loader-version.proj" \
       -nologo -verbosity:minimal \
-      -p:BepInExReferencePath="$core_dir" 2>/dev/null | tr -d '[:space:]' || true)"
+      -p:BepInExReferencePath="$core_dir" 2>/dev/null \
+      | grep -oE '^[[:space:]]*[0-9]+(\.[0-9]+){1,3}[[:space:]]*$' | tail -n 1 | tr -d '[:space:]' || true)"
   fi
   case "$version" in
     [0-9]*) printf '%s\n' "$version" > "$out_file" ;;

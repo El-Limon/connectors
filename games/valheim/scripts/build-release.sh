@@ -98,6 +98,24 @@ done
 VALHEIM_REFERENCE_PATH="$(realpath "$VALHEIM_REFERENCE_PATH")"
 BEPINEX_REFERENCE_PATH="$(realpath "$BEPINEX_REFERENCE_PATH")"
 BEPINEX_LOADER_VERSION="$(cat "$LOADER_VERSION_FILE" 2>/dev/null || echo unknown)"
+if ! [[ "$BEPINEX_LOADER_VERSION" =~ ^[0-9] ]]; then
+  # setup-environment.sh runs wherever the caller is, and reading an assembly's version
+  # needs the SDK. This is past the toolchain re-exec, so the SDK is here now: record the
+  # loader version the packaged manifest is about to state rather than ship "unknown".
+  mkdir -p "$(dirname "$LOADER_VERSION_FILE")"
+  # The SDK writes unrelated chatter ("An issue was encountered verifying workloads") to
+  # stdout, so the version is picked out by shape rather than by being the only line.
+  BEPINEX_LOADER_VERSION="$(dotnet msbuild "${SCRIPT_DIR}/bepinex-loader-version.proj" \
+    -nologo -verbosity:minimal \
+    -p:BepInExReferencePath="$BEPINEX_REFERENCE_PATH" 2>/dev/null \
+    | grep -oE '^[[:space:]]*[0-9]+(\.[0-9]+){1,3}[[:space:]]*$' | tail -n 1 | tr -d '[:space:]' || true)"
+  if ! [[ "$BEPINEX_LOADER_VERSION" =~ ^[0-9] ]]; then
+    echo "could not read the BepInEx loader version from $BEPINEX_REFERENCE_PATH/BepInEx.dll" >&2
+    exit 1
+  fi
+  printf '%s\n' "$BEPINEX_LOADER_VERSION" > "$LOADER_VERSION_FILE"
+fi
+echo "  BepInEx loader: ${BEPINEX_LOADER_VERSION} (pack ${BEPINEX_PACK_VERSION})"
 
 SERVER_ARCHIVE="${VALHEIM_ARTIFACT_SERVER_PLUGIN/\{version\}/${VALHEIM_RELEASE_VERSION}}"
 COMPANION_ARCHIVE="${VALHEIM_ARTIFACT_CLIENT_COMPANION/\{version\}/${VALHEIM_RELEASE_VERSION}}"
