@@ -1098,3 +1098,39 @@ def test_terraria_readiness_joins_the_image_to_the_release_issue(
     assert row.rev == "6.2.0.911459f0"
     assert "pryaxis/tshock:6.2.0" in body
     assert "ready-for-agent" in body
+
+
+def test_setup_environment_refuses_a_reference_cache_that_is_not_the_catalogs(
+    run: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both refusals happen before docker is reached, so they are checkable anywhere.
+
+    A cache for another target is a 7 and a cache whose bytes are not the ones the catalog
+    pins is a 5 — never a silent re-extraction, which would repair whatever changed those
+    bytes without ever saying so and leave the next build looking clean.
+    """
+    resolved = resolve(run, REPO_ROOT)
+    refs = REPO_ROOT / "games" / "terraria" / "_data" / "refs" / str(resolved["fp16"])
+    if refs.exists():
+        pytest.skip("this checkout already holds an extracted reference cache")
+
+    script = REPO_ROOT / "games" / "terraria" / "scripts" / "setup-environment.sh"
+    marker = refs / ".takaro" / "references.json"
+    marker.parent.mkdir(parents=True)
+    try:
+        for name in ("TShockAPI.dll", "OTAPI.dll", "TerrariaServer.dll"):
+            (refs / name).write_bytes(b"not the assembly the catalog pins")
+
+        marker.write_text(json.dumps({"fingerprint": "9" * 64, "image": "x", "files": []}))
+        stale = subprocess.run([str(script)], capture_output=True, text=True, check=False, cwd=REPO_ROOT)
+        assert stale.returncode == 7, stale.stderr
+        assert "stale reference cache" in stale.stderr
+
+        marker.write_text(json.dumps({"fingerprint": resolved["fingerprint"], "image": "x", "files": []}))
+        altered = subprocess.run([str(script)], capture_output=True, text=True, check=False, cwd=REPO_ROOT)
+        assert altered.returncode == 5, altered.stderr
+        assert "--force" in altered.stderr
+    finally:
+        import shutil as _shutil
+
+        _shutil.rmtree(refs, ignore_errors=True)

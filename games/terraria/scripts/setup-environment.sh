@@ -62,6 +62,12 @@ if [ -f "${MARKER}" ] && [ -z "${FORCE}" ]; then
         echo "References for ${TERRARIA_TARGET} (${TERRARIA_FP16}) are up-to-date: games/terraria/${REFS}"
         exit 0
     fi
+    # The cache says it is this target's, and it is not. Silently re-extracting would
+    # repair whatever changed these bytes without ever saying so, and the next build would
+    # look clean — so this is a refusal, and replacing the cache is something you ask for.
+    echo "error: games/terraria/${REFS} does not hold the assemblies ${TERRARIA_TARGET} pins" >&2
+    echo "       (a file is missing or its sha256 is not the catalog's); pass --force to replace it" >&2
+    exit 5
 fi
 
 rm -rf "${REFS}"
