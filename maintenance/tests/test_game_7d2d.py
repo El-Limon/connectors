@@ -441,3 +441,57 @@ def test_compat_record_carries_the_steam_pin(run: Any, repo: Path, tmp_path: Pat
     assert re.search(r"manifest/[0-9]+", url)
     assert (out / ZIP_NAME).is_file()
     assert (out / "takaro-7d2d-mod.zip").read_bytes() == (out / ZIP_NAME).read_bytes()
+
+
+# -- the dev-servers split ---------------------------------------------------------------
+
+DS_ROOT = Path(__file__).resolve().parents[2] / "dev-servers"
+REGISTRY_FIXTURE = Path(__file__).parent / "fixtures" / "games" / "7d2d" / "dev-servers-registry.expected"
+
+# The one deliberate behaviour change in this PR: 7D2D's deployed artifact now depends on
+# its catalog target, so the target record is part of its source fingerprint. Everything
+# else in the registry has to come out of the split byte for byte.
+SEVEND2D_SOURCES = "games/7d2d/mod/src games/7d2d/mod/Takaro.csproj games/7d2d/mod/ModInfo.xml games/7d2d/version.txt"
+
+
+def bash(script: str) -> str:
+    completed = subprocess.run(
+        ["bash", "-c", script], cwd=DS_ROOT.parent, capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout
+
+
+def test_dev_servers_registry_is_byte_identical_after_the_split() -> None:
+    expected = REGISTRY_FIXTURE.read_text().replace(SEVEND2D_SOURCES, f"{SEVEND2D_SOURCES} catalog/7d2d")
+
+    actual = bash(
+        '. dev-servers/lib/common.sh; ds_registry; for g in $(ds_game_ids); do ds_source_paths "$g"; done'
+    )
+
+    assert actual == expected
+
+
+def test_dev_servers_scripts_parse_and_dispatch() -> None:
+    scripts = sorted(DS_ROOT.glob("lib/**/*.sh")) + sorted(DS_ROOT.glob("scripts/*.sh"))
+    for script in scripts:
+        completed = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, check=False)
+        assert completed.returncode == 0, f"{script.name}: {completed.stderr}"
+
+    assert bash('. dev-servers/lib/common.sh; ds_target_prefix 7d2d').strip() == "SEVEND2D"
+    assert bash('. dev-servers/lib/common.sh; ds_target_dest 7d2d').strip().endswith("/7d2d/ServerFiles")
+    assert bash('. dev-servers/lib/common.sh; ds_target_prefix minecraft-fabric').strip() == "MC_FABRIC"
+
+    for game in bash(". dev-servers/lib/common.sh; ds_game_ids").split():
+        found = bash(f'. dev-servers/lib/common.sh; declare -F "install_$(ds_fn_id {game})" >/dev/null && echo yes')
+        assert found.strip() == "yes", f"{game} has no install step"
+
+    refused = subprocess.run(
+        ["bash", "-c", '. dev-servers/lib/common.sh; ds_dispatch install nope'],
+        cwd=DS_ROOT.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert refused.returncode != 0
+    assert "no install step defined for nope" in refused.stderr

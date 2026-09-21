@@ -12,7 +12,7 @@ RUN sed -i 's|http://deb.debian.org|http://archive.debian.org|g; \
       > /etc/apt/apt.conf.d/99-archive-valid
 
 RUN apt-get update && \
-  apt-get install -y nuget curl unzip git && \
+  apt-get install -y nuget curl unzip zip git && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 

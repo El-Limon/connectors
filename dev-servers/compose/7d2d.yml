@@ -3,14 +3,19 @@ name: takaro-dev-7d2d
 
 services:
   7d2d:
-    image: vinanrra/7dtd-server:latest
+    # Resolved from the catalog into _data/.targets/7d2d.env by install.sh: image, tag and
+    # digest all come from catalog/7d2d/targets/<id>.json.
+    image: "${SEVEND2D_IMAGE:-target-not-resolved}"
     container_name: takaro-dev-7d2d
     environment:
-      START_MODE: "3"
+      # 1 = start the server that is already installed. The pinned install writes
+      # DONT_REMOVE.txt, so the image never runs SteamCMD and the build cannot drift;
+      # START_MODE 2 and 3 would call the image's own updater.
+      START_MODE: "1"
       PUID: "${DEV_UID:-1000}"
       PGID: "${DEV_GID:-1000}"
       TimeZone: "${TZ:-Etc/UTC}"
-      VERSION: "stable"
+      CHANGE_CONFIG_DIR_OWNERSHIP: "NO"
       # The Takaro mod reads <server cwd>/Takaro/Config.xml, not the environment.
       # install.sh renders that file into _data/7d2d/ServerFiles/Takaro/Config.xml.
     volumes:
