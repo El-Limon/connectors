@@ -37,7 +37,7 @@ def wired_paper(catalog_copy: Path) -> Any:
 
 def solo(root: Path) -> None:
     """Drop every target but this one, so a whole-catalog check only needs this upstream."""
-    for path in (root / "catalog/minecraft/targets").glob("*.json"):
+    for path in (root / "catalog").glob("*/targets/*.json"):
         if path.stem != TARGET:
             path.unlink()
 
