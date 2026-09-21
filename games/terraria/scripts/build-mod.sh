@@ -4,6 +4,13 @@
 # The host's own `dotnet` is never used: two builds of one commit have to produce identical
 # bytes, and only the pinned SDK can promise that.
 #
+# `IncludeSourceRevisionInInformationalVersion=false` is part of that promise, not decoration:
+# without it the SDK asks whatever git tree happens to be mounted for a SourceRevisionId and
+# appends `+<sha>` to the assembly's InformationalVersion. That sha is the checkout's HEAD, which
+# on a pull request is GitHub's throwaway merge commit -- a revision that exists in no clone --
+# while a build from a worktree resolves none at all. Either way the DLL stops matching a rebuild
+# of the commit it is named after. The version the plugin reports is `InformationalVersion` alone.
+#
 # Usage: build-mod.sh [--target <catalog target id>]
 set -euo pipefail
 
@@ -46,6 +53,7 @@ docker run --rm \
         -p:Deterministic=true \
         -p:ContinuousIntegrationBuild=true \
         -p:DebugType=none \
-        -p:InformationalVersion="${VERSION:-dev}"
+        -p:InformationalVersion="${VERSION:-dev}" \
+        -p:IncludeSourceRevisionInInformationalVersion=false
 
 echo "Built games/terraria/_data/build/TakaroTerrariaEvents/TakaroTerrariaEvents.dll"

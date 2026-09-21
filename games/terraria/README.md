@@ -173,7 +173,7 @@ still marked "not verified in a live test" need a connected player, which that r
 | Single player lookup | ⚠️ | Read from the TShock REST API. Not verified in a live test. |
 | Player location | ⚠️ | Uses the plugin's `/takaropos` command; checked against a connected player on a local server, but never end to end through Takaro. |
 | Player inventory | ⚠️ | The plugin's `/takaroinv` reports inventory, armour, dyes, trash, piggy bank/safe/forge/void vault and stored loadouts. The capability record still lists inventory as returning an empty list, so which behaviour you get is unconfirmed — not verified in a live test. |
-| Item catalogue | ✅ | 6147 items extracted from the server assemblies, so a name like `Wood` resolves to the code `/give` wants. Proven 2026-09-21: returned in full to a live request. |
+| Item catalogue | ⚠️ | 6147 items extracted from the server assemblies, so a name like `Wood` resolves to the code `/give` wants. Proven 2026-09-21: returned in full to a live request, with `Wood` resolving to `9`. The names are split out of the internal ids rather than read from Terraria's own language file, so some of them read wrong — see known issues. |
 | Entity catalogue | ❌ | Terraria NPCs spawn from world state; there is no registry to list, so Takaro gets an empty list. |
 | Locations / points of interest | ❌ | Terraria has no named-location concept for Takaro to list; Takaro gets an empty list. |
 | Chat messages from players | ⚠️ | Parsed out of the TShock log, which is best-effort text matching. Not verified in a live test. |
@@ -208,6 +208,13 @@ still marked "not verified in a live test" need a connected player, which that r
   late-landing projectile kills can credit an item that dealt none of the damage, and it reports
   `unknown` when nothing resolves.
 - **Join and leave events are polled, not pushed**, so they lag by up to `pollIntervalMs`.
+- **The item names are derived, not Terraria's own.** The catalogue splits each item's internal id
+  into words instead of reading the game's language file, so about 120 of the 6147 names glue a
+  short word onto the one before it (`A Horrible Nightfor Alchemy`, `Bandof Regeneration`) and
+  every apostrophe is gone (`Aarons Helmet`). Giving and looking up still work — the match ignores
+  spaces and punctuation, so `A Horrible Night for Alchemy` and `Aaron's Helmet` both find the
+  right item — but the names Takaro displays are wrong until the catalogue is regenerated from the
+  pinned image's language resource.
 - **Takaro only syncs the item list when it feels like it** — on server registration, hourly, or
   on manual trigger — and it skips the sync if the bridge was not attached at registration time.
   Attach the bridge before registering the server, or trigger the job by hand afterwards.

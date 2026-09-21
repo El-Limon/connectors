@@ -74,8 +74,13 @@ games/terraria/scripts/build-mod.sh [--target tshock-v6.1.0]
 ```
 
 The compile runs inside the pinned .NET SDK image — never the host's `dotnet` — with
-`-p:Deterministic=true -p:ContinuousIntegrationBuild=true -p:DebugType=none`, so two builds of one
-commit produce identical bytes. The output is:
+`-p:Deterministic=true -p:ContinuousIntegrationBuild=true -p:DebugType=none
+-p:IncludeSourceRevisionInInformationalVersion=false`, so two builds of one commit produce
+identical bytes. The last flag is what makes that true off this machine: without it the SDK reads
+the mounted tree's git HEAD and appends `+<sha>` to the assembly's informational version, so a CI
+build (whose HEAD on a pull request is GitHub's throwaway merge commit) and a rebuild from a
+worktree could never agree. The assembly now carries the version it was asked for and nothing
+else. The output is:
 
 ```text
 games/terraria/_data/build/TakaroTerrariaEvents/TakaroTerrariaEvents.dll
@@ -90,7 +95,11 @@ maintenance/bin/takaro-maint build --game terraria --version 0.2.2 --out dist
 ```
 
 That runs `scripts/build-release.sh`, which resolves the target, runs the three build steps and
-packages each role inside the builder image (`SOURCE_DATE_EPOCH` = the commit time). It writes
+packages each role inside the builder image (`SOURCE_DATE_EPOCH` = the committer time of the
+checked-out commit, so the zip entries carry no clock). A release build checks out the tag, so its
+archives rebuild byte for byte from that tag. A pull-request preview artifact is built from the
+merge commit GitHub synthesises, so its zip entries carry *that* commit's time: its DLL matches a
+local rebuild, its zip envelope does not. Pass `SOURCE_DATE_EPOCH` yourself to pin it. It writes
 `dist/takaro-terraria-plugin-tshock-v6.1.0-<version>.zip`,
 `dist/takaro-terraria-bridge-tshock-v6.1.0-<version>.zip` and a `.meta.json` beside each, which is
 how a zip carries its target identity (`takaro-maint artifact validate` reads it).
@@ -283,6 +292,17 @@ sentry, or damage-over-time kills may credit an item that dealt none of the dama
 Terraria has items, and both directions work. The bridge ships a static catalog of 6147 items
 extracted from the server assemblies and resolves a display name such as `Wood` to the numeric
 code TShock's `/give` expects.
+
+`bridge/src/terraria/itemCatalog.ts` is generated, and its names are the internal ids split on
+their capitals rather than Terraria's own display strings. That splitting is imperfect: about 120
+names glue a short word onto the one before it (`A Horrible Nightfor Alchemy`, `Bandof
+Regeneration`) and apostrophes are dropped throughout (`Aarons Helmet`). Resolution is unaffected,
+because `resolveTerrariaItemCode` compares names with everything but letters and digits removed,
+so `A Horrible Night for Alchemy` and `Aaron's Helmet` each still find their code; what is wrong
+is the name Takaro shows. The fix is to regenerate the file from the pinned image's `OTAPI.dll`
+manifest resource `Terraria.Localization.Content.en-US.Items.json` (`ItemName.<InternalName>` →
+display name, ids from the `Terraria.ID.ItemID` constants), keeping the internal name as an alias.
+That generator does not exist yet; this release ships the derived names knowingly.
 
 Inventory reading is plugin-backed. `/takaroinv` reports every container a player owns, skips
 empty slots, and aggregates duplicate item types across all of them into a single entry by summing
