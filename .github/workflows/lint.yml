@@ -11,7 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Shellcheck all tracked shell scripts
-        run: shellcheck -e SC1091 $(git ls-files '*.sh')
+        shell: bash
+        run: |
+          mapfile -t scripts < <(git ls-files '*.sh')
+          shellcheck -e SC1091 "${scripts[@]}"
 
   yaml:
     runs-on: ubuntu-latest
@@ -56,15 +59,23 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      # --no-interpolate checks the structure without needing any of the rig's secrets;
-      # several compose files declare required variables that only a real .env supplies.
+      # Several compose files declare variables that only a real .env supplies. Rather than
+      # skip interpolation — which leaves `${...}` in volume and port specs and makes compose
+      # reject them — every variable the example env does not give a value gets a placeholder.
+      # The structure is what is being checked, not the values.
       - name: Every dev-servers compose file parses
         shell: bash
         working-directory: dev-servers
         run: |
+          mapfile -t referenced < <(
+            grep -hoE '\$\{[A-Za-z_][A-Za-z0-9_]*' compose/*.yml | cut -c3- | LC_ALL=C sort -u
+          )
+          for name in "${referenced[@]}"; do
+            grep -qE "^${name}=." .env.example || export "${name}=placeholder"
+          done
           for file in compose/*.yml; do
             echo "::group::$file"
-            docker compose --env-file .env.example -f "$file" config -q --no-interpolate
+            docker compose --env-file .env.example -f "$file" config -q
             echo "::endgroup::"
           done
 
