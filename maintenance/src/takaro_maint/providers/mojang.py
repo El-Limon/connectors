@@ -14,6 +14,20 @@ from ..exit_codes import IntegrityError, UpstreamUnavailable
 from ..tracker import identity
 from .base import Observation, Provider, ProviderResult
 
+#: What a filed issue says above the owned block. Mojang's releases are described here, in
+#: the provider that observes them, so the tracker stays free of any one upstream's words.
+INTRO = (
+    "Mojang published a new stable Minecraft release. Everything between the owned markers is "
+    "rewritten by `takaro-maint scan`; edit anything else freely \u2014 but leave the first line "
+    "where it is, because that marker is how this issue is recognised."
+)
+
+PREVIEW_INTRO = (
+    "Mojang published a new preview (snapshot channel). Everything between the owned markers is "
+    "rewritten by `takaro-maint scan`; edit anything else freely \u2014 but leave the first line "
+    "where it is, because that marker is how this issue is recognised."
+)
+
 
 def _channels(watch: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """The channels this provider understands, skipping disabled and unusable ones.
@@ -165,6 +179,42 @@ class MojangProvider(Provider):
                 f"{url}: version metadata names no dedicated server jar ({exc!r})", url=url
             ) from exc
         return replace(observation, facts=facts)
+
+    def presentation(self, observation: Observation, game_name: str) -> dict[str, Any]:
+        """The Mojang-shaped issue: the documents it published and the hashes to pin.
+
+        The generic rendering already names the provider, the revision, the release time
+        and the affected targets; what only this provider knows is the chain of documents
+        a target record has to pin, so that is what it adds.
+        """
+        del game_name
+        from ..tracker import issues
+
+        facts = observation.facts
+        dash = issues.DASH
+        manifest_list = facts.get("manifestList") or {}
+        manifest = facts.get("manifest") or {}
+        server = facts.get("server") or {}
+        return {
+            "intro": INTRO if observation.branch == "release" else PREVIEW_INTRO,
+            "observationRows": issues.observation_rows(
+                observation,
+                [
+                    f"| Version list | {manifest_list.get('url', dash)} |",
+                    f"| Version manifest | {manifest.get('url', dash)} (sha1 `{manifest.get('sha1', dash)}`) |",
+                    f"| Server jar | {server.get('url', dash)} (sha1 `{server.get('sha1', dash)}`, "
+                    f"{server.get('size', dash)} bytes) |",
+                    f"| Java | {facts.get('javaMajor', dash)} |",
+                ],
+            ),
+            "nextSteps": issues.next_steps(
+                observation,
+                pin=(
+                    f"pin manifest sha1 `{manifest.get('sha1', dash)}`, "
+                    f"server sha1 `{server.get('sha1', dash)}` size `{server.get('size', dash)}`"
+                ),
+            ),
+        }
 
 
 PROVIDER = MojangProvider()

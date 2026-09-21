@@ -263,21 +263,20 @@ def row_for(platform: str, result: Any, game_version: str, *, branch: str) -> Ro
 
 
 def rows_from_registry(game_version: str, platforms: list[str], *, branch: str) -> dict[str, Row] | None:
-    """Readiness rows for one game version, or ``None`` when no framework ran this run.
+    """Readiness rows for one game version, or ``None`` when this run observed none of them.
 
-    ``None`` is not "nothing is ready": it means this run observed no framework at all (a
-    ``--source mojang-meta`` run, say), and the caller must leave the issue's Readiness
-    section exactly as it found it rather than claim everything is missing.
+    ``None`` is not "nothing is ready": it means this run observed no framework this game
+    has a platform for — a ``--source mojang-meta`` run, or a run whose frameworks all
+    belong to another game — and the caller must leave the issue's Readiness section
+    exactly as it found it rather than stamp "missing" over rows it knows nothing about.
     """
-    if not _REGISTRY.results:
-        return None
     rows: dict[str, Row] = {}
     for platform in platforms:
         found = _REGISTRY.results.get(platform)
         if found is None:
             continue
         rows[platform] = row_for(platform, found[1], game_version, branch=branch)
-    return rows
+    return rows or None
 
 
 # -- the hidden line, merging, rendering ---------------------------------------

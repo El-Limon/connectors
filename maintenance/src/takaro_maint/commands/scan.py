@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import exit_codes, github, observations, output, paths, redact
-from ..catalog.loader import Catalog, Game
+from ..catalog.loader import Catalog, Game, Target
 from ..exit_codes import MaintError, TrackerError, UsageError
 from ..providers import Provider, provider_for
 from ..providers.base import Observation
@@ -136,6 +136,22 @@ def _enrich(provider: Provider, observation: Observation, source: dict[str, Any]
     return enriched
 
 
+def _covered(provider: Provider, observation: Observation, targets: list[Target]) -> bool:
+    """Whether the catalog already ships what this head is, on the provider's own terms.
+
+    A bootstrap files the heads nobody has shipped yet and records the rest as seen.
+    Comparing the observation's revision with each target's ``revision`` is right whenever
+    a target is named by the string the provider observes; a provider whose upstream
+    identity is richer than that answers ``covers()`` instead, and ``None`` from it means
+    "no opinion, compare the strings".
+    """
+    covers = getattr(provider, "covers", None)
+    verdict = covers(observation, targets) if covers is not None else None
+    if verdict is not None:
+        return bool(verdict)
+    return observation.rev in {target.revision for target in targets}
+
+
 def _entry_for(
     outcome: issues.ReconcileResult,
     observation: Observation,
@@ -211,8 +227,8 @@ def _observe_one(
 
     if before is None:
         heads = set(result.heads.values())
-        covered = {t.revision for t in source.game.targets if t.status in COVERING_STATUSES}
-        fresh = [o for o in result.observations if o.rev in heads and o.rev not in covered]
+        covering = [t for t in source.game.targets if t.status in COVERING_STATUSES]
+        fresh = [o for o in result.observations if o.rev in heads and not _covered(provider, o, covering)]
         fresh_ids = {o.rev for o in fresh}
         seeded: list[Entry] = [
             (o.rev, str(o.facts["releaseTime"])) for o in result.observations if o.rev not in fresh_ids
