@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "id": "linux-25356024",
+  "game": "conan-exiles",
+  "platform": "linux",
+  "revision": "25356024",
+  "default": true,
+  "support": {
+    "status": "candidate",
+    "since": "2026-09-21",
+    "evidence": [
+      "games/conan-exiles/README.md (What works, what doesn't — live checks 2026-06-20/21 on an earlier Enhanced Linux build with Enhanced Pippi)"
+    ],
+    "notes": "Exact Steam pin of the public head observed 2026-09-21 (native Linux dedicated server, UE 5.6). The bridge was re-proven on this pin at startup level (RCON bridge, supported actions, reconnect) in an isolated run; chat delivery needs Enhanced Pippi plus the helper, the Takaro-owned TakaroConan.pak needs the Windows Epic DevKit and is not part of this target, and gameplay-level events are unverified."
+  },
+  "inputs": {
+    "server": {
+      "kind": "steam-depots",
+      "source": "steam",
+      "hashOrigin": "self-recorded",
+      "app": 443030,
+      "branch": "public",
+      "buildid": 25356024,
+      "os": "linux",
+      "arch": "64",
+      "depots": {
+        "1006": {
+          "manifest": "4559160656493359681",
+          "size": 111284048,
+          "files": 4
+        },
+        "443032": {
+          "manifest": "2572292872952587850",
+          "size": 4180705732,
+          "files": 248
+        }
+      },
+      "files": {
+        "ConanSandbox/Binaries/Linux/ConanSandboxServer-Linux-Shipping": {
+          "sha256": "39dc7ec4f4641d3dd35c45a12b6d7d45c0bce929b9c1142ca7e143f02fe565ab",
+          "size": 201477192
+        },
+        "ConanSandbox/Binaries/Linux/libDreamworld.so": {
+          "sha256": "e501d3eb060a60dac10fb5292d6299471c5efc6e95fa3606e57554d86426a9e1",
+          "size": 11218520
+        },
+        "ConanSandbox/Content/Paks/global.utoc": {
+          "sha256": "8308b4b9eeaa3490bce688566eabc22a8880db073d3c0d3370890a1722a4cc22",
+          "size": 962
+        },
+        "ConanSandbox/Content/Paks/pakchunk0-LinuxServer.utoc": {
+          "sha256": "3c08fef33d0c1eb257a366f34c4b2bb3df30aab1b50f842adf55a3a872858c95",
+          "size": 660517
+        },
+        "ConanSandboxServer.sh": {
+          "sha256": "0eff1e0969d72ac8e323f52cf85cf265b7c1bdae409a884a7e2251f761a13999",
+          "size": 305
+        },
+        "linux64/steamclient.so": {
+          "sha256": "1a99f39637a505ce2dbfec697dafa118c2d1b8df7dea1412557e2d5ad0a2c7d4",
+          "size": 46728928
+        }
+      },
+      "credentials": null
+    }
+  },
+  "runtime": {
+    "java": null,
+    "container": {
+      "kind": "container-image",
+      "image": "node",
+      "tag": "22.23.2-bookworm-slim",
+      "digest": "sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9",
+      "env": {
+        "HOME": "/conan/.takaro/home"
+      }
+    }
+  },
+  "build": {
+    "system": "script",
+    "script": "games/conan-exiles/scripts/build-release.sh",
+    "toolchain": {
+      "kind": "container-image",
+      "image": "node",
+      "tag": "22.23.2-bookworm-slim",
+      "digest": "sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9"
+    },
+    "deps": {
+      "ws": {
+        "coordinate": "npm:ws:8.21.0",
+        "sha256": "d08b726b3aae3a0fed5218a0d9a4b2ac8d75d4ad453a9271db55fe38e94eb4cf",
+        "resolvedCoordinate": "https://registry.npmjs.org/ws/-/ws-8.21.0.tgz"
+      },
+      "express": {
+        "coordinate": "npm:express:4.22.2",
+        "sha256": "03edbc16219b8298ab9c60d817f77f126ea2083efcd1e5c26e2cab43cb360913",
+        "resolvedCoordinate": "https://registry.npmjs.org/express/-/express-4.22.2.tgz"
+      },
+      "winston": {
+        "coordinate": "npm:winston:3.19.0",
+        "sha256": "4183f422c69153b58b8595d3ec06c523087ca1a978006e1a6db63e199c18748e",
+        "resolvedCoordinate": "https://registry.npmjs.org/winston/-/winston-3.19.0.tgz"
+      }
+    }
+  },
+  "components": [
+    {
+      "role": "bridge",
+      "artifact": "takaro-conan-exiles-bridge-linux-25356024-{version}.zip",
+      "installDir": "TakaroBridge"
+    }
+  ],
+  "verification": {
+    "required": "contract",
+    "separate": [
+      "startup",
+      "bridge-identify",
+      "bridge-reachability",
+      "bridge-players",
+      "bridge-console",
+      "bridge-reconnect",
+      "shutdown",
+      "bridge-stop"
+    ]
+  },
+  "preserve": [
+    "ConanSandbox/Saved/",
+    "TakaroBridge/",
+    ".takaro/"
+  ],
+  "devServers": {
+    "gameId": "conan-exiles"
+  },
+  "notes": "One image serves both containers: the dedicated server is a self-contained UE5 Linux build that needs only glibc/libstdc++, so it runs in the same pinned Node image the bridge needs; the rig and the verifier start it by command (ConanSandboxServer.sh). The Steamworks redist depot 1006 is pinned because the proven install carried it; it is not watched (Valve's depot)."
+}
