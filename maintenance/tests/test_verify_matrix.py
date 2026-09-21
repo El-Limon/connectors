@@ -91,6 +91,19 @@ def test_every_action_in_the_verify_job_is_sha_pinned() -> None:
         assert re.search(r"@[0-9a-f]{40}$", entry), entry
 
 
+def test_the_build_leg_builds_twice_from_scratch_and_compares_every_artifact() -> None:
+    """Without --rerun-tasks the second build is UP-TO-DATE and the comparison proves nothing."""
+    build = job("build")
+    again = step(build, "dist-again")
+
+    assert "--gradle-args --rerun-tasks" in again
+    assert "--out dist-again" in again
+    assert "jq -r '.artifacts[].file' dist/build-manifest.json" in again
+    assert 'cmp "dist/$file" "dist-again/$file"' in again
+    assert build.index("artifact validate") < build.index("dist-again") < build.index("upload-artifact")
+    assert "path: dist/" in step(build, "upload-artifact")
+
+
 def test_the_plan_matrix_lists_the_four_minecraft_targets(run: Any) -> None:
     listing = ("targets", "list", "--game", "minecraft", "--status", "candidate,maintained", "--format", "gha")
     code, payload, _ = run(*listing)
@@ -144,3 +157,41 @@ def test_every_connector_workflow_keeps_release_runs_out_of_the_ci_group() -> No
         text = (REPO_ROOT / ".github/workflows" / f"{name}.yml").read_text()
         assert "-${{ github.ref }}-${{ inputs.tag || 'ci' }}" in text, name
         assert "cancel-in-progress: ${{ inputs.tag == '' }}" in text, name
+
+
+def run_bodies(text: str) -> list[str]:
+    """Every `run:` value in a workflow, block scalars included, so a shell body can be inspected."""
+    bodies: list[str] = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^(\s*)run:\s*(.*)$", line)
+        if not match:
+            continue
+        indent, rest = len(match.group(1)), match.group(2)
+        if rest.strip() in ("|", ">", "|-", ">-"):
+            body = []
+            for following in lines[index + 1 :]:
+                if following.strip() and (len(following) - len(following.lstrip())) <= indent:
+                    break
+                body.append(following)
+            bodies.append("\n".join(body))
+        else:
+            bodies.append(rest)
+    return bodies
+
+
+def test_dispatch_inputs_reach_the_params_script_only_through_env() -> None:
+    for name in CONNECTOR_WORKFLOWS:
+        text = (REPO_ROOT / ".github/workflows" / f"{name}.yml").read_text()
+        params = step(text, "release-params.sh")
+        assert "IN_VERSION: ${{ inputs.version }}" in params, name
+        assert "IN_TAG: ${{ inputs.tag }}" in params, name
+        assert all("${{" not in body for body in run_bodies(params)), name
+
+
+def test_the_minecraft_workflow_expands_no_input_inside_a_shell_body() -> None:
+    """The callers are where dispatch free text enters; the reusable workflow's own expansions are separate."""
+    text = (REPO_ROOT / ".github/workflows/minecraft.yml").read_text()
+    for body in run_bodies(text):
+        assert "${{ inputs." not in body, body
+        assert "github.event.inputs" not in body, body
