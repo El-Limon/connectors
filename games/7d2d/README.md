@@ -1,4 +1,4 @@
-# Takaro 7D2D Mod
+# Takaro 7D2D Connector
 
 A server-side-only mod (version **0.1.4**) that connects a 7 Days to Die dedicated server to
 Takaro. Players do not install anything.
@@ -8,6 +8,8 @@ build 24994542). That is the build every result in the table below was proven on
 load on another build, but nothing here says it works there.
 
 ## Install
+
+Download the latest release: https://takaro.io/connectors/7d2d
 
 ### 1. Before you start
 

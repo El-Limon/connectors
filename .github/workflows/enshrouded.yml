@@ -73,7 +73,10 @@ jobs:
       # The tag, the version, the manifest and the checked-out commit must all agree
       # before anything is built.
       - name: Release guard
-        run: scripts/release-guard.sh enshrouded "${{ inputs.version }}" "${{ inputs.tag }}"
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_TAG: ${{ inputs.tag }}
+        run: scripts/release-guard.sh enshrouded "$IN_VERSION" "$IN_TAG"
 
       - name: Generate token
         id: app-token

@@ -9,6 +9,7 @@ DS_DATA="${DS_DIR}/_data"
 DS_COMPOSE_DIR="${DS_DIR}/compose"
 DS_TEMPLATES="${DS_DIR}/templates"
 DS_ENV_FILE="${DS_DIR}/.env"
+DS_FOCUS="${DS_DATA}/.focus"
 
 # ── Game registry ────────────────────────────────────────────────────────────
 # id | compose | profile | services | ram_gb | disk_gb | kind | description | datadir
@@ -80,6 +81,14 @@ for line in lines:
         b = re.match(r'^    build:\s*(\S.*?)\s*$', line)
         if b:
             ctx = b.group(1).strip('"\'')
+            # Expand ${VAR} / ${VAR:-default} so a build context supplied through
+            # .env is resolved instead of being treated as a missing directory.
+            def _sub(m):
+                name, _, default = m.group(1).partition(':-')
+                return os.environ.get(name) or default
+            ctx = re.sub(r'\$\{([^}]*)\}', _sub, ctx)
+            if not ctx:
+                sys.exit(0)
             sys.exit(0 if not os.path.isdir(os.path.join(base, ctx)) else 1)
 sys.exit(1)
 PYEOF
@@ -157,6 +166,15 @@ ds_compose() {
         done
     fi
     ( cd "$DS_COMPOSE_DIR" && docker compose "${args[@]}" "$@" )
+}
+
+# Compose project name for a game (every dev-servers compose file sets `name:`).
+ds_compose_project() {
+    local file name
+    file="$(ds_compose_file "$1")"
+    name="$(awk -F': *' '/^name:[[:space:]]*/ {print $2; exit}' "$file" 2>/dev/null | tr -d '"'"'"'[:space:]')"
+    [ -n "$name" ] || name="$(basename "$(dirname "$file")")"
+    printf '%s' "$name"
 }
 
 # Running containers for a game, one id per line.

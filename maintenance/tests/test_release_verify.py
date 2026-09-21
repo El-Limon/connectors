@@ -75,6 +75,25 @@ def test_a_complete_release_verifies_and_writes_a_report(
     assert document["assets"] == payload["assets"]
 
 
+def test_an_asset_served_through_a_redirect_is_fetched_without_the_token(
+    run: Any, fake: FakeReleases, published: tuple[Path, Inputs], tmp_path: Path
+) -> None:
+    """GitHub answers an asset download with a 302 to a signed CDN URL.
+
+    urllib copies ordinary headers onto the redirected request, so an Authorization header
+    added with ``add_header`` would hand the bearer token to that third-party host.
+    """
+    _, built = published
+    fake.redirect_downloads()
+
+    code, payload, err = verify(run, fake, built.root, "--out", str(tmp_path / "evidence"))
+
+    assert code == 0, err
+    assert {asset["action"] for asset in payload["assets"]} == {"verified"}
+    assert fake.cdn_requests, "the download never followed the redirect"
+    assert all("Authorization" not in request for request in fake.cdn_requests)
+
+
 def test_a_missing_asset_exits_eight(run: Any, fake: FakeReleases, published: tuple[Path, Inputs]) -> None:
     _, built = published
     release = fake.release_for(TAG)

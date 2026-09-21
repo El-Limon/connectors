@@ -11,12 +11,12 @@ from .. import output, paths
 from ..catalog.loader import resolve
 from ..exit_codes import OK, ConflictError
 from ..games import adapter_for
-from ..publish import artifact_row, source_revision, write_checksums, write_manifest, write_meta
+from ..publish import artifact_row, source_revision, watched_paths, write_checksums, write_manifest, write_meta
 from . import add_selection_arguments, select_many
 from .artifact import validate_file
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("build", help="build a target's artifacts and write a build manifest")
     add_selection_arguments(parser, multiple=True)
     parser.add_argument("--version", required=True, help="connector version to stamp into the artifacts")
@@ -31,17 +31,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     parser.set_defaults(handler=_build, op="build")
 
 
-def _watched_paths(game_id: str) -> list[str]:
-    return [f"games/{game_id}", f"catalog/{game_id}"]
-
-
 def _build(args: Any) -> int:
     catalog, targets = select_many(args)
     adapter = adapter_for(args.game)
     repo_root = paths.repo_root()
     out = Path(args.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
-    revision, dirty = source_revision(repo_root, _watched_paths(args.game))
+    revision, dirty = source_revision(repo_root, watched_paths(args.game))
 
     rows: list[dict[str, Any]] = []
     copied: list[Path] = []

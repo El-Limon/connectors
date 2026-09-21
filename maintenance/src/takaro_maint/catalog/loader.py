@@ -79,6 +79,16 @@ class Game:
     def id(self) -> str:
         return str(self.record["id"])
 
+    @property
+    def platforms(self) -> list[str]:
+        return [str(p) for p in self.record.get("platforms", [])]
+
+    @property
+    def default_platform(self) -> str | None:
+        """The platform ``--game`` alone resolves to when several platforms each declare a default."""
+        value = self.record.get("defaultPlatform")
+        return str(value) if value else None
+
 
 @dataclass(frozen=True)
 class Catalog:
@@ -101,7 +111,8 @@ class Catalog:
         target_id: str | None = None,
         platform: str | None = None,
     ) -> Target:
-        """``--target`` always wins; otherwise the single ``default: true`` record."""
+        """``--target`` wins; else the single ``default: true`` record of the game, of ``platform``,
+        or — when several platforms each declare one — of the game's ``defaultPlatform``."""
         game = self.game(game_id)
         candidates = [t for t in game.targets if platform is None or t.platform == platform]
         if target_id is not None:
@@ -113,11 +124,23 @@ class Catalog:
         defaults = [t for t in candidates if t.is_default]
         if len(defaults) == 1:
             return defaults[0]
+        if len(defaults) > 1 and platform is None and game.default_platform is not None:
+            # One default per platform is the invariant; ``defaultPlatform`` says which of those
+            # a command that names only ``--game`` means.
+            preferred = [t for t in defaults if t.platform == game.default_platform]
+            if len(preferred) == 1:
+                return preferred[0]
         scope = f"game '{game_id}'" + (f" platform '{platform}'" if platform else "")
         if not defaults:
             raise TargetError(f"{scope} declares no default target; pass --target")
         names = ", ".join(sorted(t.id for t in defaults))
-        raise TargetError(f"{scope} declares {len(defaults)} default targets ({names}); pass --target")
+        platforms = ", ".join(sorted({t.platform for t in defaults}))
+        hint = (
+            "pass --target"
+            if platform
+            else f"pass --target, or --platform ({platforms}) to take one platform's default"
+        )
+        raise TargetError(f"{scope} declares {len(defaults)} default targets ({names}); {hint}")
 
     def selectable(
         self,
@@ -140,7 +163,7 @@ class Catalog:
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise UsageError(f"{path}: invalid JSON ({exc})") from exc
 

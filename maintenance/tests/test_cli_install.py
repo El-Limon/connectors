@@ -136,11 +136,83 @@ def test_protected_paths_survive_a_reinstall(run: Any, wired: Any, tmp_path: Pat
     record["runtime"]["container"]["env"]["EXTRA"] = "1"
     wired.save(record)
 
-    code, _, _ = install(run, wired, dest)
+    code, payload, _ = install(run, wired, dest)
 
     assert code == 0
-    for relative, payload in protected.items():
-        assert (dest / relative).read_bytes() == payload
+    assert payload["removed"] == [], "the same paths are overwritten by the swap, never removed"
+    for relative, body in protected.items():
+        assert (dest / relative).read_bytes() == body
+
+
+# --------------------------------------------------------------- switching target
+
+
+BACKPORT = ("install", "--game", "minecraft", "--target", "fabric-26.1.2")
+SUPERSEDED = [
+    "fabric-server-mc.26.2-loader.0.19.5-launcher.1.1.2.jar",
+    "mods/fabric-api-0.160.0+26.2.jar",
+]
+
+
+def switch(run: Any, wired: Any, dest: Path, *extra: str) -> tuple[int, Any, str]:
+    return run(*BACKPORT, "--dest", str(dest), *extra, repo=wired.root)
+
+
+def test_switching_targets_removes_the_previous_targets_inputs(run: Any, wired: Any, tmp_path: Path) -> None:
+    dest = tmp_path / "server"
+    install(run, wired, dest)
+
+    code, payload, _ = switch(run, wired, dest)
+
+    assert code == 0, payload
+    assert payload["status"] == "installed"
+    assert payload["removed"] == SUPERSEDED
+    # Shared install paths are overwritten by the swap, so they are never in `removed`.
+    assert (dest / "server.jar").is_file()
+    assert (dest / "fabric-server-mc.26.1.2-loader.0.19.3-launcher.1.1.2.jar").is_file()
+    assert (dest / "mods/fabric-api-0.155.3+26.1.2.jar").is_file()
+    assert sorted(path.name for path in (dest / "mods").iterdir()) == ["fabric-api-0.155.3+26.1.2.jar"]
+    assert not (dest / SUPERSEDED[0]).exists()
+
+    code, checked, _ = run(
+        "ledger", "check", "--game", "minecraft", "--target", "fabric-26.1.2", "--dest", str(dest), repo=wired.root
+    )
+    assert code == 0, checked
+    assert checked["reasons"] == []
+
+
+def test_switching_targets_removes_the_previous_connector_jar(run: Any, wired: Any, tmp_path: Path) -> None:
+    from test_cli_deploy import build_dir, deploy
+
+    dest = tmp_path / "server"
+    install(run, wired, dest)
+    code, deployed, _ = deploy(run, wired, dest, build_dir(run, wired, tmp_path))
+    assert code == 0, deployed
+    jar = "mods/takaro-minecraft-mod-fabric-26.2-0.1.1.jar"
+    assert (dest / jar).is_file()
+
+    code, payload, _ = switch(run, wired, dest)
+
+    assert code == 0, payload
+    assert jar in payload["removed"]
+    assert not (dest / jar).exists()
+    ledger = json.loads((dest / ".takaro/installed-target.json").read_text())
+    assert "artifact" not in ledger
+
+
+def test_a_dry_run_of_a_switch_reports_what_it_would_remove_and_writes_nothing(
+    run: Any, wired: Any, tmp_path: Path
+) -> None:
+    dest = tmp_path / "server"
+    install(run, wired, dest)
+    before = tree(dest)
+
+    code, payload, _ = switch(run, wired, dest, "--dry-run")
+
+    assert code == 0, payload
+    assert payload["status"] == "dry-run"
+    assert payload["wouldRemove"] == SUPERSEDED
+    assert tree(dest) == before
 
 
 def test_an_incompatible_world_is_refused_without_a_flag(run: Any, wired: Any, tmp_path: Path) -> None:

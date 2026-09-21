@@ -48,14 +48,20 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          # Stable releases build the tag; everything else builds the exact commit that started the run,
+          # never a branch tip that may have moved while earlier jobs ran.
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       # Before anything is built: the tag, the version, the manifest and the checked-out
       # commit all have to agree, or this run would attach one version's artifacts to another
       # version's release.
       - name: Release guard
-        run: scripts/release-guard.sh "${{ inputs.connector }}" "${{ inputs.version }}" "${{ inputs.publish == 'stable' && inputs.tag || '' }}"
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_TAG: ${{ inputs.publish == 'stable' && inputs.tag || '' }}
+        run: scripts/release-guard.sh "$IN_CONNECTOR" "$IN_VERSION" "$IN_TAG"
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
@@ -66,9 +72,11 @@ jobs:
 
       - name: Resolve the build matrix from the catalog
         id: targets
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
         run: |
           maintenance/bin/takaro-maint targets list \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --status candidate,maintained \
             --format gha >> "$GITHUB_OUTPUT"
 
@@ -84,7 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -96,9 +104,11 @@ jobs:
 
       - name: Resolve the target
         id: target
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
         run: |
           maintenance/bin/takaro-maint targets resolve \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --target "${{ matrix.target.id }}" \
             --format gha >> "$GITHUB_OUTPUT"
 
@@ -115,18 +125,23 @@ jobs:
       # installed here; that connector builds against references tracked in the repository.
       - name: Install the pinned inputs
         if: inputs.runtime
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
         run: |
           maintenance/bin/takaro-maint install \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --target "${{ matrix.target.id }}" \
             --dest "$RUNNER_TEMP/game"
 
       - name: Build
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
+          IN_VERSION: ${{ inputs.version }}
         run: |
           maintenance/bin/takaro-maint build \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --target "${{ matrix.target.id }}" \
-            --version "${{ inputs.version }}" \
+            --version "$IN_VERSION" \
             --out dist \
             --toolchain container
 
@@ -134,10 +149,12 @@ jobs:
       # whatever extension it has.
       - name: The artifacts carry this target's identity
         shell: bash
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
         run: |
           mapfile -t files < <(jq -r '.artifacts[].file' dist/build-manifest.json | sed 's|^|dist/|')
           maintenance/bin/takaro-maint artifact validate \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --target "${{ matrix.target.id }}" \
             "${files[@]}"
 
@@ -145,11 +162,14 @@ jobs:
       # --rerun-tasks the second build is UP-TO-DATE and proves nothing.
       - name: Build again and require identical bytes
         shell: bash
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
+          IN_VERSION: ${{ inputs.version }}
         run: |
           maintenance/bin/takaro-maint build \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --target "${{ matrix.target.id }}" \
-            --version "${{ inputs.version }}" \
+            --version "$IN_VERSION" \
             --out dist-again \
             --toolchain container \
             --gradle-args --rerun-tasks
@@ -171,7 +191,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       - name: Set up Java 25
@@ -181,7 +201,11 @@ jobs:
           java-version: 25
           cache: gradle
 
-      - run: bash "${{ inputs.legacy_build }}" "${{ inputs.version }}" "$PWD/dist"
+      - name: Legacy build script
+        env:
+          IN_LEGACY_BUILD: ${{ inputs.legacy_build }}
+          IN_VERSION: ${{ inputs.version }}
+        run: bash "$IN_LEGACY_BUILD" "$IN_VERSION" "$PWD/dist"
 
       # A legacy script that is still listed must still produce something. Silently
       # uploading nothing is how a release loses a platform's jar without anyone noticing.
@@ -208,7 +232,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -220,9 +244,11 @@ jobs:
 
       - name: Resolve the target
         id: target
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
         run: |
           maintenance/bin/takaro-maint targets resolve \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --target "${{ matrix.target.id }}" \
             --format gha >> "$GITHUB_OUTPUT"
 
@@ -241,10 +267,12 @@ jobs:
         # `shell: bash` is what turns on `-o pipefail`; the implicit shell does not, so the
         # `tee` below would swallow a failing verification and let `publish` run anyway.
         shell: bash
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
         run: |
           mkdir -p reports
           maintenance/bin/takaro-maint verify \
-            --game "${{ inputs.connector }}" \
+            --game "$IN_CONNECTOR" \
             --target "${{ matrix.target.id }}" \
             --artifacts dist \
             --out reports \
@@ -255,12 +283,19 @@ jobs:
 
       - name: Job summary
         if: always()
+        env:
+          IN_CONNECTOR: ${{ inputs.connector }}
         run: |
           report="reports/${{ matrix.target.id }}/report.json"
           {
-            echo "### verify ${{ inputs.connector }}/${{ matrix.target.id }}"
+            echo "### verify $IN_CONNECTOR/${{ matrix.target.id }}"
             if [ -f "$report" ]; then
-              jq -r '"level **\(.level)** · outcome **\(.outcome)** · source `\(.source.revision[0:12])` · fingerprint `\(.target.fingerprint[0:16])` · image `\(.runtime.image.digest)` · runtime \(.runtime.loader) \(.runtime.loaderVersion) / \(.runtime.gameVersion)\n\n| check | status | ms |\n|---|---|---|"' "$report"
+              jq -r '
+                "level **\(.level)** · outcome **\(.outcome)** · source `\(.source.revision[0:12])`"
+                + " · fingerprint `\(.target.fingerprint[0:16])` · image `\(.runtime.image.digest)`"
+                + " · runtime \(.runtime.loader) \(.runtime.loaderVersion) / \(.runtime.gameVersion)"
+                + "\n\n| check | status | ms |\n|---|---|---|"
+              ' "$report"
               jq -r '.checks[] | "| \(.id) | \(.status) | \(.durationMs) |"' "$report"
             else
               echo "no report was written (the run failed before verification started)"
@@ -295,7 +330,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.sha }}
           fetch-tags: true
 
       # All release/comment operations act as takaro-ci-bot[bot] (not github-actions[bot]).
@@ -329,11 +364,16 @@ jobs:
       - run: uv sync --frozen --project maintenance
 
       # One job assembles and publishes the whole set. Fork PRs get a read-only token, so they
-      # can't publish or comment; they build for validation only (accepted limitation).
+      # can't publish or comment; they build for validation only.
       - name: Assemble, publish and verify the complete set
         if: ${{ inputs.publish == 'stable' || inputs.publish == 'rolling' || (inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository) }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          IN_CONNECTOR: ${{ inputs.connector }}
+          IN_PUBLISH: ${{ inputs.publish }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_TAG: ${{ inputs.tag }}
+          IN_PR_NUMBER: ${{ inputs.pr_number }}
         shell: bash
         run: |
           # No reports directory when the runtime leg was skipped; the release then carries
@@ -341,11 +381,11 @@ jobs:
           report_args=()
           if [ -d reports ]; then report_args=(--reports reports); fi
           scripts/publish-release.sh publish \
-            --connector "${{ inputs.connector }}" \
-            --channel "${{ inputs.publish }}" \
-            --version "${{ inputs.version }}" \
-            --tag "${{ inputs.tag }}" \
-            --pr-number "${{ inputs.pr_number }}" \
+            --connector "$IN_CONNECTOR" \
+            --channel "$IN_PUBLISH" \
+            --version "$IN_VERSION" \
+            --tag "$IN_TAG" \
+            --pr-number "$IN_PR_NUMBER" \
             --dist dist \
             "${report_args[@]}" \
             --out assembled
@@ -354,11 +394,15 @@ jobs:
         if: ${{ inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          IN_CONNECTOR: ${{ inputs.connector }}
+          IN_PR_NUMBER: ${{ inputs.pr_number }}
+          IN_TAG: ${{ inputs.tag }}
+          IN_VERSION: ${{ inputs.version }}
         run: |
-          scripts/comment-pr-build.sh "${{ inputs.connector }}" \
-            "${{ inputs.pr_number }}" \
-            "${{ inputs.tag }}" \
-            "${{ inputs.version }}" \
+          scripts/comment-pr-build.sh "$IN_CONNECTOR" \
+            "$IN_PR_NUMBER" \
+            "$IN_TAG" \
+            "$IN_VERSION" \
             assembled
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
