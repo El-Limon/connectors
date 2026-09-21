@@ -95,9 +95,12 @@ CARBON_CONFIG_SEED: dict[str, Any] = {
 
 #: The runtime container is a plain base image; the game is the mounted tree and this script.
 #:
-#: No memory hook goes with it. A verification world (size 1000, ten slots) peaks around
-#: 2.7 GB and fits inside the runner's 3 GB default; a server anybody plays on will not,
-#: which is why the rig's compose file sets no limit at all.
+#: No memory hook goes with it, because the runner has none to offer: it boots every game
+#: with the same 3 GB limit. A verification world (size 1000, ten slots) does pass inside
+#: it -- twice, measured -- but it does so sitting *at* the ceiling (2.999 GiB of 3), living
+#: off page-cache reclaim. That is worth knowing before anyone verifies a bigger world here.
+#: A server anybody plays on wants considerably more, which is why the rig's compose file
+#: sets no limit at all.
 CONTAINER_COMMAND = ("/bin/bash", "/takaro/start.sh")
 
 _PROTOCOL = re.compile(r"^Protocol:\s*(?P<protocol>[0-9][0-9.]*)")

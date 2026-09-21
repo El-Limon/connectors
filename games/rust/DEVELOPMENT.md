@@ -148,10 +148,12 @@ never installs, updates or downloads anything; if `/rust` is empty it says so an
 `dev-servers/compose/rust.yml` uses the same image (`${RUST_IMAGE}`, resolved into
 `dev-servers/_data/.targets/rust.env` by `install.sh`) and the same two mounts.
 
-**Memory.** A verification world (size 1000, ten slots) peaks around 2.7 GB and fits inside the
-`verify` runner's 3 GB default, which is why the adapter ships no memory hook. A server anybody
-plays on will want considerably more, which is why the rig's compose file sets no limit at all. If a
-bigger verification world is ever wanted here, the runner will need a per-game memory limit first.
+**Memory.** The `verify` runner boots every game with the same 3 GB limit and offers no per-game
+hook, so the adapter ships none. A verification world (size 1000, ten slots) does pass inside it —
+twice, measured — but it does so sitting *at* the ceiling: sampled peak 2.999 GiB of 3, surviving on
+page-cache reclaim. Verifying a bigger world here needs a per-game memory limit in the runner first.
+A server anybody plays on wants considerably more, which is why the rig's compose file sets no limit
+at all.
 
 ## Dev environment
 
