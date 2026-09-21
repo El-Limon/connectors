@@ -3,24 +3,32 @@ name: takaro-dev-valheim
 
 services:
   valheim:
-    image: lloesche/valheim-server:latest
+    # Resolved from the catalog into _data/.targets/valheim.env by install.sh.
+    image: "${VALHEIM_IMAGE:-target-not-resolved}"
     container_name: takaro-dev-valheim
-    cap_add:
-      - SYS_NICE
     stop_grace_period: 2m
     ports:
       - "2456-2457:2456-2457/udp"
     environment:
-      SERVER_NAME: "${VALHEIM_SERVER_NAME:-Takaro Dev Valheim}"
-      WORLD_NAME: "${VALHEIM_WORLD_NAME:-TakaroDev}"
-      SERVER_PASS: "${VALHEIM_SERVER_PASSWORD:?set VALHEIM_SERVER_PASSWORD (min 5 chars) in dev-servers/.env}"
-      SERVER_PORT: "2456"
-      SERVER_PUBLIC: "false"
-      # Installs BepInExPack Valheim into /config/bepinex on first boot. The
-      # Takaro plugin and its com.takaro.valheim.cfg are placed there by
-      # install.sh / deploy-connector.sh — the connector has no env-var config.
-      BEPINEX: "true"
+      NAME: "${VALHEIM_SERVER_NAME:-Takaro Dev Valheim}"
+      WORLD: "${VALHEIM_WORLD_NAME:-TakaroDev}"
+      PASSWORD: "${VALHEIM_SERVER_PASSWORD:?set VALHEIM_SERVER_PASSWORD (min 5 chars) in dev-servers/.env}"
+      PORT: "2456"
+      PUBLIC: "0"
+      TYPE: "BepInEx"
+      # The exact install already holds the pinned server and BepInExPack; the image must
+      # never run SteamCMD or fetch Thunderstore's latest pack over them.
+      UPDATE_ON_STARTUP: "0"
+      AUTO_UPDATE: "0"
+      FORCE_INSTALL: "0"
+      PUID: "${DEV_UID:-1000}"
+      PGID: "${DEV_GID:-1000}"
+      TZ: "${TZ:-Etc/UTC}"
     volumes:
-      - ../_data/valheim/config:/config
-      - ../_data/valheim/server:/opt/valheim
+      - ../_data/valheim/server:/home/steam/valheim
+      - ../_data/valheim/saves:/home/steam/.config/unity3d/IronGate/Valheim
+      - ../_data/valheim/backups:/home/steam/backups
+      # The connector is BepInEx-config only; render.sh writes this file, the container
+      # reads it in place.
+      - ../_data/valheim/config/bepinex/com.takaro.valheim.cfg:/home/steam/valheim/BepInEx/config/com.takaro.valheim.cfg
     restart: unless-stopped

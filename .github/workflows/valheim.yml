@@ -3,9 +3,21 @@ name: Valheim Connector
 on:
   push:
     branches: [main]
-    paths: ['games/valheim/**', 'scripts/**', '.github/workflows/valheim.yml']
+    paths:
+      - 'games/valheim/**'
+      - 'catalog/valheim/**'
+      - 'maintenance/**'
+      - 'scripts/**'
+      - '.github/workflows/valheim.yml'
+      - '.github/workflows/connector-release.yml'
   pull_request:
-    paths: ['games/valheim/**', 'scripts/**', '.github/workflows/valheim.yml']
+    paths:
+      - 'games/valheim/**'
+      - 'catalog/valheim/**'
+      - 'maintenance/**'
+      - 'scripts/**'
+      - '.github/workflows/valheim.yml'
+      - '.github/workflows/connector-release.yml'
   workflow_call:
     inputs:
       version:
@@ -23,7 +35,7 @@ on:
         required: true
         type: string
       tag:
-        description: Existing release tag to upload the assets to (e.g. zomboid-v1.0.1)
+        description: Existing release tag to upload the assets to (e.g. valheim-v3.0.4)
         required: true
         type: string
 
@@ -34,83 +46,51 @@ concurrency:
 
 jobs:
   test:
-    if: ${{ !inputs.tag }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: games/valheim
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # The same commit the release job builds: a recovery run for an older tag is
+          # gated on that tag's sources, never on whatever main has become. The job runs
+          # on a tagged release too -- `release` needs it, and a needed job that skips
+          # takes the release with it.
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-tags: true
       - name: Set up .NET
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
         with:
           dotnet-version: 8.0.x
+      # The C# suite shells out to both bash harnesses
+      # (tests/setup-environment-behavior.sh and tests/release-package-behavior.sh), and
+      # those need these tools.
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ripgrep
+          sudo apt-get install -y ripgrep jq unzip zip
       - name: Restore
         run: dotnet restore mod/Takaro.Valheim.sln
       - name: Test reference-free connector projects
         run: dotnet test mod/Takaro.Valheim.sln --no-restore -v minimal
 
-  package:
+  params:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+    outputs:
+      version: ${{ steps.params.outputs.version }}
+      tag: ${{ steps.params.outputs.tag }}
+      publish: ${{ steps.params.outputs.publish }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          # A release or recovery run builds the tag, never whatever main has become.
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
           fetch-tags: true
-
-      # The tag, the version, the manifest and the checked-out commit must all agree
-      # before anything is built.
-      - name: Release guard
-        env:
-          IN_VERSION: ${{ inputs.version }}
-          IN_TAG: ${{ inputs.tag }}
-        run: scripts/release-guard.sh valheim "$IN_VERSION" "$IN_TAG"
-
-      - name: Generate token
-        id: app-token
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          app-id: ${{ secrets.TAKARO_CI_APP_ID }}
-          private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Install system dependencies
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y lib32gcc-s1 jq ripgrep unzip zip
-
-      - name: Cache Valheim build dependencies
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        id: valheim-cache
-        with:
-          path: |
-            games/valheim/_data/server
-            games/valheim/_data/deps
-            games/valheim/_data/steamcmd
-          key: valheim-build-deps-v2-owned-reference-cache
-
-      - name: Make scripts executable
-        run: chmod +x games/valheim/scripts/*.sh scripts/*.sh
-
-      - name: Set up environment
-        run: games/valheim/scripts/setup-environment.sh
-
-      - name: Restore
-        run: dotnet restore games/valheim/mod/Takaro.Valheim.sln
 
       - name: Resolve release params
         id: params
@@ -122,49 +102,18 @@ jobs:
           DEV_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/release-params.sh valheim >> "$GITHUB_OUTPUT"
 
-      - name: Build release artifact
-        run: games/valheim/scripts/build-release.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
-
-      - name: Validate separate server and client archives
-        run: games/valheim/tests/release-package-behavior.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
-
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-        with:
-          version: "0.12.15"
-
-      - run: uv python install
-      - run: uv sync --frozen --project maintenance
-
-      # One publisher for every connector: the set is assembled, published and read
-      # back from GitHub. `--mode legacy` means the files are named here rather than
-      # derived from a catalog, so this connector's asset names are unchanged.
-      # Fork PRs get a read-only token, so they build for validation only.
-      - name: Publish
-        if: ${{ steps.params.outputs.publish != 'none' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        shell: bash
-        run: |
-          scripts/publish-release.sh publish \
-            --connector valheim \
-            --channel "${{ steps.params.outputs.publish }}" \
-            --version "${{ steps.params.outputs.version }}" \
-            --tag "${{ steps.params.outputs.tag }}" \
-            --pr-number "${{ github.event.pull_request.number }}" \
-            --mode legacy \
-            --dist "$RUNNER_TEMP/dist" \
-            --out "$RUNNER_TEMP/assembled" \
-            -- \
-            "$RUNNER_TEMP/dist/takaro-valheim-plugin.zip" \
-            "$RUNNER_TEMP/dist/takaro-valheim-companion.zip"
-
-      - name: Comment PR build
-        if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          scripts/comment-pr-build.sh valheim \
-            "${{ github.event.pull_request.number }}" \
-            "${{ steps.params.outputs.tag }}" \
-            "${{ steps.params.outputs.version }}" \
-            "$RUNNER_TEMP/assembled"
+  release:
+    needs: [test, params]
+    uses: ./.github/workflows/connector-release.yml
+    secrets: inherit
+    with:
+      connector: valheim
+      version: ${{ needs.params.outputs.version }}
+      tag: ${{ needs.params.outputs.tag }}
+      publish: ${{ needs.params.outputs.publish }}
+      pr_number: ${{ github.event.pull_request.number }}
+      # The build compiles against the reference assemblies of the pinned depot
+      # manifests, which is what a hosted runner can do. Booting the 2 GB Valheim
+      # dedicated server and proving the plugin on it is the runtime-CI child issue;
+      # this release therefore claims contract verification only.
+      runtime: false

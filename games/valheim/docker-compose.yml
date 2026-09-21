@@ -1,0 +1,26 @@
+---
+name: takaro-valheim
+
+# Nothing is downloaded here. `scripts/setup-environment.sh` fetches the reference
+# assemblies from the pinned Steam depot manifests and the pinned BepInExPack from its exact
+# versioned URL into _data/references/<fp16> and _data/deps/bepinex/<fp16>; VALHEIM_TOOLCHAIN
+# and VALHEIM_FP16 come from `takaro-maint targets resolve --game valheim --format env
+# --prefix VALHEIM`, which scripts/lib-target.sh exports for every script here.
+
+services:
+  # Compiles both roles against one target's reference assemblies, in the pinned .NET SDK.
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.builder
+      args:
+        TOOLCHAIN: "${VALHEIM_TOOLCHAIN:?run scripts/setup-environment.sh first}"
+    volumes:
+      # The whole repository, read-only, with this game's directory writable inside it. The
+      # build needs the repository (scripts/lib/package.sh packages the release zips here
+      # because the bytes must not depend on who built them, and the connector's own tests
+      # read the workflow and the catalog record), and it writes only under games/valheim.
+      - ../..:/repo:ro
+      - ./:/repo/games/valheim
+    working_dir: /repo/games/valheim
+    command: ["bash", "-c", "echo 'Builder container ready' && tail -f /dev/null"]

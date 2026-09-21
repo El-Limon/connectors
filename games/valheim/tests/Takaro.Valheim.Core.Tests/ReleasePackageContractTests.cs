@@ -10,6 +10,13 @@ public sealed class ReleasePackageContractTests
 {
     private const string Version = "2.0.0-rc.1+package";
 
+    // The three BepInEx-shaped numbers a packaged manifest states, each a different fact:
+    // what [BepInPlugin] declares, the Thunderstore pack the target pins, and the loader
+    // assembly's own version.
+    private const string PluginVersion = "2.0.0";
+    private const string PackVersion = "5.4.2350";
+    private const string LoaderVersion = "5.4.23.5";
+
     [TestMethod]
     public void ValidSeparateServerAndClientFixturesPass()
     {
@@ -33,6 +40,9 @@ public sealed class ReleasePackageContractTests
     [DataRow("cloud-marker-in-client")]
     [DataRow("product-version-mismatch")]
     [DataRow("protocol-version-mismatch")]
+    [DataRow("bepinex-version-equals-plugin-version")]
+    [DataRow("pack-version-floating")]
+    [DataRow("missing-plugin-version")]
     public void InvalidPackageFixturesAreRejected(string mutation)
     {
         using var fixture = CreateFixture(mutation);
@@ -49,19 +59,39 @@ public sealed class ReleasePackageContractTests
         var harness = ReadValheimFile("tests/release-package-behavior.sh");
         var release = ReadValheimFile("scripts/build-release.sh");
         var workflow = ReadRepositoryFile(".github/workflows/valheim.yml");
+        var game = ReadRepositoryFile("catalog/valheim/game.json");
 
-        foreach (var source in new[] { harness, release, workflow })
-        {
-            StringAssert.Contains(source, "takaro-valheim-plugin.zip");
-            StringAssert.Contains(source, "takaro-valheim-companion.zip");
-        }
+        // The release script no longer spells either archive name: it takes both from the
+        // resolved target, one key per role, so a re-pin renames the artifacts on its own.
+        StringAssert.Contains(release, "VALHEIM_ARTIFACT_SERVER_PLUGIN");
+        StringAssert.Contains(release, "VALHEIM_ARTIFACT_CLIENT_COMPANION");
+        Assert.IsFalse(
+            release.Contains("takaro-valheim-plugin", StringComparison.Ordinal),
+            "the release script must not hard-code an archive name the catalog owns.");
+
+        // The harness still finds one archive per role by name, whatever the target is.
+        StringAssert.Contains(harness, "takaro-valheim-plugin");
+        StringAssert.Contains(harness, "takaro-valheim-companion");
+
+        // Both patterns and both legacy aliases are declared in one place: the game record.
+        StringAssert.Contains(game, "takaro-valheim-plugin-{target}-{version}.zip");
+        StringAssert.Contains(game, "takaro-valheim-companion-{target}-{version}.zip");
+        StringAssert.Contains(game, "\"takaro-valheim-plugin.zip\"");
+        StringAssert.Contains(game, "\"takaro-valheim-companion.zip\"");
+        StringAssert.Contains(game, "server-plugin");
+        StringAssert.Contains(game, "client-companion");
 
         StringAssert.Contains(harness, "rg -a -q");
         Assert.IsFalse(harness.Contains("rg -q \"$marker\" \"$client_zip\"", StringComparison.Ordinal));
         StringAssert.Contains(release, "SOURCE_DATE_EPOCH");
         StringAssert.Contains(release, "zip -X");
         StringAssert.Contains(release, "LC_ALL=C sort");
-        StringAssert.Contains(workflow, "release-package-behavior.sh");
+        StringAssert.Contains(release, "release-package-behavior.sh");
+
+        // One publisher for every connector: the workflow hands both roles to the shared
+        // release workflow instead of naming assets itself.
+        StringAssert.Contains(workflow, "./.github/workflows/connector-release.yml");
+        StringAssert.Contains(workflow, "connector: valheim");
     }
 
     [TestMethod]
@@ -69,14 +99,16 @@ public sealed class ReleasePackageContractTests
     {
         var workflow = ReadRepositoryFile(".github/workflows/valheim.yml");
         var testJobStart = workflow.IndexOf("  test:\n", StringComparison.Ordinal);
-        var packageJobStart = workflow.IndexOf("  package:\n", StringComparison.Ordinal);
+        var releaseJobStart = workflow.IndexOf("  release:\n", StringComparison.Ordinal);
 
         Assert.IsTrue(testJobStart >= 0, "Valheim workflow is missing the test job.");
         Assert.IsTrue(
-            packageJobStart > testJobStart,
-            "Valheim workflow is missing the package job after the test job.");
+            releaseJobStart > testJobStart,
+            "Valheim workflow is missing the release job after the test job.");
 
-        var testJob = workflow[testJobStart..packageJobStart];
+        // The C# suite shells out to both bash harnesses, so the test job installs what
+        // they need before anything is released.
+        var testJob = workflow[testJobStart..releaseJobStart];
         StringAssert.Contains(testJob, "sudo apt-get install -y ripgrep");
     }
 
@@ -160,6 +192,27 @@ public sealed class ReleasePackageContractTests
                     "graphical-client",
                     protocolCurrent: 3);
                 break;
+            // The three ways the corrected manifest can go wrong again: the loader version
+            // repeated from the plugin version (the bug this connector shipped before it
+            // had a target), a floating pack version, and no plugin version at all.
+            case "bepinex-version-equals-plugin-version":
+                WriteManifest(
+                    Path.Combine(client, "manifest.json"),
+                    "graphical-client",
+                    loaderVersion: PluginVersion);
+                break;
+            case "pack-version-floating":
+                WriteManifest(
+                    Path.Combine(client, "manifest.json"),
+                    "graphical-client",
+                    packVersion: "latest");
+                break;
+            case "missing-plugin-version":
+                WriteManifest(
+                    Path.Combine(client, "manifest.json"),
+                    "graphical-client",
+                    pluginVersion: null);
+                break;
             default:
                 Assert.Fail($"Unknown fixture mutation {mutation}.");
                 break;
@@ -182,23 +235,37 @@ public sealed class ReleasePackageContractTests
         string path,
         string role,
         string version = Version,
-        int protocolCurrent = 2)
+        int protocolCurrent = 2,
+        string? pluginVersion = PluginVersion,
+        string packVersion = PackVersion,
+        string loaderVersion = LoaderVersion)
     {
-        var manifest = new
+        var manifest = new Dictionary<string, object?>
         {
-            name = role == "dedicated-server"
+            ["name"] = role == "dedicated-server"
                 ? "TakaroValheim"
                 : "TakaroValheimCompanion",
-            productVersion = version,
-            bepInExVersion = "2.0.0",
-            processRole = role,
-            protocol = new
+            ["productVersion"] = version,
+            ["bepInExPack"] = new
+            {
+                @namespace = "denikson",
+                name = "BepInExPack_Valheim",
+                version = packVersion
+            },
+            ["bepInExVersion"] = loaderVersion,
+            ["processRole"] = role,
+            ["protocol"] = new
             {
                 minimum = 2,
                 current = protocolCurrent,
                 maximum = 2
             }
         };
+        if (pluginVersion is not null)
+        {
+            manifest["pluginVersion"] = pluginVersion;
+        }
+
         Write(path, JsonSerializer.Serialize(manifest));
     }
 
