@@ -311,12 +311,15 @@ class TargetRun:
             docker_log=self.docker_log,
             secrets=[self.registration_token, *(extra_env or {}).values()],
         )
+        # Registered before it is started, not after: `docker run` has created the container
+        # by the time `start()` returns, and an interrupt arriving during `start()` or the
+        # port-binding inspection would otherwise find an empty list and leak it.
+        self.containers.append(container)
+        self.container = container
         container.start()
         bindings = container.inspect_port_bindings()
         with self.docker_log.open("a", encoding="utf-8") as handle:
             handle.write(f"HostConfig.PortBindings={bindings}\n")
-        self.containers.append(container)
-        self.container = container
         return container
 
     # -- checks ---------------------------------------------------------------

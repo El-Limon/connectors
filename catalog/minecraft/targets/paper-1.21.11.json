@@ -6,10 +6,10 @@
   "revision": "1.21.11",
   "default": true,
   "support": {
-    "status": "candidate",
+    "status": "maintained",
     "since": "2026-09-17",
-    "evidence": [],
-    "notes": "Pinned by #151; runtime verification against the fake Takaro passes at protocol level, hosted identify and gameplay evidence pending (#152)."
+    "evidence": ["takaro-maint verify 2026-09-21: protocol level against the local fake Takaro (connector load, identify, heartbeat, reconnect, players, catalogues, console, shutdown, restart) and one hosted identify, reachability, player listing and shutdown against Takaro (gettakaro/connectors#152)"],
+    "notes": "Pinned by gettakaro/connectors#151. Runtime verification passes at protocol level against the local fake Takaro and the target registers against a hosted Takaro. Gameplay evidence with a real client is still pending (gettakaro/connectors#174)."
   },
   "inputs": {
     "loader": {
