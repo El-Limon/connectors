@@ -293,8 +293,8 @@ def wired(catalog_copy: Path) -> Any:
     """
     from fake_upstream import FakeUpstream
 
-    target_files = sorted((catalog_copy / "catalog/minecraft/targets").glob("*.json"))
-    assert target_files, "the copied catalog has no minecraft targets"
+    target_files = sorted((catalog_copy / "catalog").glob("*/targets/*.json"))
+    assert target_files, "the copied catalog has no targets"
 
     with FakeUpstream() as upstream:
         repinned = 0
@@ -308,6 +308,6 @@ def wired(catalog_copy: Path) -> Any:
             # No stand-ins for this one: drop it from the copy rather than serve it half-pinned.
             target_file.unlink()
 
-        assert repinned, "no minecraft target could be re-pinned at the fake upstream"
+        assert repinned, "no target could be re-pinned at the fake upstream"
         point_at(catalog_copy, upstream.base_url)
         yield Wired(catalog_copy, upstream)
