@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -296,6 +297,48 @@ def test_a_full_stubbed_run_reaches_protocol_level(
         "expected": "Diamond Sword",
         "actual": "Diamond Sword",
     }
+
+
+def test_verify_runs_install_and_deploy_against_the_catalog_it_was_asked_about(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sub-commands resolve the target from ``--repo-root``, not from the real catalog.
+
+    Without the root passed on, ``install`` resolved ``fabric-26.2`` from the repository
+    catalog and downloaded the real 61 MB inputs; the fake upstream this test wired up was
+    never asked for a byte.
+    """
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+    cache = Path(os.environ["TAKARO_MAINT_CACHE"])
+
+    code, payload, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--target",
+        "fabric-26.2",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(out),
+        "--run-id",
+        "t1",
+        "--startup-timeout",
+        "60",
+        repo=wired.root,
+    )
+    assert code == 0, payload
+
+    installed = json.loads((out / "fabric-26.2" / "install.json").read_text())
+    _, wired_target, _ = run("targets", "resolve", "--game", "minecraft", "--target", "fabric-26.2", repo=wired.root)
+    _, real_target, _ = run("targets", "resolve", "--game", "minecraft", "--target", "fabric-26.2", repo=REPO_ROOT)
+    assert installed["target"] == "fabric-26.2"
+    assert installed["fingerprint"] == wired_target["fingerprint"]
+    assert installed["fingerprint"] != real_target["fingerprint"]
+
+    oversized = [path for path in cache.rglob("*") if path.is_file() and path.stat().st_size > 1024 * 1024]
+    assert oversized == [], f"a real upstream download reached the test cache: {oversized}"
 
 
 def test_the_container_publishes_no_host_ports(run: Any, wired: Any, tmp_path: Path, docker_stub: Path) -> None:
