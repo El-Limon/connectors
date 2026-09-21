@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 
 from conftest import read_target, write_target
-from takaro_maint.catalog import schema
+from takaro_maint.catalog import ids, loader, schema
+from takaro_maint.install import plan_inputs
 
 VALID_RELEASE_ASSET = {
     "kind": "github-release-asset",
@@ -61,8 +62,28 @@ def failures(payload: dict[str, Any]) -> set[str]:
     return {check["id"] for check in payload["failures"]}
 
 
+#: The sources the three fixtures point at, which a catalog copy has to declare before an
+#: input may name them. ``catalog validate`` does not resolve ``inputs[*].source`` today, so
+#: without this a test could assert a "valid" catalog whose input names a source that is not
+#: there — a premise that would break the moment anything downstream dereferenced it.
+CONTRACT_SOURCES = {
+    "carbon-releases": {"provider": "github-release", "baseUrl": "https://github.com"},
+    "thunderstore": {"provider": "thunderstore", "baseUrl": "https://thunderstore.io"},
+}
+
+
+def _with_sources(root: Path) -> None:
+    """Declare the sources the contract fixtures name on the copied Minecraft game record."""
+    game_file = root / "catalog/minecraft/game.json"
+    game = json.loads(game_file.read_text())
+    for source_id, source in CONTRACT_SOURCES.items():
+        game["sources"].setdefault(source_id, dict(source))
+    game_file.write_text(json.dumps(game, indent=2) + "\n")
+
+
 def _with_input(root: Path, spec: dict[str, Any]) -> None:
     """Hang one extra input off the default Fabric target of a catalog copy."""
+    _with_sources(root)
     record = read_target(root)
     record["inputs"]["extra"] = spec
     write_target(root, record)
@@ -92,10 +113,29 @@ def test_a_floating_release_tag_fails_catalog_validation(run: Any, catalog_copy:
 
 def test_a_pinned_release_asset_passes_every_catalog_check(run: Any, catalog_copy: Path) -> None:
     _with_input(catalog_copy, VALID_RELEASE_ASSET)
+    # The premise the exit code is worth something under: the source the input names is
+    # really declared, so "valid" is not "valid apart from a reference nothing checked".
+    assert ids.source_of(json.loads((catalog_copy / "catalog/minecraft/game.json").read_text()), "carbon-releases")
 
     code, payload, _ = run("catalog", "validate", repo=catalog_copy)
 
     assert code == 0, json.dumps(payload, indent=2)
+
+
+def test_the_installer_plans_a_release_asset_without_a_path(catalog_copy: Path) -> None:
+    """``install`` has to reach ``fetch_input``: an asset is addressed by repo/tag/asset, not a path."""
+    _with_input(catalog_copy, VALID_RELEASE_ASSET)
+    catalog = loader.load(catalog_copy / "catalog")
+    game = catalog.game("minecraft")
+
+    plans = plan_inputs(game.record, read_target(catalog_copy))
+
+    planned = {plan.name: plan for plan in plans}
+    assert planned["extra"].install_path == "carbon"
+    assert planned["extra"].provider == "github-release"
+    assert planned["extra"].url == (
+        "https://github.com/CarbonCommunity/Carbon/releases/download/v2.1.1272/Carbon.Linux.Release.tar.gz"
+    )
 
 
 # -- T-C7 thunderstore-package -------------------------------------------------
