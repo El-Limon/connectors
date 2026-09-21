@@ -71,7 +71,9 @@ class GitHub:
         url = path if path.startswith("http") else f"{self.api_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("Authorization", f"Bearer {self.token}")
+        # Unredirected: urllib copies ordinary headers onto a redirected request, cross-host
+        # included, so a redirect off the API host would otherwise be handed the bearer token.
+        request.add_unredirected_header("Authorization", f"Bearer {self.token}")
         request.add_header("Accept", "application/vnd.github+json")
         request.add_header("X-GitHub-Api-Version", "2022-11-28")
         request.add_header("User-Agent", f"takaro-connectors-maint/{__version__}")
@@ -119,6 +121,8 @@ class GitHub:
                 items.append(payload)
             match = _LINK_NEXT.search(link or "")
             next_path = match.group(1) if match else None
+            if next_path is not None and not next_path.startswith(f"{self.api_url}/"):
+                raise TrackerError(f"refusing to follow a pagination link off {self.api_url}: {next_path}")
         return items
 
     # -- releases -------------------------------------------------------------
