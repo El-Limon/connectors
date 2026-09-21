@@ -1,0 +1,17 @@
+{
+ "id": "26.1.2",
+ "type": "release",
+ "time": "2026-04-09T10:12:23+00:00",
+ "releaseTime": "2026-04-09T10:12:23+00:00",
+ "javaVersion": {
+  "component": "java-runtime-epsilon",
+  "majorVersion": 25
+ },
+ "downloads": {
+  "server": {
+   "sha1": "97ccd4c0ed3f81bbb7bfacddd1090b0c56f9bc51",
+   "size": 60417480,
+   "url": "https://piston-data.mojang.com/v1/objects/97ccd4c0ed3f81bbb7bfacddd1090b0c56f9bc51/server.jar"
+  }
+ }
+}

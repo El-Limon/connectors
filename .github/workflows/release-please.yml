@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
 
+# A push to main while a release is being published must queue, never cancel it: the release
+# jobs below create the draft, the tag and the assets, and a half-finished one is a release
+# nobody can finish by hand.
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write

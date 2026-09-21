@@ -23,29 +23,30 @@ deploy_rust() {
 }
 
 deploy_minecraft() {
-    local platform="$1" dest jar subdir
-    ds_info "Building Minecraft ${platform} module (gradle)..."
-    # Minecraft 26.2 (fabric) needs a JDK 25 toolchain; paper/neoforge still
-    # target Java 21 class files but build fine on the same JDK 25.
-    if ds_have java && java -version 2>&1 | grep -qE '"(2[5-9]|[3-9][0-9])'; then
-        ( cd "${REPO_ROOT}/games/minecraft/mod" && ./gradlew ":${platform}:build" )
-    else
-        ds_info "No host JDK 25+ — building in eclipse-temurin:25-jdk"
-        ds_toolchain_run eclipse-temurin:25-jdk "${REPO_ROOT}/games/minecraft/mod" \
-            ./gradlew ":${platform}:build" --no-daemon
+    local platform="$1" target tmp toolchain
+
+    target="$(ds_target "minecraft-${platform}")" || ds_target_failed "minecraft-${platform}"
+    if [ -n "$target" ]; then
+        # Catalog-driven: build the target's artifact and deploy it by manifest row, so
+        # the jar in mods/ is the one the ledger records and nothing else is guessed at.
+        toolchain=container
+        if ds_have java && java -version 2>&1 | grep -qE '"(2[5-9]|[3-9][0-9])'; then
+            toolchain=host
+        fi
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' RETURN
+        ds_info "Building Minecraft target ${target} (${toolchain} toolchain)..."
+        ds_maint build --game minecraft --target "$target" \
+            --version "$("${REPO_ROOT}/scripts/dev-version.sh" minecraft)" \
+            --out "$tmp" --toolchain "$toolchain"
+        ds_maint deploy --game minecraft --target "$target" \
+            --dest "$(ds_data_dir "minecraft-${platform}")" \
+            --from "${tmp}/build-manifest.json"
+        ds_ok "$(ds_data_dir "minecraft-${platform}")/mods"
+        return 0
     fi
 
-    jar="$(find "${REPO_ROOT}/games/minecraft/mod/${platform}/build/libs" \
-        -name "takaro-${platform}-*.jar" \
-        -not -name '*-dev-shadow*' -not -name '*-sources*' 2>/dev/null | head -1)"
-    [ -n "$jar" ] || ds_die "no JAR built for ${platform}"
-
-    # Paper loads plugins/, the mod loaders load mods/.
-    [ "$platform" = "paper" ] && subdir="plugins" || subdir="mods"
-    dest="$(ds_data_dir "minecraft-${platform}")/${subdir}"
-    mkdir -p "$dest"
-    cp "$jar" "${dest}/TakaroMinecraft.jar"
-    ds_ok "${dest}/TakaroMinecraft.jar"
+    ds_die "no catalog target drives rig game minecraft-${platform}; add one under catalog/minecraft/targets (see catalog/README.md)"
 }
 
 deploy_7d2d() {
@@ -323,6 +324,7 @@ case "$GAME" in
     minecraft-paper)    deploy_minecraft paper ;;
     minecraft-neoforge) deploy_minecraft neoforge ;;
     minecraft-fabric)   deploy_minecraft fabric ;;
+    minecraft-fabric-26.1.2) deploy_minecraft fabric-26.1.2 ;;
     7d2d)               deploy_7d2d ;;
     zomboid)            deploy_zomboid ;;
     valheim)            deploy_valheim ;;

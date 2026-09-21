@@ -4,6 +4,8 @@
   "separate-pull-requests": true,
   "include-component-in-tag": true,
   "tag-separator": "-",
+  "draft": true,
+  "force-tag-creation": true,
   "changelog-sections": [
     { "type": "feat", "section": "Features", "hidden": false },
     { "type": "fix", "section": "Bug Fixes", "hidden": false },

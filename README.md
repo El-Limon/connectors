@@ -48,7 +48,19 @@ environments under `games/rust/`, `games/minecraft/` and `games/7d2d/` are unaff
 
 ## Releasing
 
-Connectors are versioned and released independently through Release Please. Merging a connector's release PR creates its version tag and publishes the GitHub release artifacts. To force a specific version, add a `Release-As: X.Y.Z` footer to a commit on `main`.
+Connectors are versioned and released independently through Release Please. Merging a connector's release PR is the only human gate. Release Please then creates the version tag and the GitHub release **as a draft**, the connector's workflow builds and verifies every target from that tag's source, attaches the whole set, reads it back from GitHub, and only then publishes the release. Nothing is downloadable until the complete set is there. To force a specific version, add a `Release-As: X.Y.Z` footer to a commit on `main`.
+
+Every release carries, besides its artifacts: `SHA256SUMS`, a compatibility record (`takaro-<connector>-<version>.compat.json`) naming the exact inputs, source commit, target fingerprint, verification level and hash of everything in it, and one verification report per target. Connectors with several server targets name their artifacts per target (`takaro-minecraft-mod-fabric-26.2-0.1.2.jar`). A connector whose earlier releases used unversioned asset names ships byte-identical copies under those names for two stable releases after it moves to the catalog (`legacyAssetAliases` in its `game.json`). Minecraft's earlier names (`takaro-fabric-<version>.jar`, `takaro-paper-<version>.jar`, `takaro-neoforge-<version>.jar`) are carried this way too, each an alias of its platform's default target; `games/minecraft/README.md` maps old to new.
+
+If a release ends up missing its assets, re-run the connector's workflow against the existing tag — it rebuilds from that tag's source, skips anything already there with identical bytes, and refuses to overwrite anything that differs:
+
+```bash
+gh workflow run minecraft.yml --ref main -f tag=minecraft-v0.1.2 -f version=0.1.2
+```
+
+Pre-release builds (`<connector>-dev` on every push to `main`, `pr-<n>-<connector>` on every push to a PR) are replaced atomically: the whole replacement is staged and verified before the old one is removed, so a dev build is never half-updated. PR builds are deleted when the PR closes.
+
+See [`maintenance/docs/release.md`](maintenance/docs/release.md) for the full picture.
 
 Build release artifacts locally with:
 
@@ -61,8 +73,6 @@ just build-release-conan 1.0.0
 just build-release-terraria 0.1.0
 just build-release-valheim 2.0.0
 ```
-
-Pushing to `main` creates pre-releases automatically (per-connector, path-filtered).
 
 ## Connector Notes
 

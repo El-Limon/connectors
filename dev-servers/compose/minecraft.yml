@@ -8,7 +8,7 @@ x-minecraft-common: &minecraft-common
   stdin_open: true
   environment: &minecraft-env
     EULA: "TRUE"
-    VERSION: "${MINECRAFT_VERSION:-1.21.11}"
+    VERSION: "${MINECRAFT_VERSION:-1.21.11}"  # paper/neoforge only; fabric overrides it
     MEMORY: "${MINECRAFT_MEMORY:-2G}"
     ENABLE_RCON: "true"
     RCON_PORT: "25575"
@@ -19,8 +19,13 @@ x-minecraft-common: &minecraft-common
     TAKARO_DEBUG: "${TAKARO_DEBUG:-false}"
 
 services:
+  # Fully driven by catalog target paper-1.21.11: image, game version, build and the
+  # pre-staged jar come from _data/.targets/minecraft-paper.env, which install.sh resolves.
+  # The sentinel keeps `compose config` valid before the first install; the real gate
+  # is ds_preflight_target in start.sh.
   paper:
     <<: *minecraft-common
+    image: "${MC_PAPER_IMAGE:-target-not-resolved}"
     profiles: ["paper"]
     container_name: takaro-dev-minecraft-paper
     ports:
@@ -29,12 +34,17 @@ services:
     environment:
       <<: *minecraft-env
       TYPE: "PAPER"
+      VERSION: "${MC_PAPER_VERSION:-}"
+      PAPER_BUILD: "${MC_PAPER_BUILD:-}"
+      PAPER_CUSTOM_JAR: "${MC_PAPER_CUSTOM_JAR:-}"
       TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_PAPER:-takaro-dev-paper}"
     volumes:
       - ../_data/minecraft/paper:/data
 
+  # Fully driven by catalog target neoforge-1.21.11, the same way.
   neoforge:
     <<: *minecraft-common
+    image: "${MC_NEOFORGE_IMAGE:-target-not-resolved}"
     profiles: ["neoforge"]
     container_name: takaro-dev-minecraft-neoforge
     ports:
@@ -43,15 +53,20 @@ services:
     environment:
       <<: *minecraft-env
       TYPE: "NEOFORGE"
-      NEOFORGE_VERSION: "beta"
+      VERSION: "${MC_NEOFORGE_VERSION:-}"
+      NEOFORGE_VERSION: "${MC_NEOFORGE_LOADER_VERSION:-}"
+      NEOFORGE_INSTALLER: "${MC_NEOFORGE_INSTALLER:-}"
       TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_NEOFORGE:-takaro-dev-neoforge}"
     volumes:
       - ../_data/minecraft/neoforge:/data
 
+  # Fully driven by the catalog target: image, game version, loader and launcher all
+  # come from _data/.targets/minecraft-fabric.env, which install.sh resolves.
+  # The sentinel keeps `compose config` valid before the first install; the real gate
+  # is ds_preflight_target in start.sh.
   fabric:
     <<: *minecraft-common
-    # MC 26.2 requires Java 25.
-    image: itzg/minecraft-server:java25
+    image: "${MC_FABRIC_IMAGE:-target-not-resolved}"
     profiles: ["fabric"]
     container_name: takaro-dev-minecraft-fabric
     ports:
@@ -59,9 +74,34 @@ services:
       - "127.0.0.1:25577:25575"
     environment:
       <<: *minecraft-env
-      VERSION: "${MINECRAFT_FABRIC_VERSION:-26.2}"
       TYPE: "FABRIC"
-      MODRINTH_PROJECTS: "fabric-api"
+      VERSION: "${MC_FABRIC_VERSION:-}"
+      FABRIC_LOADER_VERSION: "${MC_FABRIC_LOADER_VERSION:-}"
+      FABRIC_LAUNCHER_VERSION: "${MC_FABRIC_LAUNCHER_VERSION:-}"
+      FABRIC_LAUNCHER: "${MC_FABRIC_LAUNCHER:-}"
       TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_FABRIC:-takaro-dev-fabric}"
     volumes:
       - ../_data/minecraft/fabric:/data
+
+# --- additional targets are appended below ---
+
+  # Second Fabric target (catalog fabric-26.1.2): the same shape as `fabric`, with its own
+  # data dir, identity and ports. Values come from _data/.targets/minecraft-fabric-26.1.2.env.
+  fabric-26-1-2:
+    <<: *minecraft-common
+    image: "${MC_FABRIC_26_1_2_IMAGE:-target-not-resolved}"
+    profiles: ["fabric-26-1-2"]
+    container_name: takaro-dev-minecraft-fabric-26.1.2
+    ports:
+      - "25568:25565/tcp"
+      - "127.0.0.1:25578:25575"
+    environment:
+      <<: *minecraft-env
+      TYPE: "FABRIC"
+      VERSION: "${MC_FABRIC_26_1_2_VERSION:-}"
+      FABRIC_LOADER_VERSION: "${MC_FABRIC_26_1_2_LOADER_VERSION:-}"
+      FABRIC_LAUNCHER_VERSION: "${MC_FABRIC_26_1_2_LAUNCHER_VERSION:-}"
+      FABRIC_LAUNCHER: "${MC_FABRIC_26_1_2_LAUNCHER:-}"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_FABRIC_26_1_2:-takaro-dev-fabric-26.1.2}"
+    volumes:
+      - ../_data/minecraft/fabric-26.1.2:/data

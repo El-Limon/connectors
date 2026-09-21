@@ -1,0 +1,14 @@
+{
+  "id": "26.2",
+  "javaVersion": {
+    "component": "java-runtime-delta",
+    "majorVersion": 25
+  },
+  "downloads": {
+    "server": {
+      "sha1": "0000000000000000000000000000000000000000",
+      "size": 0,
+      "url": "https://example.invalid/server.jar"
+    }
+  }
+}

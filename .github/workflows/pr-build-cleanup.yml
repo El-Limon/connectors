@@ -25,6 +25,9 @@ jobs:
           app-id: ${{ secrets.TAKARO_CI_APP_ID }}
           private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
 
+      # cleanup-pr-builds.sh derives the connector list from release-please-config.json and
+      # removes the staging drafts a publication that died mid-swap can leave behind, so a new
+      # connector needs no edit here.
       - name: Delete per-PR builds
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

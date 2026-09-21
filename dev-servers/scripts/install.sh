@@ -54,9 +54,21 @@ install_rust() {
 
 install_minecraft() {
     local platform="$1"
+    mkdir -p "$DATA"
+
+    local target
+    target="$(ds_target "$GAME")" || ds_target_failed "$GAME"
+    if [ -n "$target" ]; then
+        # Catalog-driven: the exact server jar, loader launcher and API jar the
+        # connector was built against, verified by hash and recorded in a ledger.
+        ds_info "Resolving the catalog target for ${GAME}..."
+        ds_write_target_env "$GAME"
+        ds_info "Installing pinned server files into ${DATA}..."
+        ds_maint install --game minecraft --target "$target" --dest "$DATA"
+    fi
+
     ds_info "Pulling the Minecraft server image..."
     ds_compose "$GAME" pull "$platform"
-    mkdir -p "$DATA"
     # Minecraft env vars override the connector's file config, and compose
     # already supplies them, so there is nothing to render here either.
     "${DS_DIR}/scripts/deploy-connector.sh" "$GAME"
@@ -287,6 +299,7 @@ case "$GAME" in
     minecraft-paper)    install_minecraft paper ;;
     minecraft-neoforge) install_minecraft neoforge ;;
     minecraft-fabric)   install_minecraft fabric ;;
+    minecraft-fabric-26.1.2) install_minecraft fabric-26-1-2 ;;
     7d2d)               install_7d2d ;;
     zomboid)            install_zomboid ;;
     dayz)               install_dayz ;;

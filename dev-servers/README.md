@@ -18,7 +18,8 @@ for connector, Takaro API and Takaro module testing with a handful of human play
 | Terraria | `terraria` | TShock **REST API** + `TakaroTerrariaEvents` log-marker plugin | 1 GB | 1 GB |
 | Minecraft Paper | `minecraft-paper` | Takaro Paper plugin (WebSocket) | 3 GB | 2 GB |
 | Minecraft NeoForge | `minecraft-neoforge` | Takaro NeoForge mod (WebSocket) | 3 GB | 2 GB |
-| Minecraft Fabric | `minecraft-fabric` | Takaro Fabric mod (WebSocket) | 3 GB | 2 GB |
+| Minecraft Fabric | `minecraft-fabric` | Takaro Fabric mod (WebSocket), pinned by a catalog target | 3 GB | 2 GB |
+| Minecraft Fabric 26.1.2 | `minecraft-fabric-26.1.2` | Takaro Fabric mod (WebSocket), pinned by catalog target `fabric-26.1.2` | 3 GB | 2 GB |
 | Valheim | `valheim` | Takaro BepInEx server plugin (WebSocket) | 4 GB | 4 GB |
 | DayZ | `dayz` | `@TakaroIntegration` Enforce mod → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 6 GB | 4 GB² |
 | RuneScape: Dragonwilds | `dragonwilds` | `libtakaro-dragonwilds.so` `LD_PRELOAD` plugin → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 4 GB | 8 GB³ |
@@ -216,6 +217,7 @@ bind to `127.0.0.1` only** — reach them over an SSH tunnel or a private VPN, e
 | Minecraft Paper | 25565/tcp | 25575 RCON |
 | Minecraft NeoForge | 25566/tcp | 25576 RCON |
 | Minecraft Fabric | 25567/tcp | 25577 RCON |
+| Minecraft Fabric 26.1.2 | 25568/tcp | 25578 RCON |
 | 7 Days to Die | 26900/tcp+udp, 26901-26902/udp | 8180-8182 (web dashboard, telnet) |
 | Project Zomboid | 16261/udp, 16262/udp | 25582 RCON |
 | Valheim | 2456-2457/udp | — |
@@ -267,14 +269,40 @@ Two games do **not** follow that flow:
 
 Fabric runs a different Minecraft version from the other two:
 
-| Service | Image | Minecraft version | Version variable |
+| Service | Image | Minecraft version | Where it comes from |
 |---|---|---|---|
-| `minecraft-paper` | `itzg/minecraft-server:java21` | 1.21.11 | `MINECRAFT_VERSION` |
-| `minecraft-neoforge` | `itzg/minecraft-server:java21` | 1.21.11 | `MINECRAFT_VERSION` |
-| `minecraft-fabric` | `itzg/minecraft-server:java25` | 26.2 (Java 25) | `MINECRAFT_FABRIC_VERSION` (default `26.2`) |
+| `minecraft-paper` | `itzg/minecraft-server:java21` | 1.21.11 | `MINECRAFT_VERSION` in `dev-servers/.env` |
+| `minecraft-neoforge` | `itzg/minecraft-server:java21` | 1.21.11 | `MINECRAFT_VERSION` in `dev-servers/.env` |
+| `minecraft-fabric` | pinned by the catalog target | pinned by the catalog target | `catalog/minecraft/targets/` |
+| `minecraft-fabric-26.1.2` | pinned by the catalog target | 26.1.2 (pinned by the catalog target) | `catalog/minecraft/targets/fabric-26.1.2.json` |
 
-Both are set in `dev-servers/.env`. A client can only join a server on its own version:
-26.2 clients for Fabric, 1.21.11 clients for Paper and NeoForge.
+A client can only join a server on its own version: 26.2 clients for Fabric, 1.21.11 clients for
+Paper and NeoForge.
+
+#### Fabric is driven by a catalog target
+
+The Fabric rig does not choose a version at all. `install.sh` resolves the catalog target and
+writes its values to `_data/.targets/minecraft-fabric.env`, which every `docker compose` call for
+this file reads — image (by digest), game version, loader and launcher. The server jar, the
+launcher jar and the Fabric API jar are downloaded by hash and recorded in
+`_data/minecraft/fabric/.takaro/installed-target.json`.
+
+```bash
+just maint targets list --game minecraft       # which target the rig will use
+dev-servers/scripts/install.sh minecraft-fabric
+```
+
+`start.sh` refuses to start the service when the data directory does not hold that target (or its
+files changed on disk), and tells you to re-run the install.
+
+**Migrating an existing rig data directory:**
+
+```bash
+dev-servers/scripts/install.sh minecraft-fabric --force
+```
+
+The data directory is kept, and the world, `server.properties`, `ops.json` and `config/` are
+preserved — the install only replaces the files the target pins.
 
 Fabric has **no hot reload** — restart the container after a deploy:
 

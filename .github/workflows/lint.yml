@@ -11,7 +11,123 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Shellcheck all tracked shell scripts
-        run: shellcheck -e SC1091 $(git ls-files '*.sh')
+        shell: bash
+        run: |
+          mapfile -t scripts < <(git ls-files '*.sh')
+          shellcheck -e SC1091 "${scripts[@]}"
+
+  yaml:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+      - name: Lint the workflows and the dev-servers compose files
+        shell: bash
+        run: |
+          mapfile -t files < <(git ls-files '.github/workflows/*.yml' 'dev-servers/compose/*.yml')
+          uvx yamllint@1.38.0 --no-warnings -f github "${files[@]}"
+
+  actionlint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # Pinned by checksum: this runs against every workflow, including the release ones.
+      - name: Lint every workflow
+        run: |
+          curl -fsSL \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" \
+            | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  compose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # Several compose files declare variables that only a real .env supplies. Rather than
+      # skip interpolation — which leaves `${...}` in volume and port specs and makes compose
+      # reject them — every variable the example env does not give a value gets a placeholder.
+      # The structure is what is being checked, not the values.
+      - name: Every dev-servers compose file parses
+        shell: bash
+        working-directory: dev-servers
+        run: |
+          mapfile -t referenced < <(
+            grep -hoE '\$\{[A-Za-z_][A-Za-z0-9_]*' compose/*.yml | cut -c3- | LC_ALL=C sort -u
+          )
+          for name in "${referenced[@]}"; do
+            grep -qE "^${name}=." .env.example || export "${name}=placeholder"
+          done
+          for file in compose/*.yml; do
+            echo "::group::$file"
+            docker compose --env-file .env.example -f "$file" config -q
+            echo "::endgroup::"
+          done
+
+  release-config:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+      - run: uv python install
+      - run: uv sync --frozen --project maintenance
+      # The schema comes from the exact release-please version the pinned action bundles
+      # (17.6.1), so a key this repository relies on cannot silently stop being supported.
+      - name: release-please-config.json matches its schema
+        shell: bash
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/googleapis/release-please/11fbf2605870d7741a719efe6de50a4487a8b461/schemas/config.json \
+            -o "$RUNNER_TEMP/release-please.schema.json"
+          echo "82ae5d0a805cd3e4c437ce7a4d3eae1e3db51706ad414c624cc749ca02e7c1c5  $RUNNER_TEMP/release-please.schema.json" \
+            | sha256sum -c -
+          SCHEMA="$RUNNER_TEMP/release-please.schema.json" uv run --frozen --project maintenance python - <<'PY'
+          import json, os, sys
+          import jsonschema
+
+          schema = json.load(open(os.environ["SCHEMA"]))
+          config = json.load(open("release-please-config.json"))
+          validator = jsonschema.validators.validator_for(schema)(schema)
+          errors = sorted(validator.iter_errors(config), key=lambda e: list(e.absolute_path))
+          for error in errors:
+              path = "/".join(str(part) for part in error.absolute_path) or "<root>"
+              print(f"{path}: {error.message}", file=sys.stderr)
+          sys.exit(1 if errors else 0)
+          PY
+
+      - name: The manifest and the config describe the same packages
+        run: |
+          diff <(jq -r '.packages | keys[]' release-please-config.json) \
+               <(jq -r 'keys[]' .release-please-manifest.json)
+
+  release-scripts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: The release scripts behave as documented
+        run: |
+          bash maintenance/tests/test_release_guard.sh
+          bash maintenance/tests/test_release_params.sh
+          bash maintenance/tests/test_package_determinism.sh
+          bash maintenance/tests/test_publish_release.sh
+          bash maintenance/tests/test_cleanup_pr_builds.sh
+          bash maintenance/tests/test_dev_servers_target.sh
 
   connector-metadata:
     runs-on: ubuntu-latest

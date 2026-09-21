@@ -21,7 +21,8 @@ ds_registry() {
 terraria|terraria.yml|-|terraria|1|1|plugin|TShock server + Takaro events plugin (Takaro connects over TShock REST)|terraria
 minecraft-paper|minecraft.yml|paper|paper|3|2|connector|Paper 1.21.x + Takaro Paper plugin|minecraft/paper
 minecraft-neoforge|minecraft.yml|neoforge|neoforge|3|2|connector|NeoForge 1.21.x + Takaro NeoForge mod|minecraft/neoforge
-minecraft-fabric|minecraft.yml|fabric|fabric|3|2|connector|Fabric 26.x + Takaro Fabric mod|minecraft/fabric
+minecraft-fabric|minecraft.yml|fabric|fabric|3|2|connector|Fabric (catalog target) + Takaro Fabric mod|minecraft/fabric
+minecraft-fabric-26.1.2|minecraft.yml|fabric-26-1-2|fabric-26-1-2|3|2|connector|Fabric 26.1.2 (catalog target) + Takaro Fabric mod|minecraft/fabric-26.1.2
 valheim|valheim.yml|-|valheim|4|6|connector|Valheim + BepInEx + Takaro Valheim plugin|valheim
 dayz|dayz.yml|-|dayz dayz-takaro|6|4|sidecar|DayZ (Linux, app 223350) + @TakaroIntegration mod + Takaro TypeScript sidecar|dayz
 dragonwilds|dragonwilds.yml|-|dragonwilds dragonwilds-takaro|4|8|sidecar|RuneScape: Dragonwilds (Linux, app 4019830) + Takaro LD_PRELOAD plugin + TypeScript sidecar|dragonwilds-dev
@@ -160,9 +161,19 @@ ds_require_token() {
 ds_compose() {
     local id="$1"; shift
     local -a args=(--env-file "$DS_ENV_FILE" -f "$(ds_compose_file "$id")")
-    local profile
+    local profile other
     profile="$(ds_profile "$id")"
     [ "$profile" = "-" ] || args+=(--profile "$profile")
+    # Games driven by a catalog target keep their resolved values in
+    # _data/.targets/<game>.env. Every game sharing this compose file contributes one,
+    # because a single `docker compose` call sees the whole file.
+    if [ -d "${DS_DATA}/.targets" ]; then
+        for other in $(ds_game_ids); do
+            [ -f "${DS_DATA}/.targets/${other}.env" ] || continue
+            [ "$(ds_compose_file "$other")" = "$(ds_compose_file "$id")" ] || continue
+            args+=(--env-file "${DS_DATA}/.targets/${other}.env")
+        done
+    fi
     ( cd "$DS_COMPOSE_DIR" && docker compose "${args[@]}" "$@" )
 }
 
@@ -302,7 +313,8 @@ ds_source_paths() {
         rust)               echo "games/rust/mod games/rust/version.txt" ;;
         minecraft-paper)    echo "games/minecraft/mod/core games/minecraft/mod/paper games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts" ;;
         minecraft-neoforge) echo "games/minecraft/mod/core games/minecraft/mod/neoforge games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts" ;;
-        minecraft-fabric)   echo "games/minecraft/mod/core games/minecraft/mod/fabric games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts" ;;
+        minecraft-fabric)   echo "games/minecraft/mod/core games/minecraft/mod/fabric games/minecraft/mod/targets games/minecraft/mod/buildSrc games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts catalog/minecraft" ;;
+        minecraft-fabric-26.1.2) echo "games/minecraft/mod/core games/minecraft/mod/fabric games/minecraft/mod/targets games/minecraft/mod/buildSrc games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts catalog/minecraft" ;;
         7d2d)               echo "games/7d2d/mod/src games/7d2d/mod/Takaro.csproj games/7d2d/mod/ModInfo.xml games/7d2d/version.txt" ;;
         zomboid)            echo "games/zomboid/mod/core games/zomboid/mod/agent games/zomboid/mod/gradle games/zomboid/mod/build.gradle.kts games/zomboid/mod/settings.gradle.kts games/zomboid/version.txt" ;;
         valheim)            echo "games/valheim/mod/src games/valheim/version.txt" ;;
@@ -358,5 +370,83 @@ with open(path, "w") as fh:
 ' "$DS_ENV_FILE" "$key" "$value"
     else
         printf '%s=%s\n' "$key" "$value" >> "$DS_ENV_FILE"
+    fi
+}
+
+# ── Catalog targets ──────────────────────────────────────────────────────────
+# A game whose server build is pinned by catalog/<game>/targets/<id>.json is installed,
+# built and deployed through the maintenance command, so the rig, CI and a release all
+# resolve the same bytes. Games without a target keep their own install path.
+
+ds_maint() { "${REPO_ROOT}/maintenance/bin/takaro-maint" "$@"; }
+
+# ds_target <rig-game-id> -> the catalog target id driving it, empty when there is none.
+# A failing tool is not the same answer as a game with no target. An empty result from a
+# successful call means "this game is not catalog-driven"; a failure means the rig cannot tell,
+# and must stop rather than skip every catalog check below and boot whatever is on disk. The
+# caller runs this in a command substitution, so the failure is reported by exit status.
+ds_target() {
+    local listing
+    if ! listing="$(ds_maint targets list --rig-game "$1" --format json)"; then
+        ds_warn "takaro-maint targets list --rig-game ${1} failed; see the error above"
+        return 1
+    fi
+    printf '%s' "$listing" | python3 -c 'import json,sys
+targets = json.load(sys.stdin)["targets"]
+print(targets[0]["id"] if targets else "")'
+}
+
+# ds_target_failed <rig-game-id> — the message every caller of ds_target stops with.
+# ds_die has to run in the caller, not inside the command substitution, or the exit is swallowed.
+ds_target_failed() {
+    ds_die "cannot resolve the catalog target for ${1}; the rig will not touch a game whose
+  catalog target it could not read."
+}
+
+# The catalog game a rig game belongs to (minecraft-fabric -> minecraft).
+ds_target_game() { printf '%s' "${1%%-*}"; }
+
+ds_target_env_file() { printf '%s/.targets/%s.env' "$DS_DATA" "$1"; }
+
+# Env key prefix for a rig game: minecraft-fabric -> MC_FABRIC.
+ds_target_prefix() {
+    case "$1" in
+        minecraft-paper)    printf 'MC_PAPER' ;;
+        minecraft-neoforge) printf 'MC_NEOFORGE' ;;
+        minecraft-fabric)   printf 'MC_FABRIC' ;;
+        minecraft-fabric-26.1.2) printf 'MC_FABRIC_26_1_2' ;;
+        *) printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_' ;;
+    esac
+}
+
+# Resolve the target into the env file compose reads.
+ds_write_target_env() {
+    local game="$1" target
+    target="$(ds_target "$game")" || ds_target_failed "$game"
+    [ -n "$target" ] || return 0
+    mkdir -p "${DS_DATA}/.targets"
+    ds_maint targets resolve \
+        --game "$(ds_target_game "$game")" \
+        --target "$target" \
+        --format env \
+        --prefix "$(ds_target_prefix "$game")" \
+        --out "$(ds_target_env_file "$game")"
+}
+
+# Refuse to start a target-driven game whose data dir does not hold that target.
+ds_preflight_target() {
+    local game="$1" target
+    target="$(ds_target "$game")" || ds_target_failed "$game"
+    [ -n "$target" ] || return 0
+    if [ ! -f "$(ds_target_env_file "$game")" ]; then
+        ds_die "${game} is driven by catalog target ${target} but has no resolved environment.
+  dev-servers/scripts/install.sh ${game}"
+    fi
+    if ! ds_maint ledger check \
+        --game "$(ds_target_game "$game")" \
+        --target "$target" \
+        --dest "$(ds_data_dir "$game")" >/dev/null; then
+        ds_die "${game} does not hold catalog target ${target} (or its files changed).
+  dev-servers/scripts/install.sh ${game}"
     fi
 }

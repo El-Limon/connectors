@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/installed-ledger.schema.json",
+  "title": "Installed target ledger",
+  "description": "Written to <dest>/.takaro/installed-target.json: which target a game directory currently holds and which bytes it was built from.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "game", "target", "fingerprint", "installedAt", "installedBy", "inputs", "container", "world"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "game": {"type": "string", "minLength": 1},
+    "target": {"type": "string", "minLength": 1},
+    "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "installedAt": {"type": "string", "minLength": 20},
+    "installedBy": {"type": "string", "minLength": 1},
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "size"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "size": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "tag", "digest"],
+      "properties": {
+        "image": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "connectorVersion", "sourceRevision"],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "connectorVersion": {"type": "string", "minLength": 1},
+        "sourceRevision": {"type": "string", "minLength": 1}
+      }
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "createdBy"],
+      "properties": {
+        "revision": {"type": "string", "minLength": 1},
+        "createdBy": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

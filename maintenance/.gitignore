@@ -1,0 +1,8 @@
+# Local artefacts of running the command and its tests. The lock file is committed;
+# the environment it installs is not.
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

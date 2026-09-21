@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/target.schema.json",
+  "title": "Catalog target record",
+  "description": "One exactly pinned deployment target: which game build, which loader, which toolchain, which container, and how its bytes are verified.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "game", "platform", "revision", "default", "support", "inputs", "runtime", "build", "components", "verification", "preserve"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "game": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "platform": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "revision": {"type": "string", "minLength": 1},
+    "default": {"type": "boolean"},
+    "support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "since", "evidence"],
+      "properties": {
+        "status": {"enum": ["candidate", "maintained", "retired"]},
+        "since": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "notes": {"type": "string"}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "One entry per pinned download. The kind names the schema file under inputs/ that the validator dispatches on, so a new kind means a new file there and never an edit to this one.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {"kind": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["java", "container"],
+      "properties": {
+        "java": {"type": "integer", "minimum": 8},
+        "container": {"$ref": "inputs/container-image.schema.json"}
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "gradleProject", "javaRelease", "gradleJvm", "gradleVersion", "toolchain", "plugins", "deps"],
+      "properties": {
+        "system": {"const": "gradle"},
+        "gradleProject": {"type": "string", "minLength": 1},
+        "javaRelease": {"type": "integer", "minimum": 8},
+        "gradleJvm": {"type": "integer", "minimum": 8},
+        "gradleVersion": {"type": "string", "minLength": 1},
+        "toolchain": {"$ref": "inputs/container-image.schema.json"},
+        "plugins": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+        "deps": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["coordinate", "sha256"],
+            "properties": {
+              "coordinate": {"type": "string", "pattern": "^[^:]+:[^:]+:[^:]+$"},
+              "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+              "resolvedCoordinate": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "artifact", "installDir"],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "artifact": {"type": "string", "pattern": "^(?=.*\\{version\\})[A-Za-z0-9][A-Za-z0-9._+{}-]*$"},
+          "installDir": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$"}
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "separate"],
+      "properties": {
+        "required": {"enum": ["build", "contract", "startup", "protocol", "gameplay"]},
+        "separate": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "preserve": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "devServers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"gameId": {"type": "string", "minLength": 1}}
+    },
+    "notes": {"type": "string"}
+  }
+}

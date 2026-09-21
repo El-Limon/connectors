@@ -20,6 +20,17 @@ You need:
 - A **Takaro account** with a game server created of type **Generic**, and its **registration
   token** (Takaro shows it when you create the game server).
 
+The exact server builds this connector is maintained for:
+
+<!-- takaro-maint:targets:begin -->
+| Target | Game version | Platform | Loader / API | Java | Support | Verified level |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fabric-26.1.2` | 26.1.2 | fabric | loader 0.19.3 / API 0.155.3+26.1.2 | 25 | maintained | protocol |
+| `fabric-26.2` | 26.2 | fabric | loader 0.19.5 / API 0.160.0+26.2 | 25 | maintained | protocol |
+| `neoforge-1.21.11` | 1.21.11 | neoforge | loader 21.11.45 | 21 | maintained | protocol |
+| `paper-1.21.11` | 1.21.11 | paper | loader 132 | 21 | maintained | protocol |
+<!-- takaro-maint:targets:end -->
+
 Players' clients must match the server's Minecraft version. A 26.2 client cannot join a 1.21.11
 server, and a 1.21.11 client cannot join a 26.2 server.
 
@@ -31,12 +42,18 @@ Download the jar for your platform from the latest `minecraft-vX.Y.Z` release:
 
 | Your server | File to download |
 |---|---|
-| Fabric | `takaro-fabric-0.1.0.jar` |
-| Paper | `takaro-paper-0.1.0.jar` |
-| NeoForge | `takaro-neoforge-0.1.0.jar` |
+| Fabric | `takaro-minecraft-mod-fabric-26.2-<version>.jar` |
+| Paper | `takaro-minecraft-mod-paper-1.21.11-<version>.jar` |
+| NeoForge | `takaro-minecraft-mod-neoforge-1.21.11-<version>.jar` |
+
+Every jar is named after the server build it was made for. Releases before the next
+`minecraft-v*` used `takaro-fabric-<version>.jar`, `takaro-paper-<version>.jar` and
+`takaro-neoforge-<version>.jar`. Those names keep working: for two stable releases each one
+also ships as a byte-identical copy of that platform's default target (Fabric 26.2,
+Paper 1.21.11, NeoForge 1.21.11), so existing links and scripts do not have to change yet.
 
 Direct link pattern:
-`https://github.com/gettakaro/connectors/releases/download/minecraft-v<version>/takaro-<platform>-<version>.jar`
+`https://github.com/gettakaro/connectors/releases/download/minecraft-v<version>/<file>`
 
 Use `minecraft-v0.1.0` or newer. Do not use the `minecraft-dev` pre-release; that is an untested
 rolling build.
@@ -46,9 +63,9 @@ rolling build.
 Stop the server, then put the single jar into the right folder for your platform:
 
 ```
-Fabric     <server>/mods/takaro-fabric-0.1.0.jar
-NeoForge   <server>/mods/takaro-neoforge-0.1.0.jar
-Paper      <server>/plugins/takaro-paper-0.1.0.jar
+Fabric     <server>/mods/takaro-minecraft-mod-fabric-26.2-<version>.jar
+NeoForge   <server>/mods/takaro-minecraft-mod-neoforge-1.21.11-<version>.jar
+Paper      <server>/plugins/takaro-minecraft-mod-paper-1.21.11-<version>.jar
 ```
 
 That is the whole install — one file, no extra libraries. On Fabric, keep the Fabric API jar in
@@ -114,6 +131,19 @@ Identified successfully, server ID: <your server id>
 And in Takaro, the game server shows as **online**. If it stays offline, look for
 `Identify failed:` or `No WebSocket URL configured` in the log — the registration token and the
 `url` line in the config file are the first things to re-check.
+
+**Version check.** Just before connecting, the connector logs one `Takaro target-check:` line
+saying which server build it was made for and which one it found. If they do not match it refuses
+to connect and says why, rather than half-working on a server it was never tested on:
+
+```
+Takaro refuses to connect: target fabric-26.2 does not match this server
+(built for game version 26.2, this server runs 26.1.2).
+Set TAKARO_TARGET_POLICY=warn to override.
+```
+
+Download the jar for your server's version instead. `TAKARO_TARGET_POLICY=warn` connects anyway
+and `off` skips the check entirely, but neither makes an untested combination work.
 
 ### 6. Upgrading
 

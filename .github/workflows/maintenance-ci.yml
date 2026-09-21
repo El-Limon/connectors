@@ -1,0 +1,60 @@
+name: Maintenance Command
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'maintenance/**'
+      - 'catalog/**'
+      - 'games/minecraft/mod/gradle/libs.versions.toml'
+      - '.github/workflows/maintenance-ci.yml'
+  pull_request:
+    paths:
+      - 'maintenance/**'
+      - 'catalog/**'
+      - 'games/minecraft/mod/gradle/libs.versions.toml'
+      - '.github/workflows/maintenance-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+          enable-cache: true
+
+      - name: Install the pinned Python
+        run: uv python install
+
+      - name: The lock file matches pyproject.toml
+        run: uv lock --check --project maintenance
+
+      - name: Lint
+        run: uv run --frozen --project maintenance ruff check maintenance
+
+      - name: Format
+        run: uv run --frozen --project maintenance ruff format --check maintenance
+
+      - name: Types
+        # mypy reads its config from the working directory only; without this the strictness in
+        # maintenance/pyproject.toml never applies and the step passes on anything.
+        run: uv run --frozen --project maintenance mypy --config-file maintenance/pyproject.toml maintenance/src
+
+      - name: Tests
+        run: uv run --frozen --project maintenance pytest -q maintenance
+
+      - name: The catalog is internally consistent
+        run: maintenance/bin/takaro-maint catalog validate
+
+      - name: The catalog still matches upstream
+        run: maintenance/bin/takaro-maint catalog validate --online
