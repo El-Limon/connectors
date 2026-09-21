@@ -18,10 +18,17 @@ You need:
 - A **Takaro account** with a game server created of type **Generic**, and its **registration
   token** (Takaro shows it when you create the game server).
 
-The plugin is compiled against the TShock `stable` image (`ghcr.io/pryaxis/tshock:stable`).
-TShock must match the Terraria server protocol version, and Terraria clients must match the
-server — a client newer than the TShock build is rejected at join time with
-`You are not using the same version as this server.`
+The plugin is compiled against **TShock 6.1.0 for Terraria 1.4.5.6**, using the assemblies
+inside `ghcr.io/pryaxis/tshock@sha256:911459f0ce02014a64c197647a16e9ee57e4d16695de8cfda1f1b552af56ab43`
+— the image by digest, never a floating `stable` tag. TShock must match the Terraria server
+protocol version, and Terraria clients must match the server — a client newer than the TShock
+build is rejected at join time with `You are not using the same version as this server.`
+
+<!-- takaro-maint:targets:begin -->
+| Target | Game version | Platform | Loader / API | Java | Support | Verified level |
+| --- | --- | --- | --- | --- | --- | --- |
+| `tshock-v6.1.0` | v6.1.0 | tshock | — | None | candidate | contract |
+<!-- takaro-maint:targets:end -->
 
 ### 2. Download
 
@@ -29,13 +36,17 @@ From the latest `terraria-vX.Y.Z` release on the releases page:
 
 > https://github.com/gettakaro/connectors/releases
 
-Download both files:
+Download both files. Their names carry the catalog target they were built for:
 
-- **`takaro-terraria-plugin.zip`** — the TShock plugin
-- **`takaro-terraria-bridge.zip`** — the bridge service
+- **`takaro-terraria-plugin-tshock-v6.1.0-<version>.zip`** — the TShock plugin
+- **`takaro-terraria-bridge-tshock-v6.1.0-<version>.zip`** — the bridge service
 
 Direct link pattern:
-`https://github.com/gettakaro/connectors/releases/download/terraria-v<version>/takaro-terraria-plugin.zip`
+`https://github.com/gettakaro/connectors/releases/download/terraria-v<version>/takaro-terraria-plugin-tshock-v6.1.0-<version>.zip`
+
+The short names **`takaro-terraria-plugin.zip`** and **`takaro-terraria-bridge.zip`** are on every
+release too, byte-identical to the target-named files. They are kept for two releases so existing
+links do not break; new instructions should use the target-named ones.
 
 Do not use the `terraria-dev` pre-release or a `pr-<number>-terraria` build; those are untested
 rolling builds.
@@ -60,13 +71,10 @@ folder around it:
 ```
 
 **Bridge.** The zip contains one folder, `TakaroTerrariaBridge/`, holding `dist/`,
-`package.json`, `package-lock.json`, `TakaroConfig.example.txt` and two readme files. Extract it
-anywhere on the same host, then install its runtime dependency:
-
-```bash
-cd TakaroTerrariaBridge
-npm ci --omit=dev
-```
+`node_modules/`, `package.json`, `package-lock.json`, `TakaroConfig.example.txt` and two readme
+files. Extract it anywhere on the same host. Its one runtime dependency is already in the
+archive, so there is nothing to install — run `npm ci --omit=dev` only if you delete
+`node_modules/`.
 
 ### 4. Configure
 
@@ -116,13 +124,14 @@ npm start
 In the TShock server console / log:
 
 ```
-Takaro Terraria Events plugin loaded
+Takaro Terraria Events plugin loaded (<version>)
 ```
 
 In the bridge's own output:
 
 ```
 Terraria bridge health: http://127.0.0.1:3020/health
+Identified successfully with Takaro (gameServerId=...)
 ```
 
 Then ask the bridge how it is doing:
@@ -140,9 +149,8 @@ in `TakaroConfig.txt` is the first thing to re-check.
 ### 6. Upgrading
 
 **Stop the server and the bridge first.** Replace
-`<server>/ServerPlugins/TakaroTerrariaEvents.dll` with the new one, replace the bridge folder's
-`dist/`, `package.json` and `package-lock.json` with the new ones and run `npm ci --omit=dev`
-again. Leave your `TakaroConfig.txt` alone — it is not part of either zip and survives the
+`<server>/ServerPlugins/TakaroTerrariaEvents.dll` with the new one and replace the whole
+`TakaroTerrariaBridge/` folder with the new one. Leave your `TakaroConfig.txt` alone — it is not part of either zip and survives the
 upgrade. Start the server, then the bridge.
 
 ## What works, what doesn't

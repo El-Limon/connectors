@@ -23,26 +23,59 @@ Takaro  <--websocket--  bridge/  --REST-->  TShock  --hooks-->  plugin
                              +--------- tails TShock log ----------+
 ```
 
+## The catalog target
+
+Nothing here names a TShock build, an image digest, a reference hash or an artifact name. One
+record does — `catalog/terraria/targets/tshock-v6.1.0.json` — and every script, the dev rig and CI
+read it through `takaro-maint targets resolve`, so they all resolve the same bytes.
+
+```bash
+maintenance/bin/takaro-maint targets resolve --game terraria --format env --prefix TERRARIA
+```
+
+What the record pins, and why each is a separate thing:
+
+| | |
+| --- | --- |
+| `runtime.container` | `ghcr.io/pryaxis/tshock` by **tag and digest**. These are the bytes that run. A floating tag (`stable`, `latest`, `6`, `6.1`) fails `catalog validate`. |
+| `build.references` + `build.deps` | the three assemblies the plugin compiles against — `TShockAPI.dll`, `OTAPI.dll`, `TerrariaServer.dll` — taken **out of that image**, by sha256. `takaro-maint verify` re-hashes them inside the booted container, so "compiled against" and "running against" are one claim. |
+| `inputs.server` | the upstream TShock release zip of the same tag and source revision. It is the **version identity**: the thing `catalog validate --online` re-verifies over HTTP and the install ledger records. Its `OTAPI.dll` is byte-identical to the image's; its other two are a separate compile of the same source, which is why the compile references come from the image. |
+| `build.toolchain`, `build.deps["bridge-runtime"]` | the .NET SDK and Node images, by digest. `Dockerfile.builder`'s `FROM` must equal the toolchain reference — a test compares them. |
+
+Moving to a new TShock build is a new target file, never an edit to this one:
+
+1. Add `catalog/terraria/targets/tshock-v<x.y.z>.json` with the new tag, digest and reference
+   hashes (record each hash twice from two independent extractions and require them to agree).
+2. `takaro-maint catalog validate` and `catalog validate --online`.
+3. `games/terraria/scripts/setup-environment.sh --target tshock-v<x.y.z>` — the references land
+   in their own `_data/refs/<fp16>/`, so the old target's cache is untouched.
+4. `takaro-maint build --game terraria --target tshock-v<x.y.z>` and `takaro-maint verify`.
+5. Flip `default` when the new target is proven; retire the old one when nothing ships it.
+
 ## Plugin
 
 ### Build
 
-Install the TShock reference DLLs once:
+Extract the reference assemblies for the target once:
 
 ```bash
-games/terraria/scripts/setup-environment.sh
+games/terraria/scripts/setup-environment.sh [--target tshock-v6.1.0]
 ```
 
-This extracts `TShockAPI.dll`, `TerrariaServer.dll` and `OTAPI.dll` from
-`ghcr.io/pryaxis/tshock:stable` (override with `TSHOCK_IMAGE`) into `_data/refs`.
+They come out of the pinned image **by digest** (`docker create`, `docker cp`) into
+`_data/refs/<fp16>/`, and every file is checked against the sha256 the catalog pins. There is no
+override and no fallback: a stale cache for another target exits 7, an altered assembly exits 5,
+and a digest the registry will not serve exits 4.
 
 Build the plugin:
 
 ```bash
-games/terraria/scripts/build-mod.sh
+games/terraria/scripts/build-mod.sh [--target tshock-v6.1.0]
 ```
 
-The build output is written to:
+The compile runs inside the pinned .NET SDK image — never the host's `dotnet` — with
+`-p:Deterministic=true -p:ContinuousIntegrationBuild=true -p:DebugType=none`, so two builds of one
+commit produce identical bytes. The output is:
 
 ```text
 games/terraria/_data/build/TakaroTerrariaEvents/TakaroTerrariaEvents.dll
@@ -50,12 +83,17 @@ games/terraria/_data/build/TakaroTerrariaEvents/TakaroTerrariaEvents.dll
 
 ### Package
 
+Both roles are built and packaged together, because a release carrying one of them is incomplete:
+
 ```bash
-games/terraria/scripts/build-release.sh 0.2.0 dist
+maintenance/bin/takaro-maint build --game terraria --version 0.2.2 --out dist
 ```
 
-This creates `dist/takaro-terraria-plugin.zip`, containing `TakaroTerrariaEvents/` with the DLL
-and a generated `README.txt`.
+That runs `scripts/build-release.sh`, which resolves the target, runs the three build steps and
+packages each role inside the builder image (`SOURCE_DATE_EPOCH` = the commit time). It writes
+`dist/takaro-terraria-plugin-tshock-v6.1.0-<version>.zip`,
+`dist/takaro-terraria-bridge-tshock-v6.1.0-<version>.zip` and a `.meta.json` beside each, which is
+how a zip carries its target identity (`takaro-maint artifact validate` reads it).
 
 ### Runtime commands
 
@@ -87,15 +125,14 @@ npm test
 npm run build
 ```
 
+`scripts/build-bridge.sh [--target ...]` does the same inside the target's pinned Node image and
+then re-installs with `npm ci --omit=dev`, because the release archive ships its production
+`node_modules` — lock-pinned, so a deploy is file-only and an operator installs nothing.
+
 ### Package
 
-```bash
-games/terraria/scripts/build-bridge-release.sh 0.2.0 dist
-```
-
-This creates `dist/takaro-terraria-bridge.zip`, containing `TakaroTerrariaBridge/` with `dist/`
-(tests stripped), `TakaroConfig.example.txt`, `package.json`, `package-lock.json`, the connector
-README and a generated `README.release.txt`.
+Use `takaro-maint build` (above). `scripts/build-bridge-release.sh <version> <out-dir>` is kept as
+a thin wrapper that builds the whole set.
 
 ### Local endpoints
 
@@ -108,10 +145,64 @@ GET /coverage   per-action and per-event support status
 
 ### CI
 
-`.github/workflows/terraria.yml` runs `npm ci && npm test && npm run build` for the bridge on
-every PR, and a `package` job that sets up .NET 9 and Node 22, runs `setup-environment.sh`, builds
-both zips and publishes them: stable assets on a `terraria-v*` tag, a rolling `terraria-dev`
-pre-release on pushes to main, and a disposable `pr-<number>-terraria` pre-release per PR.
+`.github/workflows/terraria.yml` runs the bridge's own tests (`npm ci && npm test && npm run
+build`) on every pull request **and on a release** — they are this connector's contract evidence —
+and delegates the release itself to `connector-release.yml`, which builds every catalog target and
+publishes one set with checksums, a compat record and the legacy aliases.
+
+It passes `runtime: false`. A Terraria run is two containers — the pinned TShock image and a Node
+sidecar that joins its network namespace — which the harness does on a rig; runtime CI for this
+connector is deferred, so the release claims `contract` verification rather than `runtime`.
+
+## Verification
+
+`takaro-maint verify --game terraria` boots the pinned image and drives it through
+`games/terraria` hooks in `maintenance/src/takaro_maint/games/terraria/`:
+
+- `container_command` puts the world on the server's command line. TShock reads no environment
+  variable for it, and without it the server stops on its interactive world-selection menu.
+- `container_options` runs the container as the calling user; the image runs as root and would
+  otherwise leave root-owned files in the harness's data directory.
+- `before_boot` writes `tshock/config.json` (REST on, one application token) and the bridge's
+  `TakaroConfig.txt`, both mode 0600. Neither value is ever printed.
+- `after_boot` starts the bridge as a **second container** with `--network container:<server>`, so
+  TShock's REST API is on the bridge's own `127.0.0.1:7878`. It can only be asked for once the
+  server container exists, which is why it is a hook and not part of the run's own argv.
+
+The checks it adds are `handshake`, `items`, `entities`, `action`, `references` and `reconnect`.
+A Terraria report reaches **`startup`** and never claims `protocol`: `identify` and
+`connector-load` look for lines in the *server* log that this connector does not write (it writes
+them in its own log — `handshake` asserts both), `catalog-entities` would assert a registry
+Terraria does not have, and `catalog-items` spot-checks a Minecraft id.
+
+## Watching upstream
+
+Two independent providers, because a TShock release and the image built from it are published by
+different systems at different times:
+
+- **game** — `github-release` on `Pryaxis/TShock`, channel `release` on `^v\d+\.\d+\.\d+$` with
+  the linux-x64 asset. Every TShock release is a new revision: a TShock patch on an unchanged
+  Terraria version still matters to this connector. The Terraria version is in the release name
+  and the asset name; no provider reads a DLL.
+- **framework** — `oci-registry` (generic; it names no game) on `ghcr.io/pryaxis/tshock`. It lists
+  the repository's tags, fetches the manifest for each tag a channel selects, and records the
+  digest it hashes to.
+
+Limits this states rather than papers over:
+
+- **Tags are mutable.** A tag is observed at the digest it resolves to *right now*, and the
+  revision folds that digest in (`6.1.0.911459f0`). What was pushed over a tag between two scans
+  was never seen, so the source's history is `heads-only` and the replaced digest is not claimed.
+- **Floating tags are never observed.** `latest`, `stable`, `6` and `6.1` match no channel's tag
+  pattern, so no manifest is ever fetched for them and nothing is pinned to one.
+- **An image carries no game version.** Nothing in a manifest says which release it was built
+  from, so the watch's channel declares `gameRevision: "v{tag}"` — the template naming the release
+  the game watch observes. That is what joins the readiness row to the release issue; without it
+  the row cannot be joined and is reported missing rather than guessed at.
+- **Access is anonymous but not unauthenticated.** ghcr.io answers a public repository only after
+  a bearer challenge: the first `GET` returns 401 with `WWW-Authenticate`, the realm is asked for
+  a token, and the request is retried once with it. That token is registered as a secret and never
+  reaches stdout, stderr, a fact or a log line.
 
 ## Coverage
 
@@ -243,7 +334,7 @@ version control.
 
 ## Version support
 
-The plugin builds against the TShock release in `games/terraria/scripts/setup-environment.sh`.
-TShock must match the Terraria server protocol version, and Terraria clients must match the
+The plugin builds against the catalog target's pinned image, not against whatever a tag points at
+today. TShock must match the Terraria server protocol version, and Terraria clients must match the
 server. A Terraria client newer than the TShock build is rejected at join time with
 `You are not using the same version as this server.`
