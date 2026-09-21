@@ -9,7 +9,7 @@
     "status": "candidate",
     "since": "2026-09-21",
     "evidence": [
-      "games/rust/README.md (What works, what doesn't — protocol harness on Carbon 2.0.259 / build 25353106, no client)"
+      "games/rust/README.md (What works, what doesn't \u2014 protocol harness on Carbon 2.0.259 / build 25353106, no client)"
     ],
     "notes": "Rust Dedicated Server public build 25353106 (2026-09-16) with Carbon production build v2.0.259 (protocol 2026.09.03.0, commit 21063e8, GitHub release asset id 547241271). Compile/load, identify, reachability, catalogues, console, broadcast, reconnect and shutdown are proven by takaro-maint verify with no client; player hooks and gameplay are not. Carbon's production_build tag is re-uploaded in place, so what pins these bytes is the recorded sha256/size, not the tag. Carbon publishes no machine-readable Rust-build compatibility, so a new Rust head is filed blocked-upstream until a target pinning a compatible Carbon lands. Runtime CI is #167; gameplay evidence #174."
   },
@@ -137,7 +137,7 @@
       "console",
       "action",
       "reconnect",
-      "shutdown"
+      "stop"
     ]
   },
   "preserve": [

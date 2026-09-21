@@ -655,6 +655,13 @@ def test_the_plugin_source_keeps_its_release_markers() -> None:
     # The line the shared identify/reconnect checks and the rig's success pattern share.
     assert "Identified successfully" in source
     assert "Identified and connected" not in source
+    # Identify is the first frame out, like every other connector here: a peer that expects
+    # the client to speak first must not be left waiting for a greeting that never comes.
+    assert re.search(r'LogInfo\("WebSocket connected"\);\s*(?://[^\n]*\n\s*)*SendIdentify\(\);', source)
+    # Rust's console echoes neither a command it was handed nor a broadcast, so the
+    # connector is what records them.
+    assert 'LogInfo($"console: {command}")' in source
+    assert 'LogInfo($"broadcast: {message}")' in source
     # listEntities answers with display names, never the dev short name.
     assert not re.search(r'\["name"\]\s*=\s*shortName', source)
     assert "Humanize(shortName)" in source

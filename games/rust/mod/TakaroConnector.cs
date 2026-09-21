@@ -34,6 +34,7 @@ namespace Oxide.Plugins
         private volatile bool _shouldReconnect = true;
         private long _currentReconnectDelay = InitialReconnectDelay;
         private volatile bool _connected;
+        private volatile bool _identifySent;
         private readonly object _sendLock = new object();
         private readonly Dictionary<string, Vector3> _lastPosition = new Dictionary<string, Vector3>();
 
@@ -86,7 +87,13 @@ namespace Oxide.Plugins
                 {
                     _ws = new ClientWebSocket();
                     await _ws.ConnectAsync(new Uri(_wsUrl), token);
+                    _identifySent = false;
                     LogInfo("WebSocket connected");
+                    // Identify is the first frame this connector sends, the way every other
+                    // Takaro connector in this repository does it. Waiting to be greeted
+                    // instead means a peer that expects the client to speak first never
+                    // hears from this server at all: the socket sits open and silent.
+                    SendIdentify();
                     await ReceiveLoop(token);
                 }
                 catch (OperationCanceledException) { }
@@ -158,7 +165,9 @@ namespace Oxide.Plugins
             switch (type)
             {
                 case "connected":
-                    LogInfo("Received server hello, sending identify...");
+                    // Takaro greets a fresh connection. Identify has already gone out when
+                    // the socket opened, so this only does anything if the greeting beat it.
+                    LogInfo("Received server hello");
                     SendIdentify();
                     break;
 
@@ -239,6 +248,11 @@ namespace Oxide.Plugins
 
         private void SendIdentify()
         {
+            // At most once per connection: the socket opening and a server greeting both
+            // lead here, and a second identify would look like a second session.
+            if (_identifySent) return;
+            _identifySent = true;
+
             var msg = new JObject
             {
                 ["type"] = "identify",
@@ -624,6 +638,11 @@ namespace Oxide.Plugins
         private JToken HandleExecuteConsoleCommand(JObject args)
         {
             var command = args.Value<string>("command") ?? "";
+            // Rust's console prints nothing for most commands it is handed (`say` among
+            // them), so this line is the only record an operator has of what Takaro ran on
+            // their server -- and the only thing outside the connector that shows a console
+            // round trip happened at all.
+            LogInfo($"console: {command}");
             try
             {
                 var result = ConsoleSystem.Run(ConsoleSystem.Option.Server, command);
@@ -661,6 +680,10 @@ namespace Oxide.Plugins
             }
             else
             {
+                // Same reasoning as the console audit line above: a broadcast leaves no
+                // trace in Rust's own console, so nothing on the server would ever show
+                // that Takaro said something to everybody.
+                LogInfo($"broadcast: {message}");
                 ConsoleNetwork.BroadcastToAllClients("chat.add", 2, 0, message);
             }
         }

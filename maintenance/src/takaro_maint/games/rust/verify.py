@@ -24,7 +24,7 @@ from typing import Any
 from ...install.ledger import read_ledger
 from ...verify import checks, checks_lifecycle
 
-CHECK_IDS = ("carbon-compile", "items", "entities", "action", "reconnect")
+CHECK_IDS = ("carbon-compile", "items", "entities", "action", "reconnect", "stop")
 
 #: "Server startup complete" is the last line of a successful boot; everything before it
 #: can appear on a boot that then dies.
@@ -46,8 +46,14 @@ SELF_UPDATE_LINE = re.compile(
     r"now self-updating|finished self-updating|^\s*Updating Carbon\b|Downloading Carbon", re.I
 )
 
+#: What a finished shutdown looks like in the console, in the order Rust writes it.
+SAVED_LINE = re.compile(r"^Saving complete")
+QUIT_LINE = re.compile(r"\[Raknet\] Server Shutting Down \(quit\)|^Quitting")
+UNLOADED_LINE = re.compile(r"Unloaded plugin TakaroConnector")
+
 COMPILE_BUDGET = 180.0
 ACTION_BUDGET = 30.0
+QUIT_BUDGET = 120.0
 
 ITEM_SPOT = ("rifle.ak", "Assault Rifle")
 ENTITY_SPOT = ("bear", "Bear")
@@ -127,9 +133,7 @@ async def _check_carbon_compile(run: Any, alive: Any) -> checks.CheckResult:
                 compile_ms = int(found.group("ms"))
         expected = _deployed_version(run)
         if version is not None and expected is not None and version != expected:
-            problems.append(
-                f"the server loaded TakaroConnector v{version}, the build manifest implies {expected}"
-            )
+            problems.append(f"the server loaded TakaroConnector v{version}, the build manifest implies {expected}")
         failed = await asyncio.to_thread(checks.find_line, run.server_log, COMPILE_FAILED)
         if failed:
             problems.append(f"a compile error is in the log: {failed[1].strip()[:200]}")
@@ -179,3 +183,66 @@ async def _check_action(run: Any, fake: Any, alive: Any) -> checks.CheckResult:
         },
         {"file": run.server_log.name, "line": found[0]} if found else {"file": run.server_log.name},
     )
+
+
+async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[dict[str, Any]]) -> None:
+    del fake, ws_url, ledger_inputs
+    if not run.wanted("stop"):
+        run.skip("stop", "not selected by --checks")
+        return
+    run.record(await _check_stop(run))
+
+
+async def _check_stop(run: Any) -> checks.CheckResult:
+    """What Rust's shutdown really leaves behind, since its exit code says nothing.
+
+    The base ``shutdown`` check gates on the container's exit code, and Rust's is not a
+    signal: the Unity player segfaults inside its own teardown on some runs (139) *after*
+    it has saved the world, unloaded the plugins and printed ``Quitting``, and exits 0 on
+    others with the same lines in the same order. So what is asserted here is the sequence
+    the server actually writes -- Takaro's ``shutdown`` reached it, it saved, it unloaded
+    the connector, it quit -- and that the process is gone afterwards. The exit code is
+    recorded rather than judged.
+    """
+    with checks._Timer() as timer:
+        problems: list[str] = []
+        container = run.container
+        alive = container.alive if container is not None else (lambda: False)
+        found: dict[str, int | None] = {}
+        for name, pattern, required in (
+            ("saved", SAVED_LINE, True),
+            ("unloadedConnector", UNLOADED_LINE, True),
+            ("quit", QUIT_LINE, True),
+        ):
+            hit = await asyncio.to_thread(checks.wait_for_line, run.server_log, pattern, QUIT_BUDGET, alive)
+            found[name] = hit[0] if hit else None
+            if hit is None and required:
+                problems.append(f"the server never logged its {name} line within {QUIT_BUDGET:.0f} s")
+        code: int | None = None
+        if container is not None:
+            code = await asyncio.to_thread(container.wait_for_exit, QUIT_BUDGET)
+            if code is None:
+                problems.append(f"the server was still running {QUIT_BUDGET:.0f} s after it said it was quitting")
+    return checks.CheckResult(
+        "stop",
+        "pass" if not problems else "fail",
+        timer.elapsed_ms,
+        {
+            "exitCode": code,
+            "lines": found,
+            "note": (
+                "Rust's exit code is not a shutdown signal: the Unity player segfaults in its own "
+                "teardown on some runs, after saving, unloading and quitting. The lines are the gate."
+            ),
+            "problems": problems,
+        },
+        _where(run, found.get("quit")),
+    )
+
+
+def _where(run: Any, line: int | None) -> dict[str, Any]:
+    """The report's ``log`` pointer, which carries a line number only when there is one."""
+    where: dict[str, Any] = {"file": run.server_log.name}
+    if line is not None:
+        where["line"] = line
+    return where

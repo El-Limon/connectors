@@ -220,7 +220,20 @@ compile/load (`carbon-compile`: Carbon compiled the deployed source, loaded the 
 manifest names, wrote no compile error and did not self-update), `startup` (including input
 integrity across the boot), `identify`, `heartbeat` (`testReachability`), `players` on an empty
 server, `items` and `entities` (both catalogues, human display names spot-checked), `console`,
-`action` (a broadcast), `reconnect` and `shutdown`.
+`action` (a broadcast), `reconnect` and `stop`.
+
+`stop` replaces the base `shutdown` check, which gates on the container's exit code. **Rust's exit
+code is not a shutdown signal**: the Unity player segfaults inside its own teardown on some runs
+(139) *after* it has saved the world, unloaded the plugins and printed `Quitting`, and exits 0 on
+others with the same lines in the same order. So `stop` asserts the sequence the server really
+writes — saved, connector unloaded, quit — and that the process is gone afterwards, and records the
+exit code without judging it.
+
+Rust's console echoes neither a command it was handed nor a chat broadcast, so `console` and
+`action` are observable only because the connector logs both (`console: <command>`,
+`broadcast: <message>`) — lines worth having anyway, since they are an operator's only record of
+what Takaro did on their server. What they prove is that the instruction reached the server and the
+connector carried it out, not that a player saw it.
 
 What it does **not** prove, and what therefore stays ⚠️ in the README: every player hook
 (connect/disconnect/chat/death/kill), `giveItem`, `teleportPlayer`, `kickPlayer`, `banPlayer`,

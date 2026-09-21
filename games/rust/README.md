@@ -1,8 +1,12 @@
 # Takaro Rust Connector
 
-A server-side-only plugin (version **0.0.3**) that connects a Rust dedicated server to Takaro. It is
-written for the **Oxide/uMod** plugin API (`Oxide.Plugins` / `RustPlugin`) and is developed and
-tested on **Carbon**, which runs the same plugins. Players do not install anything.
+A server-side-only plugin that connects a Rust dedicated server to Takaro. It is written for the
+**Oxide/uMod** plugin API (`Oxide.Plugins` / `RustPlugin`) and is developed and verified on
+**Carbon**, which runs the same plugins. Players do not install anything.
+
+**Built and verified against Rust public build 25353106 (2026-09-16) with Carbon v2.0.259.** Other
+Rust builds and other Carbon builds are unverified — the plugin will very likely still load, but
+nothing here was checked against them.
 
 ## Install
 
@@ -21,19 +25,23 @@ You need:
 
 ### 2. Download the plugin
 
-There is **no tagged `rust-v*` release yet**. Take the plugin from one of these two places:
+From the connector's release, download either name — they are the same bytes:
 
-- The rolling pre-release: download **`TakaroConnector.cs`** from
-  <https://github.com/gettakaro/connectors/releases/tag/rust-dev> — this is an untested build,
-  rebuilt on every push to `main`.
-- Or copy the file straight out of the repository: `games/rust/mod/TakaroConnector.cs`.
+- **`takaro-rust-plugin-carbon-25353106-<version>.cs`** — the build's own name, which says exactly
+  which Rust build and which Carbon it was verified against.
+- **`TakaroConnector.cs`** — the same file under the name the framework loads.
 
-Both are the same single C# source file. There is nothing to compile — Carbon and Oxide compile
-`.cs` plugins at runtime.
+`SHA256SUMS` is published beside them if you want to check the download.
+
+If there is no tagged `rust-v*` release yet, take the rolling pre-release from
+<https://github.com/gettakaro/connectors/releases/tag/rust-dev> (rebuilt on every push to `main`),
+or copy `games/rust/mod/TakaroConnector.cs` straight out of the repository. There is nothing to
+compile — Carbon and Oxide compile `.cs` plugins at runtime.
 
 ### 3. Copy it into place
 
-Copy the file into your framework's plugin folder:
+Save the file **as `TakaroConnector.cs`** in your framework's plugin folder — the framework loads a
+plugin by its class-named file, so the name matters:
 
 ```
 # Carbon
@@ -78,10 +86,10 @@ Then restart the server so the process picks up the new environment.
 In the server console / Carbon or Oxide log, the plugin prints lines prefixed with `[Takaro]`:
 
 ```
+Loaded plugin TakaroConnector v<version> by Takaro [1667ms]
 [Takaro] Connecting to wss://connect.takaro.io/
 [Takaro] WebSocket connected
-[Takaro] Received server hello, sending identify...
-[Takaro] Identified and connected, server ID: <id>
+[Takaro] Identified successfully, server ID: <id>
 ```
 
 And in Takaro, the game server shows as **online**.
@@ -103,53 +111,59 @@ variables are untouched by the upgrade, so the server keeps its identity.
 
 ## What works, what doesn't
 
-**Nothing in this table has been proven in a live test.** There is no recorded hard-test evidence
-for the Rust connector. The statuses below come from reading the plugin source
-(`mod/TakaroConnector.cs`, version 0.0.3) only: ⚠️ means the plugin implements it but no live test
-has confirmed it, ❌ means it is not implemented or not supported.
+✅ means it was proven by an automated run against the exact pinned target (Rust build 25353106,
+Carbon 2.0.259) with **no game client**: the server really booted in its pinned container, Carbon
+really compiled and loaded this plugin, and the protocol harness really asked for each of these.
+⚠️ means the plugin implements it but nothing has confirmed it — everything a real player is
+needed for is in that group. ❌ means it is not implemented or not supported.
 
 | What | | Notes |
 |---|---|---|
-| Connection & heartbeat | ⚠️ | Connects outbound over WebSocket and answers Takaro's reachability check. Implemented, not verified in a live test. |
-| Server restart / reconnect | ⚠️ | Reconnects on its own with exponential backoff (5 s up to 5 min). Implemented, not verified in a live test. |
-| Player list | ⚠️ | Returns name, Steam id, IP and ping for every connected player. Implemented, not verified in a live test. |
-| Single player lookup | ⚠️ | Finds connected and sleeping players by Steam id. Implemented, not verified in a live test. |
-| Player location | ⚠️ | Returns the player's position, falling back to the last known position when they are offline. Implemented, not verified in a live test. |
-| Player inventory | ⚠️ | Main inventory, hotbar and worn items. Item quality is always empty. Implemented, not verified in a live test. |
-| Item catalogue | ⚠️ | Every item definition the server knows, by shortname. Implemented, not verified in a live test. |
-| Entity catalogue | ⚠️ | Built from the server's prefab manifest, with corpses and ragdolls filtered out. Implemented, not verified in a live test. |
-| Locations / points of interest | ⚠️ | Returns the map's monuments. Implemented, not verified in a live test. |
-| Chat messages from players | ⚠️ | Player chat is forwarded with the player and the chat channel attached. Implemented, not verified in a live test. |
-| Broadcast a message | ⚠️ | Sent to everyone in the server chat. Implemented, not verified in a live test. |
-| Whisper a player | ⚠️ | Sent to the named player's chat only. Implemented, not verified in a live test. |
-| Give an item | ⚠️ | Goes into the player's inventory; if there is no room it drops at their feet. Implemented, not verified in a live test. |
-| Teleport a player | ⚠️ | Moves the player to the exact coordinates given, with no ground snapping. Implemented, not verified in a live test. |
-| Run a console command | ⚠️ | Runs as a server console command and returns the output or the error. Implemented, not verified in a live test. |
-| Kick | ⚠️ | Drops the player with the reason shown. Implemented, not verified in a live test. |
-| Ban (timed and permanent) | ⚠️ | Timed bans are enforced by the plugin's own ban record (not verified in a live test). Permanent bans go into the server's own ban list; either way the player is kicked. |
-| Unban | ⚠️ | Clears both the plugin's ban record and the server's ban list. Implemented, not verified in a live test. |
-| Ban list | ⚠️ | Returns the server's banned users (no expiry) plus the plugin's timed bans with their real expiry. Not verified in a live test. |
-| Shut the server down | ⚠️ | Runs the server's `quit` command. Implemented, not verified in a live test. |
-| Player joined event | ⚠️ | Sent when a player connects. Implemented, not verified in a live test. |
-| Player left event | ⚠️ | Sent when a player disconnects. Implemented, not verified in a live test. |
-| Player chat event | ⚠️ | See "Chat messages from players". Implemented, not verified in a live test. |
-| Player death event | ⚠️ | Sent when a player dies. Implemented, not verified in a live test. |
-| Entity kill event | ⚠️ | Sent when an entity is killed, with the weapon used where it can be read. Implemented, not verified in a live test. |
+| Plugin compiles and loads | ✅ | Carbon compiles the `.cs` at load; the loaded version is the version that was built. |
+| Connection & identify | ✅ | Connects outbound over WebSocket and identifies to Takaro. |
+| Heartbeat / reachability | ✅ | Answers Takaro's reachability check. |
+| Server restart / reconnect | ✅ | Reconnects on its own after the connection drops, with exponential backoff (5 s up to 5 min), and identifies again. |
+| Player list | ✅ | Answers with the connected players. Proven on an empty server only — the shape is verified, a populated list is not. |
+| Item catalogue | ✅ | Every item definition the server knows, with its display name (e.g. `rifle.ak` → "Assault Rifle"). |
+| Entity catalogue | ✅ | Built from the server's prefab manifest, with corpses and ragdolls filtered out, and display names derived from the prefab name (e.g. `bear` → "Bear"). |
+| Run a console command | ✅ | Runs as a server console command and returns the output or the error. The connector logs each command it runs, because Rust's console does not echo them. |
+| Broadcast a message | ✅ | Sent to everyone in the server chat, and logged by the connector. Proven to reach the server; that a player sees it is not, because the automated run has no client. |
+| Shut the server down | ✅ | Runs the server's `quit` command: the world is saved, the plugin is unloaded and the server quits. Rust's own process then sometimes crashes inside Unity's teardown *after* all of that, so its exit code means nothing either way. |
+| Single player lookup | ⚠️ | Finds connected and sleeping players by Steam id. Implemented, not verified — needs a client. |
+| Player location | ⚠️ | Returns the player's position, falling back to the last known position when they are offline. Implemented, not verified — needs a client. |
+| Player inventory | ⚠️ | Main inventory, hotbar and worn items. Item quality is always empty. Implemented, not verified — needs a client. |
+| Locations / points of interest | ⚠️ | Returns the map's monuments. Implemented, not verified. |
+| Chat messages from players | ⚠️ | Player chat is forwarded with the player and the chat channel attached. Implemented, not verified — needs a client. |
+| Whisper a player | ⚠️ | Sent to the named player's chat only. Implemented, not verified — needs a client. |
+| Give an item | ⚠️ | Goes into the player's inventory; if there is no room it drops at their feet. Implemented, not verified — needs a client. |
+| Teleport a player | ⚠️ | Moves the player to the exact coordinates given, with no ground snapping. Implemented, not verified — needs a client. |
+| Kick | ⚠️ | Drops the player with the reason shown. Implemented, not verified — needs a client. |
+| Ban (timed and permanent) | ⚠️ | Timed bans are enforced by the plugin's own ban record. Permanent bans go into the server's own ban list; either way the player is kicked. Implemented, not verified. |
+| Unban | ⚠️ | Clears both the plugin's ban record and the server's ban list. Implemented, not verified. |
+| Ban list | ⚠️ | Returns the server's banned users (no expiry) plus the plugin's timed bans with their real expiry. Implemented, not verified. |
+| Player joined event | ⚠️ | Sent when a player connects. Implemented, not verified — needs a client. |
+| Player left event | ⚠️ | Sent when a player disconnects. Implemented, not verified — needs a client. |
+| Player chat event | ⚠️ | See "Chat messages from players". |
+| Player death event | ⚠️ | Sent when a player dies. Implemented, not verified — needs a client. |
+| Entity kill event | ⚠️ | Sent when an entity is killed, with the weapon used where it can be read. Implemented, not verified — needs a client. |
 | Log events | ⚠️ | Server console lines are forwarded, minus Carbon's and the plugin's own. Takaro does not store server log lines as events, so they cannot be searched or used in modules. |
+| Oxide / uMod | ⚠️ | The file is written against the Oxide plugin API and Oxide loads it, but only Carbon has been booted. |
 | Map info | ❌ | The plugin does not implement it. |
 | Map tiles | ❌ | Not supported by Takaro for Generic-connector servers. |
 | Discord chat bridge | ⚠️ | Nothing in the plugin blocks it — chat in and chat out are both implemented — but the bridge has never been tried on Rust in either direction. |
-| Shop & economy | ⚠️ | Rests on give-item, chat commands and console commands, which are all implemented; no shop purchase has been run on Rust. |
+| Shop & economy | ⚠️ | Rests on give-item, chat commands and console commands; no shop purchase has been run on Rust. |
 
 ### Known issues
 
-- **Nothing here is live-tested.** Treat every row above as "should work", not "does work". If you
-  run this on a real server, expect to find things.
+- **No player has ever played through it.** Everything marked ⚠️ above that says "needs a client"
+  is exactly that: the automated run has no game client, so player hooks, give/teleport/kick/ban
+  and the events around them are unproven. Expect to find things.
 - **No map.** Takaro's API does not support map tiles for Generic-connector servers, and the plugin
   does not answer map-info requests either.
 - **Item quality is not reported.** Inventory entries always come back with an empty quality field.
-- **No tagged release.** The only published build is the rolling `rust-dev` pre-release, which is
-  rebuilt on every push to `main` and is not meant for production.
+- **Entity names are derived, not localised.** Rust ships no display name for entity prefabs, so
+  the catalogue turns `scientistnpc_heavy` into "Scientistnpc Heavy". The untouched short name is
+  always in the entry's `code`.
 
 ---
 
