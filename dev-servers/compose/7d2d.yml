@@ -15,7 +15,6 @@ services:
       PUID: "${DEV_UID:-1000}"
       PGID: "${DEV_GID:-1000}"
       TimeZone: "${TZ:-Etc/UTC}"
-      CHANGE_CONFIG_DIR_OWNERSHIP: "NO"
       # The Takaro mod reads <server cwd>/Takaro/Config.xml, not the environment.
       # install.sh renders that file into _data/7d2d/ServerFiles/Takaro/Config.xml.
     volumes:
