@@ -880,3 +880,52 @@ def test_compat_record_carries_the_steam_pin_and_the_legacy_alias(run: Any, repo
     assert len(re.findall(r"manifest/[0-9]+", url)) == 2, "both depots are named in the pseudo-URL"
     assert (out / ZIP_NAME).is_file()
     assert (out / "takaro-conan-exiles-bridge.zip").read_bytes() == (out / ZIP_NAME).read_bytes()
+# -- the dev-servers rig -----------------------------------------------------------------
+
+DS_ROOT = Path(__file__).resolve().parents[2] / "dev-servers"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def bash(script: str) -> str:
+    completed = subprocess.run(["bash", "-c", script], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout
+
+
+def test_dev_servers_conan_functions_dispatch() -> None:
+    scripts = (DS_ROOT / "lib/games/conan-exiles.sh", DS_ROOT / "images/conan-exiles/entrypoint.sh")
+    for script in scripts:
+        completed = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, check=False)
+        assert completed.returncode == 0, f"{script.name}: {completed.stderr}"
+
+    assert bash(". dev-servers/lib/common.sh; ds_target_prefix conan-exiles").strip() == "CONAN_EXILES"
+    assert bash(". dev-servers/lib/common.sh; ds_target_dest conan-exiles").strip().endswith("/conan-exiles/server")
+    for step in ("install", "deploy"):
+        found = bash(f'. dev-servers/lib/common.sh; declare -F "{step}_conan_exiles" >/dev/null && echo yes')
+        assert found.strip() == "yes", f"conan-exiles has no {step} step"
+
+
+def test_the_rig_runs_the_resolved_target_and_never_steamcmd() -> None:
+    compose = (DS_ROOT / "compose" / "conan-exiles.yml").read_text(encoding="utf-8")
+
+    assert 'image: "${CONAN_EXILES_IMAGE:-target-not-resolved}"' in compose
+    assert 'image: "${CONAN_EXILES_TOOLCHAIN:-target-not-resolved}"' in compose
+    assert "build:" not in compose, "the rig runs a pinned image, never one it builds here"
+    assert not (DS_ROOT / "images" / "conan-exiles" / "Dockerfile").exists()
+
+    owned = [
+        "games/conan-exiles",
+        "dev-servers/lib/games/conan-exiles.sh",
+        "dev-servers/compose/conan-exiles.yml",
+        "dev-servers/images/conan-exiles",
+        ".github/workflows/conan-exiles.yml",
+    ]
+    found = subprocess.run(
+        ["git", "grep", "-nE", r"app_update|steamcmd|node:22-slim|:latest", "--", *owned],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # git grep exits 1 when nothing matched, which is exactly what this asserts.
+    assert found.returncode == 1, f"a floating coordinate survived:\n{found.stdout}"

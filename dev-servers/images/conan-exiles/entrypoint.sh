@@ -1,33 +1,28 @@
 #!/usr/bin/env bash
-# Installs/updates Conan Exiles into the mounted volume, writes the RCON
-# settings the Takaro sidecar needs, then launches the native Linux server.
+# Starts the pinned Conan Exiles dedicated server inside the catalog's image.
+#
+# Bind-mounted into the container by dev-servers/compose/conan-exiles.yml rather than
+# baked into an image: the image is the one the catalog pins by digest, and nothing here
+# may change the bytes it runs. There is no Steam client and no updater in this file --
+# the game files are installed once by `takaro-maint install` from the pinned depot
+# manifests, and this script refuses to start if they are not there.
 set -euo pipefail
 
 INSTALL_DIR="${CONAN_INSTALL_DIR:-/conan}"
-APP_ID="${CONAN_APP_ID:-443030}"
 CONFIG_DIR="${INSTALL_DIR}/ConanSandbox/Saved/Config/LinuxServer"
 
-echo "[conan] Updating Steam app ${APP_ID} into ${INSTALL_DIR} (this takes a while on first run)..."
-# force_install_dir must come BEFORE login (SteamCMD warns otherwise). The
-# earlier "Missing file permissions" failure was caused by running as root,
-# not by this ordering.
-"${STEAMCMDDIR:-/home/steam/steamcmd}/steamcmd.sh" \
-    +force_install_dir "${INSTALL_DIR}" \
-    +login anonymous \
-    +app_update "${APP_ID}" validate \
-    +quit
-
 if [ ! -f "${INSTALL_DIR}/ConanSandboxServer.sh" ]; then
-    echo "[conan] ERROR: ConanSandboxServer.sh missing after SteamCMD update." >&2
-    echo "[conan] The Linux dedicated-server build may not be available for this app." >&2
+    echo "[conan] ERROR: ${INSTALL_DIR}/ConanSandboxServer.sh is missing." >&2
+    echo "[conan] The pinned build has not been installed here yet:" >&2
+    echo "[conan]   dev-servers/scripts/install.sh conan-exiles" >&2
     exit 1
 fi
 
-chmod +x "${INSTALL_DIR}/ConanSandboxServer.sh" 2>/dev/null || true
-mkdir -p "${CONFIG_DIR}"
+mkdir -p "${CONFIG_DIR}" "${INSTALL_DIR}/ConanSandbox/Saved/Logs"
 
-# RCON is what the Takaro sidecar drives. RconMaxKarma is raised because Conan
-# throttles repeated RCON, and the sidecar polls; see games/conan-exiles/README.md.
+# RCON is what the Takaro sidecar drives. RconMaxKarma is raised because Conan throttles
+# repeated RCON and the sidecar polls; see games/conan-exiles/README.md. The password
+# lives here and never on the command line, which is logged and inspectable.
 GAME_INI="${CONFIG_DIR}/Game.ini"
 if ! grep -q '^\[RconPlugin\]' "${GAME_INI}" 2>/dev/null; then
     echo "[conan] Writing [RconPlugin] settings to ${GAME_INI}"
@@ -39,14 +34,10 @@ RconPassword=${RCON_PASSWORD}
 RconPort=${CONAN_RCON_PORT:-25575}
 RconMaxKarma=1000
 INI
+    chmod 600 "${GAME_INI}"
 fi
 
-if [ "${CONAN_INSTALL_ONLY:-0}" = "1" ]; then
-    echo "[conan] CONAN_INSTALL_ONLY set — game files are in place, not launching."
-    exit 0
-fi
-
-echo "[conan] Starting Conan Exiles dedicated server..."
+echo "[conan] Starting the pinned Conan Exiles dedicated server..."
 cd "${INSTALL_DIR}"
 exec ./ConanSandboxServer.sh \
     -log \
@@ -55,5 +46,4 @@ exec ./ConanSandboxServer.sh \
     -Port="${CONAN_GAME_PORT:-7777}" \
     -QueryPort="${CONAN_QUERY_PORT:-27015}" \
     -RconEnabled=1 \
-    -RconPassword="${RCON_PASSWORD}" \
     -RconPort="${CONAN_RCON_PORT:-25575}"
