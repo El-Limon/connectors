@@ -9,7 +9,9 @@
 #       landed. A connector with a catalog takes its files from the per-target build manifests
 #       under --dist; one without (`--mode legacy`) publishes exactly the files it is given.
 #       Nothing is ever clobbered: an identical retry is a no-op, conflicting bytes stop the
-#       run, and rolling/PR builds are swapped in through a staging draft.
+#       run before anything is uploaded, and rolling/PR builds are swapped in through a staging
+#       draft. A legacy-mode connector whose build is not yet reproducible cannot retry a
+#       stable publish identically; maintenance/docs/release.md (Recovery) has the manual path.
 #
 #   publish-release.sh upload  <tag> <file...>
 #   publish-release.sh rolling <tag> <title> <notes> <file...>

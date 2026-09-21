@@ -144,9 +144,10 @@ def test_stable_retry_with_identical_bytes_is_a_no_op(
     assert [path for method, path in retried if method == "DELETE"] == []
 
 
-def test_stable_conflicting_bytes_exit_seven_and_upload_nothing_further(
+def test_stable_conflicting_bytes_exit_seven_and_upload_nothing(
     run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs]
 ) -> None:
+    """The conflict is on the second name in sort order, so an asset that sorts before it is missing."""
     directory, _, built = assembled
     release = stable_draft(fake, built.commit)
     names = sorted(path.name for path in directory.iterdir())
@@ -156,12 +157,38 @@ def test_stable_conflicting_bytes_exit_seven_and_upload_nothing_further(
 
     assert code == 7
     actions = {asset["name"]: asset["action"] for asset in payload["assets"]}
-    assert actions[names[0]] == "uploaded"
-    assert actions[names[1]] == "not-attempted"
-    assert all(actions[name] == "not-attempted" for name in names[2:])
+    assert actions[names[1]] == "conflict"
+    assert all(actions[name] == "not-attempted" for name in names if name != names[1])
+    assert payload["conflicts"] == [names[1]]
+    assert payload["draft"] is True
+    assert "still a draft" in payload["error"]
     uploaded = {path.split("name=")[-1] for method, path in fake.requests if "/uploads/" in path}
-    assert uploaded == {names[0]}
+    assert uploaded == set()
+    assert fake.asset_names(TAG) == [names[1]]
     assert fake.release_for(TAG)["draft"] is True
+
+
+def test_a_conflict_on_a_published_release_leaves_it_untouched(
+    run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs]
+) -> None:
+    """Recovery against an already-public release: every other asset is missing and sorts first."""
+    directory, _, built = assembled
+    release = fake.add_release(TAG, draft=False, name=f"minecraft: v{VERSION}")
+    fake.add_tag(TAG, built.commit)
+    names = sorted(path.name for path in directory.iterdir())
+    fake.add_asset(release, names[-1], b"someone else's bytes")
+
+    before = len(fake.requests)
+    code, payload, _ = publish(run, fake, directory, built.root, "--target-commit", built.commit)
+
+    assert code == 7
+    assert payload["conflicts"] == [names[-1]]
+    assert payload["draft"] is False
+    assert "still a draft" not in payload["error"]
+    assert [path for method, path in fake.requests[before:] if "/uploads/" in path] == []
+    assert [method for method, _ in fake.requests[before:] if method in ("POST", "PATCH", "DELETE")] == []
+    assert fake.asset_names(TAG) == [names[-1]]
+    assert fake.release_for(TAG)["draft"] is False
 
 
 def test_stable_without_a_release_exits_seven(
@@ -509,6 +536,42 @@ def test_the_token_never_appears_in_any_output(
     assert code == 0
     assert TOKEN not in json.dumps(payload)
     assert TOKEN not in stderr
+
+
+def test_an_explicit_token_never_appears_in_any_output(
+    run: Any, fake: FakeReleases, assembled: tuple[Path, dict[str, Any], Inputs], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory, _, built = assembled
+    stable_draft(fake, built.commit)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    # ``--verbose`` is a global flag, so this one call cannot go through ``publish()``.
+    code, payload, stderr = run(
+        "--verbose",
+        "release",
+        "publish",
+        "--connector",
+        CONNECTOR,
+        "--channel",
+        "stable",
+        "--tag",
+        TAG,
+        "--assembled",
+        str(directory),
+        "--repo",
+        REPO,
+        "--api-url",
+        fake.api_url,
+        "--target-commit",
+        built.commit,
+        "--token",
+        "explicit-token-value",
+        repo=built.root,
+    )
+
+    assert code == 0, stderr
+    assert "explicit-token-value" not in json.dumps(payload)
+    assert "explicit-token-value" not in stderr
 
 
 def test_every_published_asset_hashes_to_what_the_record_says(

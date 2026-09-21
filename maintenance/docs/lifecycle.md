@@ -136,8 +136,9 @@ the first of its inputs whose kind can identify a target agrees with the marker:
 | input kind | match rule |
 |---|---|
 | `mojang-version` | marker provider `mojang`, `input.version` == marker `rev`, and the record's own `revision` == marker `rev` |
+| `paper-build`, `neoforge-installer` | marker provider `mojang`, `input.gameVersion` == marker `rev`, and the record's own `revision` == marker `rev` |
 | `steam-depots` | marker provider `steam`, and `app`, `branch` and `buildid` all match the marker |
-| anything else | never matches |
+| anything else (`fabric-launcher`, `maven-artifact`, `http-file`, …) | never matches — a loader or library is a build detail |
 
 A retired match is reported (`fabric-26.3 is retired on main`) and does not count. Several
 matches — one per platform — are all reported, and the issue only reaches `released` when

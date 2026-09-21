@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import __version__, output
+from . import __version__, output, redact
 from .exit_codes import TrackerError
 
 DEFAULT_API_URL = "https://api.github.com"
@@ -60,6 +60,8 @@ class GitHub:
     """Only the endpoints the maintenance commands actually use."""
 
     def __init__(self, repo: str, token: str, api_url: str | None = None) -> None:
+        # Whatever resolve_token found — --token, GH_TOKEN or gh auth token — is now a secret to hide.
+        redact.remember(token)
         self.repo = repo
         self.token = token
         self.api_url = (api_url or os.environ.get("TAKARO_MAINT_GITHUB_API_URL") or DEFAULT_API_URL).rstrip("/")

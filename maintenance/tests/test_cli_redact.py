@@ -84,6 +84,35 @@ def test_the_fake_takaro_log_redacts_the_tokens_it_receives(tmp_path: Path) -> N
     assert '"type": "identify"' in text or '"type":"identify"' in text
 
 
+def test_an_unexpected_traceback_is_redacted(run: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The traceback path is the one stderr write that used to bypass redaction."""
+
+    def explode(text: str) -> None:
+        raise RuntimeError(f"upload to https://example.invalid/?token={SECRET} failed")
+
+    monkeypatch.setattr("takaro_maint.output.raw", explode)
+
+    code, _, stderr = run("targets", "resolve", "--game", "minecraft", "--platform", "fabric", "--format", "env")
+
+    assert code == 1
+    assert "Traceback (most recent call last)" in stderr
+    assert "RuntimeError" in stderr
+    assert SECRET not in stderr
+    assert "<redacted>" in stderr
+
+
+def test_a_token_that_did_not_come_from_the_environment_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    from takaro_maint import redact
+    from takaro_maint.github import GitHub
+
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    GitHub("gettakaro/connectors", "explicit-token-value", "http://127.0.0.1:9")
+
+    assert redact.redact("Authorization: Bearer explicit-token-value") == "Authorization: Bearer <redacted>"
+    redact.forget()
+    assert "explicit-token-value" in redact.redact("Bearer explicit-token-value")
+
+
 def test_short_values_are_not_treated_as_secrets(monkeypatch: pytest.MonkeyPatch, run: Any) -> None:
     """A two-character token value would otherwise redact half the output."""
     monkeypatch.setenv("TAKARO_REGISTRATION_TOKEN", "26")
