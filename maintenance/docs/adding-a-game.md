@@ -111,8 +111,28 @@ written down.
 
 ### `steam`
 
-Steam's watch block and its discovery are documented separately in
-[Steam discovery](steam-discovery.md).
+```json
+"steam": {
+  "provider": "steam",
+  "baseUrl": "https://store.steampowered.com",
+  "watch": {
+    "kind": "game",
+    "component": "7d2d",
+    "app": 294420,
+    "os": "linux",
+    "depots": ["294422"],
+    "channels": {"public": {"branch": "public"}},
+    "knownBranches": ["regex:^v[0-9]+(\\.[0-9]+)*$"]
+  }
+}
+```
+
+The channel key is the upstream branch label verbatim and `branch` is the marker name,
+because Steam's labels (`latest_experimental`) and the marker alphabet (no underscore) do
+not agree. `depots` is what makes the identity: a build is an app on a branch at a build
+id with one content manifest per depot, and Steam is `heads-only` — it publishes no
+history at all. The whole contract, including protected branches and what a revision
+means, is in [Steam discovery](steam-discovery.md).
 
 ## Proving it
 

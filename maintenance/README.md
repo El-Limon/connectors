@@ -82,6 +82,7 @@ line behaves the same from anywhere.
 | `TAKARO_MAINT_DOCKER` | Override the docker binary (tests use a stub). |
 | `TAKARO_MAINT_DEPOTDOWNLOADER` | Override the pinned DepotDownloader executable (tests use a stub). |
 | `TAKARO_MAINT_STEAMCMD` | Override the steamcmd command line — a command line, so it can be a `docker run …` (tests use a stub). |
+| `TAKARO_MAINT_STEAM_BRANCH_PASSWORD__<app>__<LABEL>` | The password of one protected Steam branch, read only from the environment and never written anywhere. |
 | `TAKARO_MAINT_REPO` | Repository for GitHub operations. Also `--repo`. |
 | `TAKARO_MAINT_GITHUB_API_URL` | GitHub API base. Also `--api-url`. |
 | `GH_TOKEN` | GitHub token; otherwise `gh auth token` is tried. |

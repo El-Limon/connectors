@@ -3,10 +3,6 @@
 How `takaro-maint` reads what Steam has published for a dedicated server, and why it reads
 it the way it does.
 
-> **Status.** This document covers what is implemented today: the reader, the runner and
-> the recorded fixture. Turning a branch head into a maintenance issue is the next step on
-> the same foundation and is not described here yet.
-
 ## Where the facts come from
 
 Steam publishes no "what is the current build of this branch" endpoint. The store page is
@@ -97,11 +93,146 @@ logs, and every line is passed through the redactor first. No credential is ever
 argument of `app_info_print` — it is an anonymous read — but the log is redacted anyway,
 because "this particular file happens to be safe" is not a property worth relying on.
 
+## The watch block
+
+A game becomes observable by growing a `watch` block on its Steam source. Nothing else in
+the game record changes, and no Python changes at all — this is the whole configuration
+surface for a Steam game.
+
+```json
+"steam": {
+  "provider": "steam",
+  "baseUrl": "https://store.steampowered.com",
+  "watch": {
+    "kind": "game",
+    "component": "7d2d",
+    "app": 294420,
+    "os": "linux",
+    "depots": ["294422"],
+    "channels": {
+      "public": {"branch": "public"},
+      "latest_experimental": {"branch": "experimental", "enabled": false}
+    },
+    "knownBranches": ["regex:^v[0-9]+(\\.[0-9]+)*$", "regex:^alpha[0-9]+(\\.[0-9]+)*$"]
+  }
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `kind` | always `game` for a dedicated server; it is the observation kind. |
+| `component` | the marker component, conventionally the game id. |
+| `app` | the Steam app id whose `app_info` is read. |
+| `os` | `linux`, `windows` or `macos`: which build this identity is about. Two operating systems of one app are two identities, never one. |
+| `depots` | the depot ids whose content manifests make the identity. Required, and a depot the app does not publish fails the source by name. |
+| `channels` | key = the upstream branch label exactly as Steam spells it; `branch` = the marker branch name; `enabled: false` = declared and deliberately unwatched; `passwordEnv` = the variable a protected branch's password comes from. |
+| `knownBranches` | labels that are known and never reviewed: exact strings or `regex:<pattern>`, the selector grammar `build.references` uses. |
+
+The channel key and the branch name are two different things because they answer to two
+different grammars. Steam labels its experimental branch `latest_experimental`; a marker
+revision may not contain an underscore (`tracker/identity.py`), and a marker is an
+identity forever. So the label stays verbatim on the left, the marker branch is written
+out on the right, and a channel whose branch name is not `[A-Za-z0-9.+-]+` fails the
+source rather than filing an issue nobody can find again.
+
+`enabled: false` is not the same as leaving a branch out. A declared-but-disabled channel
+is a decision that was taken: its branch is never observed and never offered for review.
+
+## What a revision is
+
+```
+<buildid>[.<manifest digest>]+<branch>          24994542.4f2c1e90+public
+<head>/rollback/<the head it came back from>    24994542.4f2c1e90+public/rollback/25100000.a1b2c3d4+public
+```
+
+Three things are folded in, and each is there because leaving it out loses a real event:
+
+- **the build id**, which is what a maintainer and `steam pin` talk about;
+- **the watched depots' manifests**, because a publisher can replace a depot's content
+  under the same build id — without this, that publish is invisible;
+- **the branch**, because the same build appearing on `public` after `experimental` is a
+  new thing to support, and a single checkpoint per source has to tell them apart.
+
+A branch under review whose manifests are encrypted has no digest to fold in, so its
+revision is `<buildid>+<branch>`.
+
+### Rollback, promotion, and the arithmetic that is never done
+
+A build id is not a version number: branches are repointed backwards, and a *lower* build
+id may be one nobody has ever seen. So no number is ever compared.
+
+- **Rollback** is decided by the checkpoint alone (`channels.head_event`): the current head
+  is already in `seen`, and some other head of the same branch was first seen later. It is
+  filed once, under the `…/rollback/…` revision, and titled "rolled back to build N".
+- **Promotion** is decided by identity: the same `<buildid>.<digest>` was seen on another
+  branch. The new branch's observation carries `facts.promotedFrom`, and the branch it came
+  from keeps its own issue untouched.
+- **A build nobody has seen** is a new head, whatever its number is.
+
+## Heads-only: what a Steam scan does not see
+
+`app_info_print` publishes the *current* head of each branch and no history at all. A build
+that was published and replaced between two scans was never observed, and nothing here
+pretends otherwise: the source reports `history: "heads-only"`, every observation carries
+`facts.observationLimit`, and the sentence is rendered in the issue body:
+
+> heads-only: Steam app metadata exposes only the current head of each branch; builds
+> published between two scans are not observed and are not claimed.
+
+A bootstrap therefore seeds exactly the current heads — one entry per branch, never one per
+manifest the app happens to list — and files only the heads no target already ships.
+"Already ships" is decided on Steam's terms (`covers()`): a target's `steam-depots` input
+has to pin the same app, branch, build id, operating system and every watched depot's
+manifest. A target named `linux-3.2.0.b10` covers a head; its *name* never matches it.
+
+## Protected and hidden branches
+
+A branch with `pwdrequired 1` publishes its manifests encrypted, and `privatebranches 1`
+means the app has branches an anonymous login is not shown at all. Both are deliberate
+failures rather than quiet successes:
+
+| Situation | What happens |
+|---|---|
+| an enabled channel whose label needs a password, with no variable set | the source fails (exit 4) naming the variable it wants |
+| an enabled channel whose label is not listed at all | the source fails, and says `privatebranches=1` when that is why |
+| the variable is set | the manifests are resolved through DepotDownloader `-manifest-only -branch <label> -branchpassword`, and the observation succeeds |
+
+The variable is `TAKARO_MAINT_STEAM_BRANCH_PASSWORD__<app>__<LABEL>` (label upper-cased,
+every character outside `[A-Z0-9]` replaced by `_`), or whatever the channel's
+`passwordEnv` names instead.
+
+**The value is never written anywhere.** What is recorded in `facts.credentialsEnv`,
+rendered in the issue and printed in an error is the variable's NAME. The provider never
+puts the value into a string, DepotDownloader hides it in its own log whatever its length,
+and the redactor hides every environment value whose name looks like a secret on top of
+that. The tests prove it for a long password and for a four-character one, over stdout,
+stderr, `--out`, every issue title and body, the dashboard and every file under
+`<cache>/steam/logs/`.
+
+## Branches nobody declared
+
+Every label the app publishes that is neither a declared channel (enabled or not) nor
+matched by a `knownBranches` selector becomes a `branch-review` observation and exactly one
+review issue per `(branch, revision)`. Closing that issue as *not planned* declines the
+branch for good; it is never re-filed. A new build on the same undeclared branch is a new
+revision, and therefore a new question.
+
+The label is folded into the marker alphabet for the branch name — `beta_test` becomes
+`beta-test` — because a revision with an underscore in it fails the observation schema.
+
+## Partial failure
+
+Sources are independent. A Steam source that fails leaves its checkpoint exactly where it
+was while every other source in the run advances; the run exits 4, and the next run retries
+the whole source. Nothing is quarantined and nothing is half-recorded: a source's
+checkpoint only ever moves when everything it observed was reconciled.
+
 ## Configuration
 
 | Variable | Meaning |
 |---|---|
 | `TAKARO_MAINT_STEAMCMD` | The command line that runs steamcmd — a command line, not a path, like `TAKARO_MAINT_GRADLE`. Unset means plain `steamcmd` on `PATH`. |
+| `TAKARO_MAINT_STEAM_BRANCH_PASSWORD__<app>__<LABEL>` | The password of one protected branch, read only from the environment. A channel may name a different variable with `passwordEnv`. |
 
 The host running a scan does not need steamcmd installed. Pointing the variable at a
 container works because the variable is a whole command line:
@@ -167,4 +298,13 @@ parsed copy of the fixture in memory — new build ids, extra branches, encrypte
 |---|---|
 | steamcmd missing, failing, timing out, or truncating twice | `4` (upstream unavailable) |
 | a branch the app does not list, or metadata and depot disagreeing on the head | `4` (upstream unavailable) |
+| a protected branch with no password in the environment | `4` (upstream unavailable) |
+| a watch block missing a key, during a scan | `4` — `scan` reports every provider failure as a failed source, and the message names the key |
 | `--metadata` together with `--buildid`, or a game with no app and no `--app` | `2` (usage) |
+
+## What the issue marker does not carry
+
+The support marker is `kind provider component branch rev` and nothing else, so the app id
+is not in it: `component` and app are one-to-one for a game, and the app is in the body and
+in `facts` where a reader needs it. Adding a key to the marker would change the identity of
+every issue already filed.
