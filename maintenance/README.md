@@ -32,7 +32,8 @@ frozen, managed Python 3.12 environment. Docker is needed for `verify` and for
 | `targets list [--game G] [--platform P] [--status …] [--rig-game ID] [--format json\|table\|gha]` | List targets. `gha` prints a build matrix. |
 | `targets resolve --game G [--target ID] [--format json\|env\|gha] [--prefix P] [--out FILE]` | The full resolution: fingerprint, image refs, artifact names, URLs and deployment environment. |
 | `install --game G [--target ID] --dest DIR` | Download and verify every pinned input, stage it, swap it into place, write the ledger. |
-| `steam pin --game G [--target ID] [--record-files PATH…] [--write]` | Read what Steam serves on the branch now, report which depots moved, and re-pin the target. |
+| `steam pin --game G [--target ID] [--metadata] [--record-files PATH…] [--write]` | Read what Steam serves on the branch now, report which depots moved, and re-pin the target. `--metadata` takes the build id from Steam's app metadata and cross-checks it against the depots. |
+| `steam branches --game G [--app N] [--depot D…]` | List every branch the app publishes — build id, publish time, depot manifests — and say which ones the catalog watches, declares, knows or has never decided about. |
 | `steam references --game G [--target ID] --dest DIR` | Fetch only the assemblies the build compiles against from the pinned manifests, into a per-fingerprint directory. |
 | `ledger check --game G [--target ID] --dest DIR` | Does this directory really hold that target, with the recorded bytes intact? |
 | `build --game G [--target ID \| --all-targets] --version V --out DIR [--toolchain host\|container]` | Build the artifacts, validate their identity, write `build-manifest.json`, `SHA256SUMS` and per-file `.meta.json`. |

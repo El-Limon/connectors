@@ -227,3 +227,149 @@ def test_the_fake_serves_a_document_a_test_wrote(tmp_path: Path, monkeypatch: py
     assert info.private_branches is False
     assert "alpha12.5" not in info.branches
     assert json.dumps(sorted(info.branches)) == '["alpha21.2", "public", "v3.1.0", "v3.2.0"]'
+
+
+# -- `steam branches` and `steam pin --metadata` -------------------------------
+import fake_depotdownloader as fake_dd  # noqa: E402
+
+GAME = "7d2d"
+
+
+@pytest.fixture
+def repo(tmp_path: Path, steam: Any, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A repository copy with the DepotDownloader stand-in wired up beside the steamcmd one."""
+    root = fake_dd.make_repo(tmp_path)
+    for name, value in fake_dd.environment(tmp_path, tmp_path / "dd-argv.jsonl").items():
+        monkeypatch.setenv(name, value)
+    return root
+
+
+def watch_7d2d(root: Path, watch: dict[str, Any]) -> None:
+    """Give the copied 7 Days to Die record a Steam watch block."""
+    path = root / "catalog" / GAME / "game.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["sources"]["steam"]["watch"] = watch
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
+def test_steam_branches_lists_every_branch_the_app_publishes(run: Any, steam: Any, repo: Path) -> None:
+    fake_steamcmd.add_branch(steam.document, "beta_test", 25300000, {"294422": "3000000000000000001"})
+    steam.serve()
+
+    code, payload, err = run("steam", "branches", "--game", GAME, "--app", "294420", repo=repo)
+
+    assert code == 0, err
+    assert payload["app"] == 294420
+    assert payload["name"] == "7 Days to Die Dedicated Server"
+    assert payload["privateBranches"] is True
+    assert payload["changeNumber"] == 39026857
+    labels = [row["label"] for row in payload["branches"]]
+    assert labels == sorted(labels), "sorted by label, so two runs are diffable"
+    assert "beta_test" in labels
+
+    public = next(row for row in payload["branches"] if row["label"] == "public")
+    assert public["buildid"] == 24994542
+    assert public["timeupdated"] == "2026-08-31T17:10:35Z"
+    assert public["manifests"]["294422"]["gid"] == "1633674551820196085"
+    assert public["pwdrequired"] is False
+    assert [depot["id"] for depot in payload["depots"]] == ["294421", "294422"]
+
+
+def test_steam_branches_classifies_against_the_watch_block(run: Any, steam: Any, repo: Path) -> None:
+    fake_steamcmd.add_branch(
+        steam.document, "latest_experimental", 25200000, {"294422": "3000000000000000001"}, pwdrequired=True
+    )
+    fake_steamcmd.add_branch(steam.document, "beta_test", 25300000, {"294422": "4000000000000000001"})
+    steam.serve()
+    watch_7d2d(
+        repo,
+        {
+            "kind": "game",
+            "component": GAME,
+            "app": 294420,
+            "os": "linux",
+            "depots": ["294422"],
+            "channels": {
+                "public": {"branch": "public"},
+                "latest_experimental": {"branch": "experimental", "enabled": False},
+            },
+            "knownBranches": ["regex:^v[0-9]+(\\.[0-9]+)*$", "regex:^alpha[0-9]+(\\.[0-9]+)*$"],
+        },
+    )
+
+    code, payload, err = run("steam", "branches", "--game", GAME, repo=repo)
+
+    assert code == 0, err
+    by_label = {row["label"]: row for row in payload["branches"]}
+    assert by_label["public"]["classification"] == "watched"
+    assert by_label["public"]["branch"] == "public"
+    assert by_label["latest_experimental"]["classification"] == "declared"
+    assert by_label["latest_experimental"]["pwdrequired"] is True
+    assert by_label["latest_experimental"]["manifests"] is None
+    assert by_label["latest_experimental"]["encrypted"] == ["294422"]
+    assert by_label["v3.2.0"]["classification"] == "known"
+    assert by_label["alpha12.5"]["classification"] == "known"
+    assert by_label["beta_test"]["classification"] == "unfamiliar"
+
+
+def test_steam_branches_without_an_app_is_a_usage_error(run: Any, steam: Any, repo: Path) -> None:
+    code, payload, _ = run("steam", "branches", "--game", GAME, repo=repo)
+
+    assert code == 2
+    assert "--app" in json.dumps(payload)
+
+
+def test_steam_branches_reports_a_failing_tool_as_upstream(run: Any, steam: Any, repo: Path) -> None:
+    steam.env(FAKE_STEAMCMD_FAIL="1")
+
+    code, payload, _ = run("steam", "branches", "--game", GAME, "--app", "294420", repo=repo)
+
+    assert code == 4
+    assert "steamcmd" in json.dumps(payload)
+
+
+def test_steam_pin_metadata_fills_the_buildid_from_app_info(run: Any, steam: Any, repo: Path) -> None:
+    """The build id is in the metadata and nowhere else: DepotDownloader never sees one."""
+    fake_steamcmd.set_manifest(steam.document, "294422", "public", fake_dd.HEAD_MANIFEST)
+    steam.serve()
+
+    code, payload, err = run("steam", "pin", "--game", GAME, "--target", fake_dd.TARGET_ID, "--metadata", repo=repo)
+
+    assert code == 0, err
+    assert payload["metadata"] == {
+        "buildid": 24994542,
+        "timeupdated": "2026-08-31T17:10:35Z",
+        "description": None,
+        "changeNumber": 39026857,
+    }
+    assert payload["buildid"] == 24994542
+    assert payload["snippet"]["buildid"] == 24994542
+    assert payload["depots"]["294422"]["manifest"] == fake_dd.HEAD_MANIFEST
+
+
+def test_a_publish_in_flight_is_a_retry_not_a_record(run: Any, steam: Any, repo: Path) -> None:
+    """The metadata and the depot are read a moment apart; disagreeing means retry."""
+    code, payload, _ = run("steam", "pin", "--game", GAME, "--target", fake_dd.TARGET_ID, "--metadata", repo=repo)
+
+    assert code == 4
+    message = json.dumps(payload)
+    assert "disagree" in message
+    assert "a publish is in flight" in message
+
+
+def test_metadata_and_an_explicit_buildid_are_a_usage_error(run: Any, steam: Any, repo: Path) -> None:
+    code, payload, _ = run(
+        "steam", "pin", "--game", GAME, "--target", fake_dd.TARGET_ID, "--metadata", "--buildid", "1", repo=repo
+    )
+
+    assert code == 2
+    assert "--metadata" in json.dumps(payload)
+
+
+def test_steam_pin_without_metadata_is_unchanged(run: Any, steam: Any, repo: Path) -> None:
+    """The existing behaviour is untouched: no app_info call, no metadata block."""
+    code, payload, err = run("steam", "pin", "--game", GAME, "--target", fake_dd.TARGET_ID, repo=repo)
+
+    assert code == 0, err
+    assert payload["metadata"] is None
+    assert steam.calls == [], "steamcmd is not consulted unless --metadata asks for it"

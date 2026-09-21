@@ -120,6 +120,37 @@ depot's content under the same build id, and two operating systems' depots live 
 hex characters, so either of those is a different identity — short enough to read in an
 issue title, and independent of the order the depots were listed in.
 
+## Commands
+
+### `steam branches --game G [--app N] [--depot D…]`
+
+Everything the app publishes, sorted by label and shaped for diffing between two runs:
+build id, publish time, description, whether the branch needs a password, and the depot
+manifests it currently points at. Each label is also classified against the game's watch
+block:
+
+| Classification | Meaning |
+|---|---|
+| `watched` | an enabled channel declares it |
+| `declared` | a channel declares it with `enabled: false` — known, deliberately unwatched |
+| `known` | a `knownBranches` selector covers it (the tagged version branches, say) |
+| `unfamiliar` | nobody has decided about it yet |
+
+No credential is read here: a protected branch is reported as `pwdrequired: true` with its
+manifests listed under `encrypted`, which is exactly the information needed to decide
+whether to go and get a password.
+
+### `steam pin --metadata`
+
+The build id is not in a depot manifest — DepotDownloader never sees one — so `--metadata`
+reads it from the app metadata and cross-checks every watched depot's manifest against
+what the depot itself just served.
+
+The two reads are a moment apart. If they disagree, a publish is in flight between them,
+and recording that pair would pin a build id to manifests that never shipped under it.
+That is reported as a retry (exit 4), not recorded. `--metadata` together with an explicit
+`--buildid` is a usage error: one of them is the answer, not both.
+
 ## Recording the fixture
 
 `maintenance/tests/fixtures/providers/steam/294420/` holds a trimmed capture of the real
@@ -133,3 +164,5 @@ parsed copy of the fixture in memory — new build ids, extra branches, encrypte
 | Situation | Code |
 |---|---|
 | steamcmd missing, failing, timing out, or truncating twice | `4` (upstream unavailable) |
+| a branch the app does not list, or metadata and depot disagreeing on the head | `4` (upstream unavailable) |
+| `--metadata` together with `--buildid`, or a game with no app and no `--app` | `2` (usage) |
