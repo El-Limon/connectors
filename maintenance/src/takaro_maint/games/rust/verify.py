@@ -186,14 +186,14 @@ async def _check_action(run: Any, fake: Any, alive: Any) -> checks.CheckResult:
 
 
 async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[dict[str, Any]]) -> None:
-    del fake, ws_url, ledger_inputs
+    del ws_url, ledger_inputs
     if not run.wanted("stop"):
         run.skip("stop", "not selected by --checks")
         return
-    run.record(await _check_stop(run))
+    run.record(await _check_stop(run, fake))
 
 
-async def _check_stop(run: Any) -> checks.CheckResult:
+async def _check_stop(run: Any, fake: Any) -> checks.CheckResult:
     """What Rust's shutdown really leaves behind, since its exit code says nothing.
 
     The base ``shutdown`` check gates on the container's exit code, and Rust's is not a
@@ -206,6 +206,12 @@ async def _check_stop(run: Any) -> checks.CheckResult:
     """
     with checks._Timer() as timer:
         problems: list[str] = []
+        note = "shutdown response received"
+        try:
+            # This check replaces the base `shutdown`, so it is what asks the server to go.
+            await fake.request("shutdown", {}, timeout=30)
+        except Exception as exc:  # noqa: BLE001 - the socket closing first is normal here
+            note = f"the connection closed before the response arrived ({exc}); the log lines are the gate"
         container = run.container
         alive = container.alive if container is not None else (lambda: False)
         found: dict[str, int | None] = {}
@@ -230,6 +236,7 @@ async def _check_stop(run: Any) -> checks.CheckResult:
         {
             "exitCode": code,
             "lines": found,
+            "shutdownRequest": note,
             "note": (
                 "Rust's exit code is not a shutdown signal: the Unity player segfaults in its own "
                 "teardown on some runs, after saving, unloading and quitting. The lines are the gate."
