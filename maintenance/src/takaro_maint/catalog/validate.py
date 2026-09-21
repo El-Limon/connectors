@@ -114,6 +114,28 @@ def _check_single_default(result: ValidationResult, catalog: Catalog) -> None:
         )
 
 
+def _check_default_platform(result: ValidationResult, catalog: Catalog) -> None:
+    """``defaultPlatform`` is what ``--game`` alone resolves to, so it has to name a real platform."""
+    for game_id, game in sorted(catalog.games.items()):
+        declared = game.default_platform
+        file = _relative(game.path)
+        if declared is None:
+            defaults = {t.platform for t in game.targets if t.is_default}
+            result.add(
+                "default-platform",
+                len(defaults) <= 1,
+                f"{game_id} declares default targets on {sorted(defaults)} and no defaultPlatform",
+                file,
+            )
+            continue
+        result.add(
+            "default-platform",
+            declared in game.platforms,
+            f"{game_id} defaultPlatform={declared} platforms={game.platforms}",
+            file,
+        )
+
+
 def _check_input_kinds(result: ValidationResult, target: Target) -> None:
     file = _relative(target.path)
     for name, spec in target.record.get("inputs", {}).items():
@@ -123,8 +145,8 @@ def _check_input_kinds(result: ValidationResult, target: Target) -> None:
             continue
         schema_name = f"inputs/{kind}.schema.json"
         if not schema.has_schema(schema_name):
-            # The target schema no longer lists the kinds, so this is the only gate on them:
-            # an unknown kind must fail here rather than pass unchecked.
+            # The target schema does not enumerate input kinds, so this is the only gate on
+            # them: an unknown kind must fail here rather than pass unchecked.
             result.add(
                 "input-kind-schema",
                 False,
@@ -399,6 +421,7 @@ def validate_catalog(catalog: Catalog, *, online: bool = False, cache: Path | No
     result = ValidationResult()
     _guarded(result, "game-schema", "catalog", lambda: _check_game(result, catalog))
     _guarded(result, "single-default", "catalog", lambda: _check_single_default(result, catalog))
+    _guarded(result, "default-platform", "catalog", lambda: _check_default_platform(result, catalog))
     per_target = (
         ("target-schema", _check_target_schema),
         ("id-matches-stem", _check_ids),

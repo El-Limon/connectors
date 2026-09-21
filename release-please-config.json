@@ -73,6 +73,15 @@
         { "type": "generic", "path": "mod/src/common.h" }
       ]
     },
+    "games/vein": {
+      "release-type": "simple",
+      "component": "vein",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        { "type": "generic", "path": "mod/src/common.h" },
+        { "type": "json", "path": "sidecar/package.json", "jsonpath": "$.version" }
+      ]
+    },
     "games/terraria": {
       "release-type": "simple",
       "component": "terraria",

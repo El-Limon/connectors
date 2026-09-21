@@ -13,12 +13,13 @@ import sys
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from takaro_maint import paths  # noqa: E402
+from takaro_maint import net, paths, redact  # noqa: E402
 from takaro_maint.cli import main  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -31,8 +32,34 @@ def _isolated_environment(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     monkeypatch.setenv("TAKARO_MAINT_CACHE", str(tmp_path_factory.mktemp("cache")))
     monkeypatch.delenv("GH_TOKEN", raising=False)
     paths.set_repo_root(None)
+    redact.forget()
     yield
     paths.set_repo_root(None)
+    redact.forget()
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+class _LoopbackOnly:
+    """Every byte a test downloads comes from a fake on this host, never from the internet."""
+
+    def __init__(self, inner: net.Transport) -> None:
+        self.inner = inner
+
+    def open(self, url: str, headers: dict[str, str]) -> Any:
+        if urlsplit(url).hostname not in _LOOPBACK_HOSTS:
+            raise RuntimeError(f"a test reached outside its fake upstream: {url}")
+        return self.inner.open(url, headers)
+
+
+@pytest.fixture(autouse=True)
+def _no_public_internet() -> Any:
+    """A test that downloads from the real internet is a bug in the test, not a slow test."""
+    previous = net.get_transport()
+    net.set_transport(_LoopbackOnly(previous))
+    yield
+    net.set_transport(previous)
 
 
 @pytest.fixture
@@ -266,8 +293,8 @@ def wired(catalog_copy: Path) -> Any:
     """
     from fake_upstream import FakeUpstream
 
-    target_files = sorted((catalog_copy / "catalog/minecraft/targets").glob("*.json"))
-    assert target_files, "the copied catalog has no minecraft targets"
+    target_files = sorted((catalog_copy / "catalog").glob("*/targets/*.json"))
+    assert target_files, "the copied catalog has no targets"
 
     with FakeUpstream() as upstream:
         repinned = 0
@@ -281,6 +308,6 @@ def wired(catalog_copy: Path) -> Any:
             # No stand-ins for this one: drop it from the copy rather than serve it half-pinned.
             target_file.unlink()
 
-        assert repinned, "no minecraft target could be re-pinned at the fake upstream"
+        assert repinned, "no target could be re-pinned at the fake upstream"
         point_at(catalog_copy, upstream.base_url)
         yield Wired(catalog_copy, upstream)

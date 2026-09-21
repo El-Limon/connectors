@@ -109,7 +109,7 @@ def _complete(root: Path) -> dict[str, Any] | None:
     if not marker.is_file():
         return None
     try:
-        return json.loads(marker.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+        return json.loads(marker.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
 

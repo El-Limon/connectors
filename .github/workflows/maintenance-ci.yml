@@ -46,7 +46,9 @@ jobs:
         run: uv run --frozen --project maintenance ruff format --check maintenance
 
       - name: Types
-        run: uv run --frozen --project maintenance mypy maintenance/src
+        # mypy reads its config from the working directory only; without this the strictness in
+        # maintenance/pyproject.toml never applies and the step passes on anything.
+        run: uv run --frozen --project maintenance mypy --config-file maintenance/pyproject.toml maintenance/src
 
       - name: Tests
         run: uv run --frozen --project maintenance pytest -q maintenance

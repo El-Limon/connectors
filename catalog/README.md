@@ -132,7 +132,9 @@ never reuses an earlier target's downloads.
    `support.evidence`.
 
 Exactly one target per (game, platform) carries `default: true`. Zero or two is an error, because
-a command with no `--target` would otherwise pick silently.
+a command with no `--target` would otherwise pick silently. A game with several platforms also
+names a `defaultPlatform` in its `game.json`: that is the platform `--game` alone resolves to,
+and it has to be one of the game's `platforms`. `--platform` still takes any platform's default.
 
 ## Retiring a target
 

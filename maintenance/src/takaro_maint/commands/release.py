@@ -48,7 +48,7 @@ def _commit_time(repo_root: Path, commit: str) -> int | None:
     return int(value) if result.returncode == 0 and value.isdigit() else None
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("release", help="assemble, publish and verify a connector's complete release")
     parser.set_defaults(handler=None, op="release")
     subcommands = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
@@ -66,7 +66,7 @@ def _add_github_arguments(parser: argparse.ArgumentParser) -> None:
 # -- assemble ----------------------------------------------------------------------------
 
 
-def _register_assemble(subcommands: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def _register_assemble(subcommands: argparse._SubParsersAction) -> None:
     parser = subcommands.add_parser("assemble", help="turn per-target builds and reports into one release directory")
     parser.add_argument("--connector", required=True, help="connector id, e.g. minecraft")
     parser.add_argument("--version", required=True, help="connector version being released")
@@ -146,7 +146,7 @@ def _assemble(args: Any) -> int:
 # -- publish -----------------------------------------------------------------------------
 
 
-def _register_publish(subcommands: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def _register_publish(subcommands: argparse._SubParsersAction) -> None:
     parser = subcommands.add_parser("publish", help="upload an assembled set and finalise the release")
     parser.add_argument("--connector", required=True)
     parser.add_argument("--channel", required=True, choices=list(channels.CHANNELS))
@@ -278,7 +278,7 @@ def _publish(args: Any) -> int:
 # -- verify ------------------------------------------------------------------------------
 
 
-def _register_verify(subcommands: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def _register_verify(subcommands: argparse._SubParsersAction) -> None:
     parser = subcommands.add_parser("verify", help="re-read a release from GitHub and prove its set is complete")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--connector", default=None, help="narrows which compatibility record is expected")

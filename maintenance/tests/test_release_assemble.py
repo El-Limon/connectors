@@ -24,6 +24,14 @@ from takaro_maint.publish.manifest import artifact_row, write_manifest, write_me
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERSION = "0.1.1"
+
+# The old, unversioned-per-target names Minecraft released under before the catalog. They stay
+# on the release for two stable versions (root README), one per platform's default target.
+LEGACY_ALIASES = {
+    f"takaro-fabric-{VERSION}.jar": "fabric-26.2",
+    f"takaro-neoforge-{VERSION}.jar": "neoforge-1.21.11",
+    f"takaro-paper-{VERSION}.jar": "paper-1.21.11",
+}
 CONNECTOR = "minecraft"
 REPO = "o/r"
 
@@ -237,6 +245,7 @@ def test_a_complete_catalog_set_assembles_checksums_record_and_reports(
     expected = (
         {inputs.targets[t]["file"] for t in ids}
         | {f"takaro-{CONNECTOR}-{VERSION}.verify-{t}.json" for t in ids}
+        | set(LEGACY_ALIASES)
         | {f"takaro-{CONNECTOR}-{VERSION}.compat.json", "SHA256SUMS"}
     )
     assert {path.name for path in out.iterdir()} == expected
@@ -418,6 +427,23 @@ def test_a_report_for_another_revision_exits_seven(run: Any, inputs: Inputs, tmp
     assert "e" * 40 in payload["error"]
 
 
+def test_a_report_from_a_dirty_tree_is_refused_for_stable_and_recorded_with_allow_dirty(
+    run: Any, inputs: Inputs, tmp_path: Path
+) -> None:
+    inputs.rewrite_report("paper-1.21.11", source={"repo": REPO, "revision": inputs.commit, "dirty": True})
+
+    code, payload, _ = assemble(run, inputs, tmp_path / "stable", "--source-commit", inputs.commit)
+    assert code == 7
+    assert "paper-1.21.11" in payload["error"]
+    assert "dirty" in payload["error"]
+
+    out = tmp_path / "rolling"
+    code, _, err = assemble(run, inputs, out, "--allow-dirty", "--source-commit", inputs.commit, channel="rolling")
+    assert code == 0, err
+    record = json.loads((out / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
+    assert record["source"]["dirty"] is True
+
+
 def test_a_gameplay_requirement_cannot_be_satisfied(run: Any, inputs: Inputs, tmp_path: Path) -> None:
     record_path = inputs.root / "catalog" / CONNECTOR / "targets" / "fabric-26.2.json"
     record = json.loads(record_path.read_text())
@@ -507,27 +533,37 @@ def test_assemble_ignores_the_working_directory_and_ci_variables(inputs: Inputs,
 
 # -- legacy connectors -------------------------------------------------------------------
 
+#: A connector the catalog has no record for. Legacy mode is about that absence, not about any
+#: one connector, so this deliberately names no real game: every name that is one acquires a
+#: catalog record eventually, and the test below would fail on the day it does.
+LEGACY_CONNECTOR = "uncatalogued-connector"
+
 
 def test_legacy_mode_takes_the_given_files_and_writes_a_null_catalog_record(
     run: Any, catalog_copy: Path, tmp_path: Path
 ) -> None:
+    assert not (catalog_copy / "catalog" / LEGACY_CONNECTOR).exists(), (
+        f"{LEGACY_CONNECTOR} has a catalog record, so this no longer exercises legacy mode"
+    )
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "takaro-valheim-plugin.zip").write_bytes(b"plugin")
-    (dist / "takaro-valheim-companion.zip").write_bytes(b"companion")
+    plugin = dist / f"takaro-{LEGACY_CONNECTOR}-plugin.zip"
+    companion = dist / f"takaro-{LEGACY_CONNECTOR}-companion.zip"
+    plugin.write_bytes(b"plugin")
+    companion.write_bytes(b"companion")
     out = tmp_path / "assembled"
 
     code, payload, err = run(
         "release",
         "assemble",
         "--connector",
-        "valheim",
+        LEGACY_CONNECTOR,
         "--version",
         "3.0.3",
         "--channel",
         "rolling",
         "--tag",
-        "valheim-dev",
+        f"{LEGACY_CONNECTOR}-dev",
         "--dist",
         str(dist),
         "--out",
@@ -537,23 +573,23 @@ def test_legacy_mode_takes_the_given_files_and_writes_a_null_catalog_record(
         "--source-commit",
         "f" * 40,
         "--allow-dirty",
-        str(dist / "takaro-valheim-plugin.zip"),
-        str(dist / "takaro-valheim-companion.zip"),
+        str(plugin),
+        str(companion),
         repo=catalog_copy,
     )
 
     assert code == 0, err
     assert payload["mode"] == "legacy"
-    record = json.loads((out / "takaro-valheim-3.0.3.compat.json").read_text())
+    record = json.loads((out / f"takaro-{LEGACY_CONNECTOR}-3.0.3.compat.json").read_text())
     assert record["catalog"] is None
     assert record["targets"] == {}
     assert record["aliases"] == {}
     assert {asset["kind"] for asset in record["assets"]} == {"artifact"}
     assert sorted(path.name for path in out.iterdir()) == [
         "SHA256SUMS",
-        "takaro-valheim-3.0.3.compat.json",
-        "takaro-valheim-companion.zip",
-        "takaro-valheim-plugin.zip",
+        f"takaro-{LEGACY_CONNECTOR}-3.0.3.compat.json",
+        f"takaro-{LEGACY_CONNECTOR}-companion.zip",
+        f"takaro-{LEGACY_CONNECTOR}-plugin.zip",
     ]
 
 
@@ -661,3 +697,19 @@ def _set_aliases(inputs: Inputs, aliases: dict[str, str]) -> None:
     game = json.loads(game_file.read_text())
     game["legacyAssetAliases"] = aliases
     game_file.write_text(json.dumps(game, indent=2))
+
+
+def test_each_platforms_default_target_ships_under_its_legacy_asset_name(
+    assembled: tuple[Path, dict[str, Any], Inputs],
+) -> None:
+    """Existing download links name the platform, not the server build; they keep resolving."""
+    out, payload, inputs = assembled
+    record = json.loads((out / f"takaro-{CONNECTOR}-{VERSION}.compat.json").read_text())
+
+    assert payload["aliasesSkipped"] == []
+    assert set(payload["aliases"]) == set(LEGACY_ALIASES)
+    for alias_name, target_id in LEGACY_ALIASES.items():
+        source = inputs.targets[target_id]["file"]
+        assert (out / alias_name).read_bytes() == (out / source).read_bytes()
+        assert payload["aliases"][alias_name]["of"] == source
+        assert record["aliases"][alias_name]["target"] == target_id

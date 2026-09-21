@@ -9,13 +9,17 @@ bytes instead of three scripts that drift.
 ```
 maintenance/bin/takaro-maint targets list
 maintenance/bin/takaro-maint targets resolve --game minecraft --target fabric-26.2
-maintenance/bin/takaro-maint install --game minecraft --dest /srv/minecraft
-maintenance/bin/takaro-maint build --game minecraft --version 0.1.1 --out dist
-maintenance/bin/takaro-maint deploy --game minecraft --dest /srv/minecraft --from dist/build-manifest.json
-maintenance/bin/takaro-maint verify --game minecraft --artifacts dist --out reports
+maintenance/bin/takaro-maint install --game minecraft --target fabric-26.2 --dest /srv/minecraft
+maintenance/bin/takaro-maint build --game minecraft --target fabric-26.2 --version 0.1.1 --out dist
+maintenance/bin/takaro-maint deploy --game minecraft --target fabric-26.2 --dest /srv/minecraft --from dist/build-manifest.json
+maintenance/bin/takaro-maint verify --game minecraft --target fabric-26.2 --artifacts dist --out reports
 ```
 
 `just maint <args>` is the same thing from the repository root.
+
+A game has one default target per platform (`catalog/README.md`). `--target` names one exactly,
+`--platform fabric|paper|neoforge` takes that platform's default, and `--game` alone takes the
+default of the game's `defaultPlatform` (`fabric` for Minecraft).
 
 ## Requirements
 
@@ -112,3 +116,4 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [Steam discovery](docs/steam-discovery.md) — reading Steam branch heads and depot manifests through `app_info_print`.
 - [Adding a game](docs/adding-a-game.md) — the provider contract: what a new connector adds to the catalog and what it never touches.
 - [Releases](docs/release.md) — the release channels, the asset names, the compatibility record and how a release is recovered.
+- [Lifecycle](docs/lifecycle.md) — how `reconcile` and `run` move a maintenance issue from detection to a verified, published release.

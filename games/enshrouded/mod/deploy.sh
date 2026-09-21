@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Deploy build/dbghelp.dll to the dev-servers Enshrouded container.
-# The DLL is bind-mounted read-only from _data/enshrouded-plugin/dbghelp.dll (see compose/enshrouded.yml),
-# so SteamCMD updates of /opt/enshrouded/server cannot overwrite it. The server holds the DLL open, so
-# the container is stopped (graceful save) before the file is replaced in place (same inode).
+# Deploying the plugin by hand is gone: an installed Enshrouded server is described by its
+# ledger, and the DLL that belongs next to it is the one the catalog target names. Build
+# both components for the resolved target and let `takaro-maint deploy` place them, so what
+# ends up next to enshrouded_server.exe is recorded rather than remembered.
 set -euo pipefail
-cd "$(dirname "$0")"
-DEV=${DEV_SERVERS:-$(cd ../../.. && pwd)/dev-servers}
-COMPOSE=(docker compose --env-file "$DEV/.env" -f "$DEV/compose/enshrouded.yml")
-"${COMPOSE[@]}" stop
-cp build/dbghelp.dll "$DEV/_data/enshrouded-plugin/dbghelp.dll"
-"${COMPOSE[@]}" start
-docker exec takaro-dev-enshrouded md5sum /opt/enshrouded/server/dbghelp.dll
-md5sum build/dbghelp.dll
+cat >&2 <<'MSG'
+mod/deploy.sh has been replaced.
+
+  maintenance/bin/takaro-maint build  --game enshrouded --version <v> --out <dir>
+  maintenance/bin/takaro-maint deploy --game enshrouded --dest <server dir> --from <dir>/build-manifest.json
+
+Stop the game container first: a running server holds dbghelp.dll open.
+See games/enshrouded/DEVELOPMENT.md.
+MSG
+exit 2

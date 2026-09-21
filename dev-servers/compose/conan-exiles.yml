@@ -3,9 +3,15 @@ name: takaro-dev-conan-exiles
 
 services:
   conan-exiles:
-    build:
-      context: ../images/conan-exiles
+    # Resolved from the catalog into _data/.targets/conan-exiles.env by install.sh. The
+    # pinned server is a self-contained UE5 Linux build that needs only the base image's
+    # glibc and libstdc++, so it runs in the same image as the bridge and is started by
+    # the launcher the depot ships. No Steam client, no updater: the bytes are the
+    # ledger's, written once by `takaro-maint install`.
+    image: "${CONAN_EXILES_IMAGE:-target-not-resolved}"
     container_name: takaro-dev-conan-exiles
+    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
+    entrypoint: ["/bin/bash", "/takaro/entrypoint.sh"]
     ports:
       # Shifted off Conan's 7777/7778 defaults so no row in the dev-servers
       # port map is ambiguous next to Terraria's 7777/tcp.
@@ -14,17 +20,21 @@ services:
       - "27015:27015/udp"
       - "127.0.0.1:25580:25575"
     environment:
+      HOME: /conan/.takaro/home
       RCON_PASSWORD: "${RCON_PASSWORD:?set RCON_PASSWORD in dev-servers/.env}"
       CONAN_GAME_PORT: "7777"
       CONAN_QUERY_PORT: "27015"
       CONAN_RCON_PORT: "25575"
     volumes:
       - ../_data/conan-exiles/server:/conan
+      # Bind-mounted rather than baked: the image is the catalog's, not ours.
+      - ../images/conan-exiles/entrypoint.sh:/takaro/entrypoint.sh:ro
     restart: unless-stopped
 
   conan-bridge:
-    image: node:22-slim
+    image: "${CONAN_EXILES_TOOLCHAIN:-target-not-resolved}"
     container_name: takaro-dev-conan-bridge
+    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
     working_dir: /bridge/app
     depends_on:
       - conan-exiles
@@ -33,18 +43,18 @@ services:
     environment:
       BRIDGE_CONFIG: "/bridge/config/TakaroConfig.txt"
       NODE_ENV: "production"
+      HOME: /tmp
+      npm_config_cache: /tmp/npm-cache
     volumes:
-      # The connector itself, built on the host by deploy-connector.sh
-      # (npm ci && npm run build). Read-only: the container never writes here.
-      - ../../conan-exiles:/bridge/app:ro
-      # The sidecar's logger does mkdirSync("logs") in its working directory,
-      # which fails against the read-only source mount above. Give it a writable
-      # path so the source can stay read-only.
-      - ../_data/conan-exiles/logs:/bridge/app/logs
-      # TakaroConfig.txt (contains the registration token) is rendered by
-      # install.sh and lives only under _data/.
-      - ../_data/conan-exiles/bridge:/bridge/config
+      # The deployed artifact, unpacked by `takaro-maint deploy` (never the source tree).
+      # Writable: the logger creates logs/ in its working directory.
+      - ../_data/conan-exiles/server/TakaroBridge/TakaroConanExiles:/bridge/app
+      # TakaroConfig.txt (contains the registration token) is rendered by install.sh
+      # and lives only under _data/.
+      - ../_data/conan-exiles/bridge:/bridge/config:ro
       # Log tailing for chat/log events; matches logFiles in TakaroConfig.txt.
       - ../_data/conan-exiles/server/ConanSandbox/Saved/Logs:/bridge/logs:ro
-    command: ["node", "dist/index.js"]
+    # The operator's own install steps, from the release README: production dependencies
+    # out of the lockfile, then what `npm start` runs.
+    command: ["sh", "-c", "npm ci --omit=dev --ignore-scripts --no-audit --no-fund && exec node dist/index.js"]
     restart: unless-stopped

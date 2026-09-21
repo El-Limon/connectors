@@ -6,6 +6,8 @@ The results below were proven on **Fabric / Minecraft 26.2 / Java 25**.
 
 ## Install
 
+Download the latest release: https://takaro.io/connectors/minecraft
+
 ### 1. Before you start
 
 You need:
@@ -46,7 +48,9 @@ Download the jar for your platform from the latest `minecraft-vX.Y.Z` release:
 
 Every jar is named after the server build it was made for. Releases before the next
 `minecraft-v*` used `takaro-fabric-<version>.jar`, `takaro-paper-<version>.jar` and
-`takaro-neoforge-<version>.jar`; those are the same connectors under their old names.
+`takaro-neoforge-<version>.jar`. Those names keep working: for two stable releases each one
+also ships as a byte-identical copy of that platform's default target (Fabric 26.2,
+Paper 1.21.11, NeoForge 1.21.11), so existing links and scripts do not have to change yet.
 
 Direct link pattern:
 `https://github.com/gettakaro/connectors/releases/download/minecraft-v<version>/<file>`

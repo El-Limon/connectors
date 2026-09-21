@@ -1,0 +1,9 @@
+# The debug plugin build: `DEBUG_CORRUPT_SIG=<signature> ./mod/build.sh`, which is what
+# `takaro-maint verify --negative` produces to prove the degrade self-check. The release
+# build's mod/build/ is covered by the repository-wide `build/` rule; this one is not.
+mod/build-debug/
+
+# mod/tests/run.sh runs the plugin's host tests against a small windows.h shim, which takes
+# the plugin's `<server>\takaro\plugin.log` literally and drops a file with backslashes in
+# its name into the working directory. Harmless, and not something to track.
+mod/srv\\takaro\\plugin.log

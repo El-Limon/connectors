@@ -1130,6 +1130,29 @@ const ItemDef* FindItemByCode(const std::string& code) {
     return nullptr;
 }
 
+// The catalogue has to answer with display names, not dev codes. The dedicated server ships
+// no localisation, so the best name available is the code opened up: underscores become
+// spaces and a run of words glued together in camel case is split, because three entity
+// codes (AutomatedPlayer, FishingFloat, TreasureContainer) carry no underscore at all and
+// would otherwise come back byte-identical to their code. A digit is left attached to the
+// word before it, so tier codes stay "T1" rather than becoming "T 1".
+//
+// EntityDef and LocationDef carry no name field, so theirs is derived here. Items keep the
+// name gen_gamedata.py baked into ItemDef::name, which is already underscore-opened and
+// never equals its code; renaming 3609 catalogued items is a change for its own ticket.
+static std::string ReadableName(const char* code) {
+    std::string name;
+    char previous = 0;
+    for (const char* c = code ? code : ""; *c; c++) {
+        bool splits = (*c >= 'A' && *c <= 'Z') &&
+                      ((previous >= 'a' && previous <= 'z') || (previous >= '0' && previous <= '9'));
+        if (splits) name += ' ';
+        name += (*c == '_') ? ' ' : *c;
+        previous = *c;
+    }
+    return name;
+}
+
 const std::string& ItemsJson() {
     static std::string s;
     static SrwLock l;
@@ -1153,7 +1176,7 @@ const std::string& EntitiesJson() {
         s = "[";
         for (size_t i = 0; i < kEntityCount; i++)
             s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(kEntities[i].code) + ",\"name\":" +
-                 JsonStr(kEntities[i].code) + ",\"type\":" + JsonStr(kEntities[i].type) + ",\"description\":" +
+                 JsonStr(ReadableName(kEntities[i].code)) + ",\"type\":" + JsonStr(kEntities[i].type) + ",\"description\":" +
                  JsonStr(std::string("faction ") + kEntities[i].faction + ", family " + kEntities[i].family) + "}";
         s += "]";
     }
@@ -1170,7 +1193,8 @@ const std::string& LocationsJson() {
         for (size_t i = 0; i < kLocationCount; i++) {
             auto& x = kLocations[i];
             snprintf(b, sizeof b, "\"position\":{\"x\":%.2f,\"y\":%.2f,\"z\":%.2f}", x.x, x.y, x.z);
-            s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(x.code) + ",\"name\":" + JsonStr(x.code) + ",\"kind\":" +
+            s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(x.code) + ",\"name\":" + JsonStr(ReadableName(x.code)) +
+                 ",\"kind\":" +
                  JsonStr(x.kind) + (x.spawnType[0] ? ",\"spawnType\":" + JsonStr(x.spawnType) : std::string()) + "," + b + "}";
         }
         s += "]";

@@ -30,7 +30,7 @@ SCHEMA = "takaro-maint-scan/1"
 COVERING_STATUSES = ("candidate", "maintained")
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "scan",
         help="observe watched sources and reconcile new releases into maintenance issues",

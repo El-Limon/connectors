@@ -245,3 +245,25 @@ def test_ledger_check_fails_when_the_deployed_artifact_is_swapped(
 
     assert code == 7
     assert any("artifact" in reason for reason in payload["reasons"])
+
+
+def test_an_interrupted_copy_leaves_the_previous_connector_in_place(
+    run: Any, wired: Any, installed: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new file is staged before the old ones go, so a failed copy is not a server with no mod."""
+    mods = installed / "mods"
+    previous = mods / "takaro-minecraft-mod-fabric-26.2-0.0.9.jar"
+    previous.write_bytes(b"an older build")
+    out = build_dir(run, wired, tmp_path)
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("takaro_maint.commands.deploy.shutil.copy2", explode)
+
+    code, _, err = deploy(run, wired, installed, out)
+
+    assert code != 0, err
+    assert previous.read_bytes() == b"an older build"
+    assert not (mods / "takaro-minecraft-mod-fabric-26.2-0.1.1.jar").exists()
+    assert not list(mods.glob("*.tmp"))

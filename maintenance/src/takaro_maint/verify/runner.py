@@ -175,6 +175,12 @@ class Container:
         subprocess.run([*docker_command(), "rm", "-f", self.name], capture_output=True, check=False)
 
 
+#: Label keys the harness sets itself: the run id is what `--cleanup-orphans` and the CI
+#: `docker rm` step filter on, the TTL is the abandoned-container safety net. Docker keeps the
+#: last value of a repeated key, so a caller-supplied one would silently replace them.
+RESERVED_LABELS: frozenset[str] = frozenset({"tm.run", "tm.ttl"})
+
+
 def cleanup_orphans(run_id: str) -> list[str]:
     result = subprocess.run(
         [*docker_command(), "ps", "-aq", "--filter", f"label=tm.run={run_id}"],
@@ -225,15 +231,21 @@ class TargetRun:
         self.containers: list[Container] = []
         self.extra_logs: list[Path] = []
         self.results: list[base_checks.CheckResult] = []
+        self._cleaned = False
 
     # -- setup ----------------------------------------------------------------
     def _run_command(self, name: str, argv: list[str]) -> None:
-        """Run a sub-command, keeping its JSON out of this run's single stdout document."""
+        """Run a sub-command, keeping its JSON out of this run's single stdout document.
+
+        The sub-command parses its own arguments, so the repo root is passed on explicitly:
+        without it the process-wide root is reset and the target is resolved from a different
+        catalog than the one this run was asked about.
+        """
         from ..cli import main as cli_main
 
         record = self.out / f"{name}.json"
         with record.open("w", encoding="utf-8") as handle, contextlib.redirect_stdout(handle):
-            code = cli_main(["--quiet", *argv])
+            code = cli_main(["--quiet", "--repo-root", str(paths.repo_root()), *argv])
         if code != 0:
             raise UpstreamUnavailable(f"{name} into the verification data dir exited {code}; see {record.name}")
 
@@ -277,7 +289,7 @@ class TargetRun:
 
     def ready_line(self) -> re.Pattern[str]:
         """The log line that says this game's server finished booting."""
-        return getattr(self.hooks, "READY_LINE", base_checks.DONE_LINE)  # type: ignore[no-any-return]
+        return getattr(self.hooks, "READY_LINE", base_checks.DONE_LINE)
 
     def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
         takaro_env = self.takaro_env(ws_url, extra_env)
@@ -312,6 +324,12 @@ class TargetRun:
         for mount in self.container_mounts():
             argv += ["-v", mount]
         argv += [self.resolved["containerRef"]]
+        # Some servers take settings the image exposes no environment variable for -- a world
+        # name on the command line, say -- so a game may append its own arguments after the
+        # image reference. Games that need none ship no hook and get the image's own Cmd.
+        command = getattr(self.adapter, "container_command", None)
+        if command is not None:
+            argv += [str(part) for part in command(self.resolved, self.data_dir)]
         self.container_name = name
         return argv
 
@@ -349,6 +367,11 @@ class TargetRun:
         bindings = container.inspect_port_bindings()
         with self.docker_log.open("a", encoding="utf-8") as handle:
             handle.write(f"HostConfig.PortBindings={bindings}\n")
+        # Anything that can only exist once the container does -- a sidecar joining its network
+        # namespace, say -- is started here, while `before_boot` still runs against the disk.
+        after_boot = getattr(self.hooks, "after_boot", None)
+        if after_boot is not None:
+            after_boot(self, container, self.takaro_env(ws_url, extra_env))
         return container
 
     # -- checks ---------------------------------------------------------------
@@ -364,6 +387,14 @@ class TargetRun:
 
     async def run(self) -> dict[str, Any]:
         started_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        try:
+            return await self._run(started_at)
+        finally:
+            # Install, deploy, the hosted dispatch and the fake's start run before the paths
+            # below take over their own cleanup; a failure there must not leave the data dir.
+            self.cleanup()
+
+    async def _run(self, started_at: str) -> dict[str, Any]:
         manifest = self.install_and_deploy()
         ledger = read_ledger(self.data_dir)
         assert ledger is not None
@@ -498,6 +529,11 @@ class TargetRun:
         return self.adapter.parse_runtime_identity(found[1]) or {}
 
     def cleanup(self) -> None:
+        # Called from the local path's `finally`, from the hosted hook's, from the signal handler
+        # and from `run()` itself; only the first call does anything.
+        if self._cleaned:
+            return
+        self._cleaned = True
         failed = any(result.status == "fail" for result in self.results)
         for container in self.containers:
             container.remove()

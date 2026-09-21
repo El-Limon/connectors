@@ -25,18 +25,25 @@ You need:
 
 ### 2. Download the plugin
 
-From the connector's release, download either name — they are the same bytes:
+Download the latest release: https://takaro.io/connectors/rust
+
+From the latest `rust-vX.Y.Z` release on the releases page
+
+> https://github.com/gettakaro/connectors/releases
+
+download either name — they are the same bytes:
 
 - **`takaro-rust-plugin-carbon-25353106-<version>.cs`** — the build's own name, which says exactly
   which Rust build and which Carbon it was verified against.
-- **`TakaroConnector.cs`** — the same file under the name the framework loads.
+- **`TakaroConnector.cs`** — the same file under the name the framework loads. Direct link pattern:
+  `https://github.com/gettakaro/connectors/releases/download/rust-v<version>/TakaroConnector.cs`
 
 `SHA256SUMS` is published beside them if you want to check the download.
 
-If there is no tagged `rust-v*` release yet, take the rolling pre-release from
-<https://github.com/gettakaro/connectors/releases/tag/rust-dev> (rebuilt on every push to `main`),
-or copy `games/rust/mod/TakaroConnector.cs` straight out of the repository. There is nothing to
-compile — Carbon and Oxide compile `.cs` plugins at runtime.
+Use `rust-v0.0.5` or newer. Do not use the `rust-dev` pre-release; that is an untested rolling
+build. Or copy the file straight out of the repository: `games/rust/mod/TakaroConnector.cs`.
+
+There is nothing to compile — Carbon and Oxide compile `.cs` plugins at runtime.
 
 ### 3. Copy it into place
 

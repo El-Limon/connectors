@@ -8,8 +8,8 @@
   "support": {
     "status": "maintained",
     "since": "2026-09-14",
-    "evidence": ["games/minecraft/README.md (What works, what doesn't — verified 2026-09-14 on Fabric 26.2 / Java 25)"],
-    "notes": "Connector 0.1.x was proven end to end on this target."
+    "evidence": ["games/minecraft/README.md (What works, what doesn't — verified 2026-09-14 on Fabric 26.2 / Java 25)", "takaro-maint gameplay 2026-09-21: recorded real-client gameplay through Takaro on this target - join, chat, inventory read, item grant, teleport and leave (gettakaro/connectors#152, gettakaro/connectors#174)"],
+    "notes": "Connector 0.1.x was proven end to end on this target. Real-client gameplay (join, chat, inventory read, item grant, teleport, leave) is recorded for this target."
   },
   "inputs": {
     "game": {

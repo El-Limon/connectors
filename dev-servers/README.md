@@ -23,6 +23,7 @@ for connector, Takaro API and Takaro module testing with a handful of human play
 | Valheim | `valheim` | Takaro BepInEx server plugin (WebSocket) | 4 GB | 4 GB |
 | DayZ | `dayz` | `@TakaroIntegration` Enforce mod → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 6 GB | 4 GB² |
 | RuneScape: Dragonwilds | `dragonwilds` | `libtakaro-dragonwilds.so` `LD_PRELOAD` plugin → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 4 GB | 8 GB³ |
+| VEIN | `vein` | `libtakaro-vein.so` `LD_PRELOAD` plugin → loopback HTTP → Takaro TypeScript sidecar (WebSocket) | 4 GB | 20 GB |
 | Rust | `rust` | `TakaroConnector.cs` Carbon plugin (WebSocket) | 8 GB | 12 GB |
 | 7 Days to Die | `7d2d` | Takaro mod (WebSocket) | 8 GB | 32 GB¹ |
 | Project Zomboid | `zomboid` | Takaro `-javaagent` inside the PZ server JVM (WebSocket) | 8 GB | 16 GB |
@@ -87,7 +88,47 @@ just dev-logs minecraft-paper -f      # follow its logs
 just dev-stop minecraft-paper         # stop one game
 just dev-stop                         # stop everything
 just dev-validate                     # docker compose config + port-collision check
+just dev-focus status                 # which games this box is meant to be running (see "Rig focus")
 ```
+
+
+## Rig focus
+
+This box cannot run every game at once, and idle rigs quietly eat RAM, disk and
+attention. `focus.sh` makes the intent explicit: you declare the games that have
+an active campaign, and `apply` makes the running set match that declaration.
+
+```bash
+just dev-focus set dragonwilds vein --note "vein campaign"   # declare the active set
+just dev-focus apply --dry-run                               # see exactly what would change
+just dev-focus apply                                         # stop the rest, start what is missing
+just dev-focus status                                        # declared vs running (exit 1 on drift)
+just dev-focus add terraria                                  # widen the set
+just dev-focus release vein                                  # campaign over: drop it and stop it
+```
+
+The active set lives in `dev-servers/_data/.focus` (one `<game> since=<UTC> <note>`
+line per game, not tracked in git). `apply` is always explicit — there is no timer.
+
+What `apply` does, in order:
+
+1. Refuses an empty active set unless you pass `--allow-empty`.
+2. Iterates **only** the games in this repo's registry. Everything else running on
+   the docker host — a private server, an unregistered rig — is printed under
+   `unmanaged (never touched)` and never addressed: `ds_compose` can only target a
+   compose file the registry names.
+3. Skips (and, without `--force`, refuses to continue past) any game whose rig lock
+   `<dir>/<game>-rig.lock` looks live — flock held, a live `pid=`, or an mtime
+   younger than `DEV_SERVERS_FOCUS_IDLE_HOURS`. A `live` lock means another campaign
+   is driving that rig; talk to it rather than forcing.
+4. Writes an install marker for any running-but-unmarked game before stopping it, so
+   `start.sh` can bring it back.
+5. Stops in one `stop.sh` call (data is never removed) and starts the missing games
+   with `start.sh` **without** `--force`, so the RAM budget gate stays authoritative.
+
+Lock directories come from `DEV_SERVERS_RIG_LOCK_DIRS` (blank = `$HOME/*/.runtime`).
+
+
 
 After editing connector code, rebuild and redeploy without a reinstall:
 
@@ -183,6 +224,7 @@ bind to `127.0.0.1` only** — reach them over an SSH tunnel or a private VPN, e
 | DayZ | 2302-2306/udp, 27116/udp (Steam query; 27016 inside the container) | 2310 BattlEye RCON, 8088 sidecar HTTP (inside the game netns only) |
 | Terraria | 7777/tcp | 7878 TShock REST |
 | RuneScape: Dragonwilds | 7797/udp | 18890 plugin HTTP, 18891 sidecar health — both inside the game netns only, never published |
+| VEIN | 7807/udp + 7807/tcp game, 27017/udp Steam query | 8080 built-in HTTP API, 18890 plugin HTTP, 18891 sidecar health — all inside the game netns only, never published |
 | Conan Exiles | 7787/udp, 7788/udp, 27015/udp | 25580 RCON, 3010 sidecar HTTP |
 | Palworld | 8211/udp, 27016/udp | 8212 REST, 25581 RCON, 3001 bridge HTTP |
 
