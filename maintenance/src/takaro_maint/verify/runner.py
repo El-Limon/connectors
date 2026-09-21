@@ -224,6 +224,7 @@ class TargetRun:
         self.containers: list[Container] = []
         self.extra_logs: list[Path] = []
         self.results: list[base_checks.CheckResult] = []
+        self._cleaned = False
 
     # -- setup ----------------------------------------------------------------
     def _run_command(self, name: str, argv: list[str]) -> None:
@@ -346,6 +347,14 @@ class TargetRun:
 
     async def run(self) -> dict[str, Any]:
         started_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        try:
+            return await self._run(started_at)
+        finally:
+            # Install, deploy, the hosted dispatch and the fake's start run before the paths
+            # below take over their own cleanup; a failure there must not leave the data dir.
+            self.cleanup()
+
+    async def _run(self, started_at: str) -> dict[str, Any]:
         manifest = self.install_and_deploy()
         ledger = read_ledger(self.data_dir)
         assert ledger is not None
@@ -479,6 +488,11 @@ class TargetRun:
         return self.adapter.parse_runtime_identity(found[1]) or {}
 
     def cleanup(self) -> None:
+        # Called from the local path's `finally`, from the hosted hook's, from the signal handler
+        # and from `run()` itself; only the first call does anything.
+        if self._cleaned:
+            return
+        self._cleaned = True
         failed = any(result.status == "fail" for result in self.results)
         for container in self.containers:
             container.remove()

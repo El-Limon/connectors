@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -440,6 +441,35 @@ def test_the_container_is_always_removed(run: Any, wired: Any, tmp_path: Path, d
     # `rm` means the container is gone, not merely that `rm` was called.
     pid = int((docker_stub / "takaro-verify-minecraft-fabric-26.2-t1" / "pid").read_text().strip())
     assert process_is_gone(pid)
+
+
+def test_a_failed_deploy_leaves_no_data_directory_behind(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    artifacts = artifacts_for(run, wired, tmp_path)
+    next(artifacts.glob("*.jar")).unlink()  # the manifest still names it, so deploy fails
+
+    code, payload, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(tmp_path / "reports"),
+        "--run-id",
+        "t1",
+        repo=wired.root,
+    )
+
+    assert code != 0
+    assert "deploy" in payload["error"]
+    assert list(scratch.glob("takaro-verify-*")) == []
+    assert not (docker_stub / "argv.jsonl").exists()
 
 
 def test_a_failing_check_exits_eight_and_still_writes_a_report(
