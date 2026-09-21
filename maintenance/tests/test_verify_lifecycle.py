@@ -626,6 +626,41 @@ def test_hosted_retained_files_carry_no_ids_hosts_or_tokens(
     assert registration["detail"]["identity"].startswith(IDENTITY_PREFIX)
 
 
+def test_a_hosted_run_that_dies_still_redacts_the_files_it_keeps(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing about the redaction is conditional on the run reaching its report.
+
+    A boot failure, a docker error or an interrupt leaves the same server.log behind, and
+    that is the file that gets copied into evidence.
+    """
+    from takaro_maint.games.minecraft import verify as hooks
+
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+    gameserver_id = str(uuid.uuid4())
+
+    with hosted_takaro(monkeypatch, tmp_path / "ws.log"):
+        host = os.environ["TAKARO_HOST"]
+        token = os.environ["TAKARO_REGISTRATION_TOKEN"]
+
+        async def die_after_logging(target_run: Any, _alive: Any) -> Any:
+            # What the log holds by the time a hosted run can still fall over.
+            with target_run.server_log.open("a", encoding="utf-8") as handle:
+                handle.write(f"[Server thread/INFO]: {host} accepted {gameserver_id} with {token}\n")
+            raise RuntimeError("docker went away mid-run")
+
+        monkeypatch.setattr(hooks, "_hosted_identify", die_after_logging)
+        code, payload, _ = verify(run, wired, artifacts, out, "--takaro", "hosted")
+
+    assert code == 1, payload
+    assert not (out / "fabric-26.2" / "report.json").exists(), "a run that died writes no report"
+    kept = (out / "fabric-26.2" / "server.log").read_text()
+    assert gameserver_id not in kept and "<uuid>" in kept
+    assert host not in kept and token not in kept
+    assert kept.count("<redacted>") >= 2, kept
+
+
 def test_a_stale_hosted_registration_is_deleted_before_the_boot(
     run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
