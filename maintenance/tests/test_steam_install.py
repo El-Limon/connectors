@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -79,9 +80,16 @@ def test_tool_lock_pins_depotdownloader_and_refuses_other_bytes(
         lock["tools"]["depotdownloader"]["sha256"] = hashlib.sha256(body).hexdigest()
         lock_path.write_text(json.dumps(lock))
         executable = dd.ensure(tmp_path / "cache")
+        assert executable.is_file()
+        assert executable.stat().st_mode & 0o111
+        locked_bytes = executable.read_bytes()
 
-    assert executable.is_file()
-    assert executable.stat().st_mode & 0o111
+        # Already in the cache is not the guarantee the lock makes: an executable that has
+        # been edited since is fetched again rather than run.
+        executable.write_bytes(b"#!/bin/sh\nexfiltrate\n")
+        again = dd.ensure(tmp_path / "cache")
+
+    assert again.read_bytes() == locked_bytes
 
 
 def test_install_selects_the_declared_manifest_per_depot(run: Any, repo: Path, dd_log: Path, tmp_path: Path) -> None:
@@ -312,3 +320,117 @@ def test_credentials_come_from_env_and_are_redacted(
     log_text = (paths.cache_dir() / "steam" / "logs" / f"7d2d-{TARGET}.log").read_text()
     assert "a-secret-branch-password" not in log_text
     assert "a-secret-branch-password" not in stderr + json.dumps(payload)
+
+
+def test_a_tool_that_quietly_serves_the_branch_head_is_refused(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zero exit is not proof: what is installed is checked against what was pinned."""
+    monkeypatch.setenv("FAKE_DD_IGNORE_MANIFEST", "1")
+    dest = tmp_path / "ServerFiles"
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code == 4, payload
+    assert "not falling back to branch head" in payload["error"]
+    assert fake.HEAD_MANIFEST in payload["error"]
+    assert not dest.exists()
+    # Nothing was cached under the pinned manifest's key either.
+    cached = paths.cache_dir() / "steam" / str(fake.APP) / fake.DEPOT / fake.PINNED_MANIFEST
+    assert not (cached / ".takaro" / "complete.json").is_file()
+
+
+def test_a_failed_swap_puts_the_previous_install_back(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window between moving the old install aside and the new one in is not a gap."""
+    dest = tmp_path / "ServerFiles"
+    assert install(run, repo, dest)[0] == 0
+    before = tree_state(dest)
+
+    record = fake.read_target(repo)
+    record["inputs"]["server"]["buildid"] = record["inputs"]["server"]["buildid"] + 1
+    fake.write_target(repo, record)
+
+    real_replace = os.replace
+
+    def refuse_the_second_rename(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        if str(dst) == str(dest) and ".staging-" in str(src):
+            raise OSError(28, "No space left on device")
+        real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refuse_the_second_rename)
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code != 0, payload
+    assert tree_state(dest) == before
+    assert not list(tmp_path.glob("ServerFiles.staging-*"))
+
+
+def test_an_unwritable_ledger_puts_the_previous_install_back(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install that cannot say what it is never goes into service."""
+    from takaro_maint.steam import install as steam_install
+
+    dest = tmp_path / "ServerFiles"
+    assert install(run, repo, dest)[0] == 0
+    before = tree_state(dest)
+    was = json.loads((dest / ".takaro" / "installed-target.json").read_text())
+
+    # A different manifest, so the tree that would go live is not merely a relabelling of
+    # the one already installed.
+    fake.repin(repo, manifest=fake.HEAD_MANIFEST)
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(steam_install, "write_ledger", refuse)
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code != 0, payload
+    assert tree_state(dest) == before
+    assert json.loads((dest / ".takaro" / "installed-target.json").read_text()) == was
+
+
+def test_rollback_refuses_a_previous_install_that_no_longer_matches_its_ledger(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    dest = tmp_path / "ServerFiles"
+    assert install(run, repo, dest)[0] == 0
+    record = fake.read_target(repo)
+    record["inputs"]["server"]["buildid"] = record["inputs"]["server"]["buildid"] + 1
+    fake.write_target(repo, record)
+    assert install(run, repo, dest)[0] == 0
+    current = tree_state(dest)
+
+    previous = dest.with_name(dest.name + ".previous")
+    (previous / DECLARED).write_bytes(b"rot in the install we would roll back to")
+
+    code, payload, _ = install(run, repo, dest, "--rollback")
+
+    assert code == 5, payload
+    assert "no longer matches its own ledger" in payload["error"]
+    assert tree_state(dest) == current
+
+
+def test_a_short_credential_is_still_kept_out_of_the_logs(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redaction is not a guess here: the record named the variable the value came from."""
+    record = fake.read_target(repo)
+    record["inputs"]["server"]["credentials"] = {"branchPasswordEnv": "SEVEN_DAYS_BRANCH_PASSWORD"}
+    fake.write_target(repo, record)
+    monkeypatch.setenv("SEVEN_DAYS_BRANCH_PASSWORD", "hunt2")
+    dest = tmp_path / "ServerFiles"
+
+    code, payload, stderr = install(run, repo, dest)
+
+    assert code == 0, payload
+    argv = fake.argv_log(dd_log)[-1]
+    assert argv[argv.index("-branchpassword") + 1] == "hunt2"
+    log_text = (paths.cache_dir() / "steam" / "logs" / f"7d2d-{TARGET}.log").read_text()
+    assert "hunt2" not in log_text
+    assert "hunt2" not in stderr + json.dumps(payload)

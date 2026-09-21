@@ -11,6 +11,7 @@ Environment it reads:
   FAKE_DD_UNAVAILABLE     a manifest id Steam refuses to serve
   FAKE_DD_LICENSE_DENIED  the account owns no licence for the app
   FAKE_DD_CORRUPT         a depot-relative path served with altered bytes
+  FAKE_DD_IGNORE_MANIFEST a tool that quietly serves the branch head and still exits 0
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ def main(argv: list[str]) -> int:
 
     depot = _flag(argv, "-depot") or DEPOT
     manifest = _flag(argv, "-manifest")
-    if not manifest:
+    if not manifest or os.environ.get("FAKE_DD_IGNORE_MANIFEST"):
         head = json.loads((root / "head.json").read_text(encoding="utf-8"))
         manifest = str(head[depot])
         print(f"Using branch head manifest {manifest} for depot {depot}")
@@ -136,8 +137,10 @@ def main(argv: list[str]) -> int:
         copied += 1
     # The real tool leaves its own bookkeeping in the download directory; anything that
     # reads the result has to tell those files apart from the depot's.
-    (target / f"{depot}_{manifest}.manifest").write_bytes(b"depot manifest bookkeeping")
-    (target / f"{depot}_{manifest}.manifest.sha").write_text("0" * 40 + "\n", encoding="utf-8")
+    bookkeeping = target / ".DepotDownloader"
+    bookkeeping.mkdir(parents=True, exist_ok=True)
+    (bookkeeping / f"{depot}_{manifest}.manifest").write_bytes(b"depot manifest bookkeeping")
+    (bookkeeping / f"{depot}_{manifest}.manifest.sha").write_text("0" * 40 + "\n", encoding="utf-8")
     print(f"Downloaded {copied} files from depot {depot} manifest {manifest}")
     return 0
 

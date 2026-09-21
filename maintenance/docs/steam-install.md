@@ -26,8 +26,17 @@ build. Hashing 17 000 files on every install would cost minutes and prove nothin
 
 `maintenance/tools.lock.json` pins DepotDownloader by url, size and sha256. Bytes that do not
 match the lock are refused rather than run (exit 5); the archive is unpacked once into
-`<cache>/tools/depotdownloader/<version>/` and reused. `TAKARO_MAINT_DEPOTDOWNLOADER` points at
-another executable, which is how the tests drive the real code path with no network.
+`<cache>/tools/depotdownloader/<version>-<platform>-<archive sha256 prefix>/` and reused.
+"Already there" is not the guarantee the lock makes, so every run re-hashes the cached
+executable against `.takaro-tool.json`, the record written when it was unpacked; an edited,
+half-replaced or wrong-platform binary is fetched again rather than run.
+`TAKARO_MAINT_DEPOTDOWNLOADER` points at another executable, which is how the tests drive the
+real code path with no network.
+
+A zero exit is not proof either. After every download the tool's own two records — the
+`Manifest <id> (<date>)` line it prints and the `<depot>_<id>.manifest` file it leaves in the
+download directory — are read back, and a run that served anything but the pinned manifest is an
+upstream failure (exit 4), never content cached under the pinned manifest's key.
 
 ## The cache
 
@@ -65,11 +74,18 @@ artifact alone.
 8. **Ledger last.** `<dest>/.takaro/installed-target.json` records the fingerprint, every
    declared file as installed, and the container image.
 
-Anything that fails before the swap removes the staging directory and leaves `<dest>`
-byte-identical, which the tests assert with a tree hash.
+Steps 7 and 8 are one protected window. Anything that fails inside it moves the install that was
+in service back to `<dest>` — a machine is never left with no install at all, and never with the
+new tree live under the previous install's identity. Anything that fails before the swap removes
+the staging directory and leaves `<dest>` byte-identical, which the tests assert with a tree hash.
 
-`--dry-run` reports the depots and files it would fetch and writes nothing. `--rollback` swaps
-`<dest>.previous` back (exit 7 when there is none, or when it carries no ledger).
+`--dry-run` reports the depots and files it would fetch and writes nothing.
+
+`--rollback` swaps `<dest>.previous` back: exit 7 when there is none or it carries no ledger, and
+exit 5 when it no longer hashes as its own ledger recorded — a damaged previous install is not put
+into service, and `<dest>` is left alone. The declared files of the *currently selected* target are
+reported in `problems`, because the restored install predates that target and is expected to
+differ from it.
 
 ## Re-pinning: `steam pin`
 

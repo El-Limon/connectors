@@ -42,10 +42,11 @@ on:
         type: string
 
 # Serialize same-ref runs so consecutive main pushes don't race on the rolling
-# 7d2d-dev release. Release runs (caller's workflow name) are in a different group.
+# 7d2d-dev release. A release or recovery run has the tag in its key, so a push to main
+# queues behind it instead of cancelling it; only ordinary CI runs are cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: 7d2d-${{ github.ref }}-${{ inputs.tag || 'ci' }}
+  cancel-in-progress: ${{ inputs.tag == '' }}
 
 jobs:
   codestyle:
@@ -69,6 +70,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # The same commit the release job builds: a recovery run for an older tag is
+          # gated on that tag's sources and catalog, never on whatever main has become.
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-tags: true
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
@@ -115,7 +121,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Resolve release params
         id: params

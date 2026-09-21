@@ -18,9 +18,18 @@ sevend2d_parse_target_flag "$@"
 [ -n "${TARGET}" ] || { echo "7D2D is built per catalog target: pass --target <id>" >&2; exit 2; }
 sevend2d_resolve_target "${TARGET}"
 
+# The version reaches a sed program, a JSON document and a command inside the builder
+# container, so it is checked once here rather than escaped three times.
+case "${VERSION}" in
+  *[!A-Za-z0-9._+-]*|"")
+    echo "refusing version '${VERSION}': use letters, digits and . _ + - only" >&2
+    exit 2
+    ;;
+esac
+
 mkdir -p "${OUT_DIR}"
 OUT_DIR=$(cd -- "${OUT_DIR}" && pwd)
-ARTIFACT="${SEVEND2D_ARTIFACT/\{version\}/${VERSION}}"
+export ARTIFACT="${SEVEND2D_ARTIFACT/\{version\}/${VERSION}}"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${REPO_ROOT}" log -1 --format=%ct)}"
 
 cd "${PROJECT_ROOT}"
@@ -40,13 +49,16 @@ sed -i "s|<Version value=\"[^\"]*\" />|<Version value=\"${VERSION}\" />|" "${STA
 
 # Packaged inside the toolchain image: the host has no zip, and the archive has to be
 # byte-identical wherever it is built.
+# The name is handed over as an environment entry and quoted inside the container, so the
+# program the container runs is the same one whatever the version string contains.
 docker compose run --rm --build \
     --user "$(id -u):$(id -g)" \
     -e SOURCE_DATE_EPOCH \
     -e HOME=/tmp \
+    -e ARTIFACT \
     -v "${OUT_DIR}:/out" \
     builder bash -c \
-    ". /repo/scripts/lib/package.sh && pkg_zip /app/_data/build/stage Takaro /out/${ARTIFACT}"
+    '. /repo/scripts/lib/package.sh && pkg_zip /app/_data/build/stage Takaro "/out/${ARTIFACT}"'
 
 # The identity the artifact carries: `takaro-maint artifact validate` reads this file,
 # because a zip has no manifest to stamp.

@@ -327,6 +327,9 @@ def install_exact(
     before = tree_hash(dest)
     shutil.rmtree(staging, ignore_errors=True)
     preserved: list[str] = []
+    # The install that was in service, once it has been moved aside: whatever fails after
+    # that point has to put it back.
+    retired: Path | None = None
     try:
         staging.mkdir(parents=True, exist_ok=True)
         for depot in sorted(spec.depots):
@@ -370,11 +373,18 @@ def install_exact(
         if dest.exists():
             shutil.rmtree(previous_path, ignore_errors=True)
             os.replace(dest, previous_path)
+            retired = previous_path
         else:
             previous_path = None  # type: ignore[assignment]
             dest.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staging, dest)
+        # The install is finished only once the directory can say what it is, so the ledger
+        # is written inside the same protected window as the swap: a ledger that cannot be
+        # written puts the install that was in service back rather than leaving the new tree
+        # live under the old identity.
+        ledger = _write_ledger(target, dest, spec, previous_data)
     except BaseException:
+        _restore_retired(dest, staging, retired)
         shutil.rmtree(staging, ignore_errors=True)
         after = tree_hash(dest)
         if after == before:
@@ -382,8 +392,6 @@ def install_exact(
         else:
             output.warn(f"{dest} changed during a failed install")
         raise
-
-    ledger = _write_ledger(target, dest, spec, previous_data)
     return {
         "status": "installed",
         "game": target.game,
@@ -395,6 +403,30 @@ def install_exact(
         "inputs": ledger["inputs"],
         "preserved": preserved,
     }
+
+
+def _restore_retired(dest: Path, staging: Path, retired: Path | None) -> None:
+    """Put the install that was moved aside back into service after a failed swap.
+
+    Called on every failure path, including the one where ``dest`` was never touched: with
+    nothing retired there is nothing to undo. When the new tree did go live, it is moved
+    back to the staging name first, so the caller's cleanup removes it.
+    """
+    if retired is None or not retired.is_dir():
+        return
+    if dest.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            os.replace(dest, staging)
+        except OSError as exc:
+            output.warn(f"could not take {dest} out of service ({exc}); {retired} was left in place")
+            return
+    try:
+        os.replace(retired, dest)
+    except OSError as exc:
+        output.warn(f"could not restore {retired} to {dest} ({exc})")
+        return
+    output.warn(f"restored the previous install to {dest} after a failed install")
 
 
 def _depot_summary(spec: SteamInput) -> dict[str, Any]:
@@ -413,17 +445,47 @@ def rollback(target: Any, *, dest: Path) -> dict[str, Any]:
     if previous_ledger is None:
         raise ConflictError(f"{previous_path} holds no ledger; refusing to restore an unidentified install")
 
+    # Checked before it goes live, against the hashes it recorded when it was installed:
+    # rolling back to a tree that has since been damaged would replace one broken install
+    # with another and call it a recovery.
+    recorded = {
+        str(row["path"]): {"sha256": row.get("sha256"), "size": row.get("size")}
+        for row in previous_ledger.data.get("inputs", [])
+        if row.get("path")
+    }
+    damaged = _verify_declared(previous_path, recorded, required=True)
+    if damaged:
+        raise IntegrityError(
+            f"{previous_path} no longer matches its own ledger: "
+            + "; ".join(damaged)
+            + f"; refusing to put it back into service, {dest} is untouched",
+            target=target.id,
+        )
+
     current = read_ledger(dest)
     holding = previous_path.with_name(previous_path.name + f".tmp-{uuid.uuid4().hex}")
+    moved_aside = False
     if dest.exists():
         os.replace(dest, holding)
-    os.replace(previous_path, dest)
-    if holding.exists():
-        os.replace(holding, previous_path)
+        moved_aside = True
+    try:
+        os.replace(previous_path, dest)
+    except BaseException:
+        if moved_aside:
+            os.replace(holding, dest)
+        raise
+    if moved_aside:
+        try:
+            os.replace(holding, previous_path)
+        except OSError as exc:
+            # The rollback itself is done; only the bookkeeping name is wrong.
+            output.warn(f"rolled back, but the replaced install is left at {holding} ({exc})")
 
     restored = read_ledger(dest)
     assert restored is not None
     spec = SteamInput.of(target.record)
+    # What the restored install is *not*: it predates the selected target, so a mismatch
+    # here is expected and reported rather than fatal.
     problems = _verify_declared(dest, spec.files, required=False)
     return {
         "status": "rolled-back",

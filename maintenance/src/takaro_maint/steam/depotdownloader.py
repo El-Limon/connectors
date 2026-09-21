@@ -25,12 +25,16 @@ from ..exit_codes import UpstreamUnavailable, UsageError
 
 LOCK_RELATIVE = Path("maintenance") / "tools.lock.json"
 TOOL_ID = "depotdownloader"
+# What the cached executable was unpacked from, written beside it.
+TOOL_MARKER = ".takaro-tool.json"
 
 # The line every classified failure carries, so a caller (and a test) can tell this
 # apart from any other non-zero exit.
 NO_FALLBACK = "not falling back to branch head"
 
 _MANIFEST_ID = re.compile(r"Manifest ID / date\s*:\s*(?P<id>[0-9]+)\s*/\s*(?P<date>.*)")
+# What the tool prints once it has the manifest it is about to download: "Manifest <id> (<date>)".
+_SERVED = re.compile(r"^\s*Manifest\s+(?P<id>[0-9]+)\s*\(", re.MULTILINE)
 _TOTAL_FILES = re.compile(r"Total number of files\s*:\s*(?P<value>[0-9]+)")
 _TOTAL_BYTES = re.compile(r"Total bytes on disk\s*:\s*(?P<value>[0-9]+)")
 # "        14800      1 c2eb0…(40 hex) 0 7DaysToDieServer.x86_64"
@@ -116,10 +120,13 @@ def ensure(cache: Path) -> Path:
         return exe
 
     spec = read_lock()
-    installed = cache / "tools" / TOOL_ID / spec.version
+    # Keyed on what the lock pins, not only on the version: a re-pinned archive or another
+    # platform's build cannot land on the same cache entry.
+    installed = cache / "tools" / TOOL_ID / f"{spec.version}-{spec.platform}-{spec.sha256[:16]}"
     exe = installed / spec.executable
-    if exe.is_file():
+    if _cached_matches_lock(installed, exe, spec):
         return exe
+    shutil.rmtree(installed, ignore_errors=True)
 
     # `net.download` refuses bytes that do not match the lock (exit 5) and an unreachable
     # release (exit 4); nothing below ever sees the wrong archive.
@@ -136,12 +143,64 @@ def ensure(cache: Path) -> Path:
         if not extracted.is_file():
             raise UsageError(f"{spec.url} does not contain {spec.executable}")
         extracted.chmod(0o755)
+        # The bytes that were unpacked from the locked archive, so a later run can tell the
+        # cached executable apart from one that has been edited or half-replaced since.
+        (staging / TOOL_MARKER).write_text(
+            json.dumps(
+                {
+                    "version": spec.version,
+                    "platform": spec.platform,
+                    "archiveSha256": spec.sha256,
+                    "executable": spec.executable,
+                    "executableSha256": net.hash_file(extracted)["sha256"],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         installed.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staging, installed)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     output.info(f"using DepotDownloader {spec.version} ({spec.platform})")
     return exe
+
+
+def _cached_matches_lock(installed: Path, exe: Path, spec: ToolSpec) -> bool:
+    """Is the executable already in the cache still the one the lock pins?
+
+    Every run asks, because "it is there" is not the guarantee the lock makes: the bytes on
+    disk are hashed against what was unpacked from the locked archive.
+    """
+    marker = installed / TOOL_MARKER
+    if not exe.is_file() or not marker.is_file():
+        return False
+    try:
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        recorded = {}
+    if (
+        recorded.get("archiveSha256") == spec.sha256
+        and recorded.get("platform") == spec.platform
+        and recorded.get("executableSha256") == net.hash_file(exe)["sha256"]
+    ):
+        return True
+    output.warn(f"the cached DepotDownloader at {installed} does not match the lock; fetching it again")
+    return False
+
+
+def _hide(text: str, secrets: list[str]) -> str:
+    """Hide this run's credentials, whatever their length, plus every secret in the env.
+
+    ``redact.redact`` skips short values because it guesses at secrets by variable name.
+    The values here are not guesses -- the target record named the variable they came from
+    -- so a four-character branch password is hidden exactly like a long one.
+    """
+    for value in secrets:
+        if value:
+            text = text.replace(value, redact.PLACEHOLDER)
+    return redact.redact(text)
 
 
 def _classify(argv: list[str], completed: subprocess.CompletedProcess[str], log: Path, secrets: list[str]) -> None:
@@ -151,13 +210,13 @@ def _classify(argv: list[str], completed: subprocess.CompletedProcess[str], log:
     text = (completed.stdout or "") + (completed.stderr or "")
     lowered = text.lower()
     reason = next((marker for marker in _UNAVAILABLE_MARKERS if marker in lowered), None)
-    tail = "\n".join(redact.redact(line, secrets) for line in text.strip().splitlines()[-20:])
+    tail = "\n".join(_hide(line, secrets) for line in text.strip().splitlines()[-20:])
     what = f"DepotDownloader exited {completed.returncode}"
     if reason:
         what += f" ({reason})"
     raise UpstreamUnavailable(
         f"{what}; {NO_FALLBACK}. See {log.name}:\n{tail}",
-        argv=[redact.redact(part, secrets) for part in argv[1:]],
+        argv=[_hide(part, secrets) for part in argv[1:]],
     )
 
 
@@ -176,7 +235,7 @@ def run(
     cwd.mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
     hidden = list(secrets or [])
-    output.debug("exec " + redact.redact(" ".join(argv), hidden))
+    output.debug("exec " + _hide(" ".join(argv), hidden))
     completed = subprocess.run(
         argv,
         cwd=str(cwd),
@@ -186,8 +245,8 @@ def run(
         check=False,
     )
     with log.open("a", encoding="utf-8") as handle:
-        handle.write(redact.redact(" ".join(argv[1:]), hidden) + "\n")
-        handle.write(redact.redact((completed.stdout or "") + (completed.stderr or ""), hidden))
+        handle.write(_hide(" ".join(argv[1:]), hidden) + "\n")
+        handle.write(_hide((completed.stdout or "") + (completed.stderr or ""), hidden))
         handle.write(f"\n-- exit {completed.returncode}\n")
     _classify(argv, completed, log, hidden)
     return completed
@@ -318,7 +377,49 @@ def download(
             args += ["-filelist", str(selector_file)]
         secrets = _apply_credentials(args, credentials)
         output.info(f"downloading depot {depot} manifest {manifest} (app {app}, branch {branch})")
-        run(args, cwd=dir, log=log, cache=cache, secrets=secrets)
+        completed = run(args, cwd=dir, log=log, cache=cache, secrets=secrets)
+    _assert_served(app, depot, str(manifest), dir=dir, completed=completed)
+
+
+def _served_manifests(dir: Path, depot: str, completed: subprocess.CompletedProcess[str]) -> set[str]:
+    """Every manifest id this run says it served, from the tool's own two records.
+
+    It prints the manifest it resolved before downloading, and it leaves the manifest file
+    it used in the download directory (``<depot>_<id>.manifest``, under ``.DepotDownloader``
+    for the released builds). Both are read, because neither alone is guaranteed.
+    """
+    text = (completed.stdout or "") + (completed.stderr or "")
+    served = {found.group("id") for found in _SERVED.finditer(text)}
+    served |= {path.stem.split("_", 1)[1] for path in dir.rglob(f"{depot}_*.manifest") if "_" in path.stem}
+    return served
+
+
+def _assert_served(
+    app: int,
+    depot: str,
+    manifest: str,
+    *,
+    dir: Path,
+    completed: subprocess.CompletedProcess[str],
+) -> None:
+    """A zero exit is not the guarantee; being served the pinned manifest is.
+
+    Whatever the tool would do on its own with a manifest it cannot get, this refuses to
+    hand back a directory that holds anything but the requested one -- the caller labels
+    its cache with that id, so branch-head content must never reach it.
+    """
+    served = _served_manifests(dir, depot, completed)
+    if not served:
+        raise UpstreamUnavailable(
+            f"DepotDownloader recorded no manifest for depot {depot} of app {app}; "
+            f"nothing proves {manifest} was served, {NO_FALLBACK}",
+        )
+    other = sorted(served - {manifest})
+    if other:
+        raise UpstreamUnavailable(
+            f"DepotDownloader served depot {depot} manifest {', '.join(other)} where {manifest} was pinned; "
+            f"{NO_FALLBACK}",
+        )
 
 
 def _apply_credentials(args: list[str], credentials: dict[str, str] | None) -> list[str]:
