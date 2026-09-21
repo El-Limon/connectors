@@ -26,20 +26,46 @@ You need:
 - Outbound network access to `wss://connect.takaro.io/`. The plugin dials out; nothing
   needs to be port-forwarded to it.
 
+The exact server builds this connector is maintained for:
+
+<!-- takaro-maint:targets:begin -->
+| Target | Game version | Platform | Loader / API | Java | Support | Verified level |
+| --- | --- | --- | --- | --- | --- | --- |
+| `linux-1.0.15` | 1.0.15 | linux | — | None | candidate | contract |
+<!-- takaro-maint:targets:end -->
+
+Each target names the exact Steam depot manifest of the dedicated server **and** the exact
+BepInExPack Valheim version it was built and checked against; the target record under
+[`catalog/valheim/targets/`](../../catalog/valheim/targets/) is the source of truth for
+both. This release pins **BepInExPack Valheim 5.4.2350**. A different server build or a
+different pack may well work — it simply has not been checked, and nothing here claims it
+has.
+
 ### 2. Download the plugin
 
-Download **`takaro-valheim-plugin.zip`** from the latest `valheim-vX.Y.Z` release on the
+Download the plugin for your server build from the latest `valheim-vX.Y.Z` release on the
 releases page:
 
 > https://github.com/gettakaro/connectors/releases
 
-Direct link pattern:
-`https://github.com/gettakaro/connectors/releases/download/valheim-v<version>/takaro-valheim-plugin.zip`
+Each release carries one plugin zip per maintained target, named after it:
 
-Use `valheim-v3.0.1` or newer. The same release also carries
-`takaro-valheim-companion.zip`; that one is a **client** package and is not part of this
-install — do not copy it onto the server. Do not use the `valheim-dev` pre-release either,
-that is an untested rolling build.
+`takaro-valheim-plugin-<target>-<version>.zip` — for example
+`takaro-valheim-plugin-linux-1.0.15-3.0.3.zip`, next to a `SHA256SUMS` file you can check
+it against.
+
+The release also still carries **`takaro-valheim-plugin.zip`**, a byte-identical copy of
+the default target's zip under the old name. That alias stays for two more releases so
+existing links keep working; new installs should take the target-named file.
+
+Direct link pattern:
+`https://github.com/gettakaro/connectors/releases/download/valheim-v<version>/takaro-valheim-plugin-<target>-<version>.zip`
+
+Use `valheim-v3.0.1` or newer. The same release also carries the companion
+(`takaro-valheim-companion-<target>-<version>.zip`, alias `takaro-valheim-companion.zip`);
+that one is a **client** package and is not part of this install — do not copy it onto the
+server. Do not use the `valheim-dev` pre-release either, that is an untested rolling
+build.
 
 The zip contains a single folder, `TakaroValheim/`. That whole folder is the plugin.
 
@@ -163,6 +189,11 @@ a real game client attached.
 | Map tiles | ❌ | Takaro's API does not support map tiles for Generic-connector servers. |
 | Discord chat bridge | ❌ | Never tested on Valheim, and it cannot work in either direction: player chat never reaches the server, and the server cannot write into a player's chat window. |
 | Shop & economy | ⚠️ | Proven end to end: a player bought from the in-game shop, 100 currency was deducted and the goods arrived. But shop deliveries go through "Give an item", so **purchases land on the ground at the buyer's feet**, lootable by anyone nearby. |
+
+Companion (client) rows are not verified by the maintenance harness: a `takaro-maint
+verify` run boots a dedicated server, where the companion never loads. Their evidence is
+the recorded client run described in [COMPANION.md](COMPANION.md), and no target record
+claims it.
 
 Several ❌ rows above are ❌ only because Valheim keeps that information on the player's
 own client. A separately published client package changes some of them; it is outside the

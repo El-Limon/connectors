@@ -3,6 +3,58 @@
 Everything here is for people building, testing or changing the connector. Operators only
 need [README.md](README.md).
 
+## The catalog target
+
+Everything here is built against one catalog target,
+[`catalog/valheim/targets/linux-1.0.15.json`](../../catalog/valheim/targets/linux-1.0.15.json).
+Unlike the other games in this catalog, a Valheim target pins **two** inputs:
+
+- `inputs.server` — the Steam app, branch, build id and depot manifest that identify the
+  dedicated server, plus the sha256 of each file the build and the run depend on.
+- `inputs.bepinex` — the Thunderstore package (`denikson/BepInExPack_Valheim`) by
+  namespace, name, version, zip sha256 and size. Thunderstore publishes no digest of its
+  own, so the hash is self-recorded: it is written from two independent downloads that
+  agreed.
+
+An exact install is the depot set **plus** the pack unpacked into it, and both halves are
+recorded in the install ledger. A replaced `BepInEx/core/BepInEx.dll` is as much a drifted
+install as a replaced `valheim_server.x86_64`, and `takaro-maint ledger check` says so.
+
+No script in this directory hard-codes a game build, a BepInEx version, an image digest, a
+dependency URL or an artifact name. `scripts/lib-target.sh` resolves the target through
+`takaro-maint targets resolve --game valheim` and exports it as `VALHEIM_*`:
+
+| Key | What |
+|---|---|
+| `VALHEIM_TARGET`, `VALHEIM_REVISION` | the target id and the game version it names |
+| `VALHEIM_FINGERPRINT`, `VALHEIM_FP16` | the hash of the whole record, and its short form |
+| `VALHEIM_IMAGE`, `VALHEIM_TOOLCHAIN` | the server image and the .NET SDK image, both by digest |
+| `VALHEIM_STEAM_APP/_BRANCH/_BUILDID/_DEPOTS` | the Steam pin |
+| `VALHEIM_BEPINEX_PACKAGE/_PACK_VERSION/_URL/_SHA256/_SIZE/_FILE` | the pack pin |
+| `VALHEIM_REFERENCES_DIR`, `VALHEIM_BEPINEX_DIR`, `VALHEIM_DEP_*` | where the build's inputs land, and where they come from |
+| `VALHEIM_ARTIFACT_SERVER_PLUGIN`, `VALHEIM_ARTIFACT_CLIENT_COMPANION` | the two artifact names, with `{version}` still to substitute |
+
+What lands where, for the fingerprint of the target you resolved:
+
+| Path | What |
+|---|---|
+| `_data/references/<fp16>/` | the game's compile references and `.takaro/references.json` |
+| `_data/deps/bepinex/<fp16>/` | the unpacked BepInEx pack and `.takaro/loader-version` |
+| `_data/dist/<fp16>/` | the two role zips and their `.meta.json` sidecars |
+
+A different target has a different fingerprint and therefore its own directories; nothing
+is shared between builds for different server versions.
+
+There is no SteamCMD anywhere in this directory. `takaro-maint steam references` downloads
+only the assemblies the build needs, straight from the pinned depot manifest, and the pack
+is fetched from its exact Thunderstore version URL — never from the `latest` alias. See
+[maintenance/docs/steam-install.md](../../maintenance/docs/steam-install.md).
+
+`setup-environment.sh` runs on whatever host invokes it — a laptop, a CI runner, the
+maintenance image — so it asks for very little: `curl`, `file`, and the `python3`
+`takaro-maint` already needs. The pack is unpacked by a reader that refuses an entry
+escaping the staging directory, not by `unzip`.
+
 ## Quick Start
 
 Run the reference-free build and tests (no game assemblies needed):
@@ -11,7 +63,18 @@ Run the reference-free build and tests (no game assemblies needed):
 dotnet test mod/Takaro.Valheim.sln
 ```
 
-Build the real plugin against dedicated-server references:
+Fetch the target's inputs and build both release archives, in the pinned .NET SDK image:
+
+```bash
+./scripts/setup-environment.sh --target linux-1.0.15
+./scripts/build-release.sh <version> dist --target linux-1.0.15
+```
+
+`--target` may be left out; the game's default target is resolved instead.
+`VALHEIM_BUILD_TOOLCHAIN=host` keeps the build in place rather than re-execing into the
+SDK image, and then needs `dotnet`, `zip`, `unzip`, `jq`, `rg` and `file` locally.
+
+Build one half by hand against references you already have:
 
 ```bash
 dotnet build mod/src/Takaro.Valheim.Plugin/Takaro.Valheim.Plugin.csproj \
@@ -21,8 +84,6 @@ dotnet build mod/src/Takaro.Valheim.Plugin/Takaro.Valheim.Plugin.csproj \
   -p:ValheimReferencePath=/path/to/valheim_server_Data/Managed
 ```
 
-Build the real companion against graphical-client references:
-
 ```bash
 dotnet build mod/src/Takaro.Valheim.Companion/Takaro.Valheim.Companion.csproj \
   -f net472 \
@@ -30,6 +91,71 @@ dotnet build mod/src/Takaro.Valheim.Companion/Takaro.Valheim.Companion.csproj \
   -p:BepInExReferencePath=/path/to/client/BepInEx/core \
   -p:ValheimReferencePath=/path/to/Valheim/valheim_Data/Managed
 ```
+
+## Re-pinning
+
+Valheim patches often, and BepInExPack moves on its own schedule. `takaro-maint scan`
+watches both and files one maintenance issue per move, because `catalog/valheim/game.json`
+declares a Steam `watch` block and a Thunderstore one.
+
+1. `takaro-maint steam pin --game valheim` — what does Steam serve on `public` now?
+   `changed` lists the depots that moved.
+2. `takaro-maint steam pin --game valheim --target linux-<new> --metadata --buildid <new>
+   --record-files valheim_server.x86_64 --record-files
+   valheim_server_Data/Managed/assembly_valheim.dll ... --write` — re-record the hashes
+   from the new manifest into a new target record.
+3. For a new pack: download the exact version zip twice, confirm the two sha256 agree, and
+   write `inputs.bepinex.{version,sha256,size}`. Then
+   `takaro-maint catalog validate --online`, which downloads it once more and compares.
+4. `./scripts/setup-environment.sh --target linux-<new>` and
+   `dotnet test mod/Takaro.Valheim.sln` — both bash behaviour harnesses run from there.
+5. Re-prove the behaviour that matters (`takaro-maint verify --game valheim`), update
+   `README.md`'s table with `takaro-maint docs render --game valheim --write`, and open a
+   PR.
+
+The target id, its fingerprint and both artifact names change with the build, which is the
+point: nothing claims to have been proven on bytes it was not proven on.
+
+## Windows references
+
+The record's `support.notes` carries the Windows depot (`896662`) and the manifest of the
+same build, for recovery only. `takaro-maint steam references` serves the pinned **Linux**
+depot and nothing else: there is no platform loop and no Windows fallback, because a
+fallback is how a build silently compiles against assemblies nobody pinned. If you need
+Windows references — say the Linux depot is unavailable — download them by hand with
+DepotDownloader against the recorded manifest and point
+`-p:ValheimReferencePath=` at them; the resulting artifact is not a release artifact.
+
+## `manifest.json` fields
+
+Each role zip carries a `manifest.json`. Three version-shaped fields live there and they
+mean three different things:
+
+| Field | What it is |
+|---|---|
+| `productVersion` | the connector release version, full SemVer (`3.0.3`, `3.0.3-dev.abc1234`) |
+| `pluginVersion` | the numeric core BepInEx parses out of `[BepInPlugin]` (`3.0.3`) — the **plugin's** version |
+| `bepInExPack.version` | the pinned Thunderstore pack version (`5.4.2350`) |
+| `bepInExVersion` | the **loader assembly** version read out of the pack's `BepInEx.dll` (`5.4.23.5`) |
+
+`bepInExVersion` used to carry the connector's own numeric core, which presented the
+connector's version as BepInEx's. It now carries the real loader version, recorded by
+`scripts/bepinex-loader-version.proj` into `_data/deps/bepinex/<fp16>/.takaro/loader-version`
+at setup time. `target.{game,id,revision,fingerprint}` names the build the zip was made
+for, and `processRole` is `dedicated-server` or `graphical-client`.
+
+## Companion evidence policy
+
+`takaro-maint verify --game valheim` boots a **dedicated server**. The companion never
+loads there, so a verification run can never be evidence for a companion row, and none of
+the target's `verification` levels claims one. What a run does cover is startup, identify,
+the catalogue, an allowlisted console action, reconnect after a dropped socket, and a
+clean stop.
+
+Companion behaviour is claimed only from a recorded run with a real graphical client
+attached, described in [COMPANION.md](COMPANION.md) and in the evidence boundary below.
+When a companion row moves, say which run moved it and on which artifact — "the harness
+passed" is not an answer, because the harness does not look.
 
 ## Architecture
 
@@ -265,30 +391,36 @@ read once.
 
 ## Release build
 
-CI builds and publishes through `.github/workflows/valheim.yml`. Its `package` job runs
-`games/valheim/scripts/setup-environment.sh`, then
-`games/valheim/scripts/build-release.sh`, validates the archives with
-`games/valheim/tests/release-package-behavior.sh`, and uploads
-`takaro-valheim-plugin.zip` and `takaro-valheim-companion.zip` as release assets.
+CI builds and publishes through `.github/workflows/valheim.yml`, which hands off to the
+shared `connector-release.yml`: one build job per target, a second build of the same commit
+compared byte for byte, then aggregate publication with `SHA256SUMS`, the legacy asset
+aliases and a compatibility record naming the exact inputs.
 
 Locally, from `games/valheim/`:
 
 ```bash
-./scripts/setup-environment.sh
-./scripts/build-release.sh 0.1.0 dist
+./scripts/setup-environment.sh --target linux-1.0.15
+./scripts/build-release.sh 0.1.0 dist --target linux-1.0.15
 ```
 
 `setup-environment.sh` writes game compile references only to
-`VALHEIM_REFERENCE_CACHE_DIR`, which defaults to `_data/server`. A valid Managed directory
-can be reused read-only from any configured location. An invalid non-empty directory is
-writable only when it carries the setup script's completed ownership marker; otherwise setup
-refuses before invoking SteamCMD and directs the caller to a separate cache. The legacy
+`VALHEIM_REFERENCE_CACHE_DIR`, which defaults to `_data/references/<fp16>`. A valid Managed
+directory can be reused read-only from any configured location. An invalid non-empty
+directory is writable only when it carries the setup script's completed ownership marker;
+otherwise setup refuses and directs the caller to a separate cache. The legacy
 `VALHEIM_SERVER_DIR` variable remains a safe fallback for read-only valid references or
 explicitly owned/empty caches, but it must not point setup at a live dedicated-server
-installation. BepInEx references come from the Thunderstore
-`denikson/BepInExPack_Valheim` package.
+installation. BepInEx comes from the pinned Thunderstore
+`denikson/BepInExPack_Valheim` version, verified by sha256 and by the version its own
+`manifest.json` declares, and published atomically into `_data/deps/bepinex/<fp16>`: a
+failed download or a hash mismatch leaves the previous pack exactly as it was.
 
-The release produces `takaro-valheim-plugin.zip` and `takaro-valheim-companion.zip`. The
+The release produces one zip per role per target, named after the target
+(`takaro-valheim-plugin-linux-1.0.15-<version>.zip`,
+`takaro-valheim-companion-linux-1.0.15-<version>.zip`), each with a `.meta.json` sidecar
+recording the target, the fingerprint and the role. The old unsuffixed names
+`takaro-valheim-plugin.zip` and `takaro-valheim-companion.zip` are published alongside as
+byte-identical aliases of the default target. The
 first contains the dedicated-server plugin, Core, Protocol and required runtime
 dependencies. The second contains only the graphical-client companion, Protocol and
 required runtime dependencies. Both exclude host-provided game, Unity, BepInEx, Harmony,
@@ -305,13 +437,9 @@ version such as `1.0.0-rc.1+build.2` loads as `1.0.0`. Numeric assembly/file met
 `major.minor.patch.0`. The build generates both compile-time values under the intermediate
 output directory and does not edit tracked source files.
 
-Environment setup downloads SteamCMD completely to a sibling temporary archive, extracts
-into a sibling staging directory, writes a completion marker only after validation, and
-publishes by directory rename with rollback. A markerless executable is repaired, a
-completed cache is reused, unrelated owned-cache files are preserved, and failure/signal
-cleanup cannot leave a partial executable trusted by the next run. It requires the host
-`file` utility to identify every required Valheim and BepInEx DLL as a real
-`PE32 ... Mono/.Net assembly`. Valheim compile references are likewise built in a sibling
-staging directory, validated there, marked as an owned cache only after validation, and
-published by directory rename with rollback. Linux and Windows fallback therefore never
-inject or replace files inside an unowned live server tree.
+Environment setup requires the host `file` utility to identify every required Valheim and
+BepInEx DLL as a real `PE32 ... Mono/.Net assembly`. Compile references and the BepInEx
+pack are each built in a sibling staging directory, validated there, marked as an owned
+cache only after validation, and published by directory rename with rollback, so a failed
+or interrupted run leaves whatever was there before byte-identical and never injects or
+replaces files inside an unowned live server tree.
