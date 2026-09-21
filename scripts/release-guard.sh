@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONNECTOR="${1:?usage: release-guard.sh <connector> <version> <tag>}"
-VERSION="${2:?version required}"
+VERSION="${2-}"
 TAG="${3-}"
 
 ATTEMPTS="${RELEASE_GUARD_ATTEMPTS:-6}"
@@ -28,10 +28,14 @@ fail() {
   exit 1
 }
 
+# A push or pull_request run passes neither; it publishes a dev build off whatever is checked
+# out and has no claim to check.
 if [ -z "$TAG" ]; then
   echo "release-guard: no tag, nothing to guard"
   exit 0
 fi
+
+: "${VERSION:?a version is required when a tag is given}"
 
 EXPECTED_TAG="${CONNECTOR}-v${VERSION}"
 if [ "$TAG" != "$EXPECTED_TAG" ]; then

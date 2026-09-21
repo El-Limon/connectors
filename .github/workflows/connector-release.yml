@@ -42,6 +42,15 @@ jobs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          fetch-tags: true
+
+      # Before anything is built: the tag, the version, the manifest and the checked-out
+      # commit all have to agree, or this run would attach one version's artifacts to another
+      # version's release.
+      - name: Release guard
+        run: scripts/release-guard.sh "${{ inputs.connector }}" "${{ inputs.version }}" "${{ inputs.publish == 'stable' && inputs.tag || '' }}"
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
@@ -69,6 +78,9 @@ jobs:
         target: ${{ fromJson(needs.plan.outputs.targets) }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          fetch-tags: true
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
@@ -117,6 +129,22 @@ jobs:
             --target "${{ matrix.target.id }}" \
             dist/*.jar
 
+      # Build the same commit again from scratch and require identical bytes. Without
+      # --rerun-tasks the second build is UP-TO-DATE and proves nothing.
+      - name: Build again and require identical bytes
+        shell: bash
+        run: |
+          maintenance/bin/takaro-maint build \
+            --game "${{ inputs.connector }}" \
+            --target "${{ matrix.target.id }}" \
+            --version "${{ inputs.version }}" \
+            --out dist-again \
+            --toolchain container \
+            --gradle-args --rerun-tasks
+          for file in $(jq -r '.artifacts[].file' dist/build-manifest.json); do
+            cmp "dist/$file" "dist-again/$file"
+          done
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-${{ inputs.connector }}-${{ matrix.target.id }}
@@ -130,6 +158,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          fetch-tags: true
 
       - name: Set up Java 25
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
@@ -163,6 +194,9 @@ jobs:
         target: ${{ fromJson(needs.plan.outputs.targets) }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          fetch-tags: true
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
@@ -247,6 +281,9 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.publish == 'stable' && inputs.tag || github.ref }}
+          fetch-tags: true
 
       # All release/comment operations act as takaro-ci-bot[bot] (not github-actions[bot]).
       # Skipped on fork PRs, which can't access the App secrets and don't publish builds.
@@ -258,39 +295,42 @@ jobs:
           app-id: ${{ secrets.TAKARO_CI_APP_ID }}
           private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
 
+      # No merge-multiple: each target's build-manifest.json and SHA256SUMS have the same
+      # name, and merging them collapses four manifests into whichever one landed last.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dist-${{ inputs.connector }}-*
-          merge-multiple: true
           path: dist
 
-      - name: Publish stable release assets
-        if: ${{ inputs.publish == 'stable' }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: scripts/publish-release.sh upload "${{ inputs.tag }}" dist/*.jar
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: verify-${{ inputs.connector }}-*
+          path: reports
 
-      - name: Publish rolling dev build
-        if: ${{ inputs.publish == 'rolling' }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          scripts/publish-release.sh rolling "${{ inputs.connector }}-dev" \
-            "${{ inputs.connector }} Connector — latest dev build" \
-            "Rolling development build (\`${{ inputs.version }}\`), updated on every push to main. Not for production." \
-            dist/*.jar
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
 
-      # Fork PRs get a read-only token, so they can't publish a release or comment;
-      # they build for validation only (no downloadable artifact — accepted limitation).
-      - name: Publish PR build
-        if: ${{ inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
+      - run: uv python install
+      - run: uv sync --frozen --project maintenance
+
+      # One job assembles and publishes the whole set. Fork PRs get a read-only token, so they
+      # can't publish or comment; they build for validation only (accepted limitation).
+      - name: Assemble, publish and verify the complete set
+        if: ${{ inputs.publish == 'stable' || inputs.publish == 'rolling' || (inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository) }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
         run: |
-          scripts/publish-release.sh rolling "${{ inputs.tag }}" \
-            "${{ inputs.connector }} Connector — build for PR #${{ inputs.pr_number }}" \
-            "Disposable build (\`${{ inputs.version }}\`) for PR #${{ inputs.pr_number }}. Replaced on every push, deleted when the PR closes. Not for production." \
-            dist/*.jar
+          scripts/publish-release.sh publish \
+            --connector "${{ inputs.connector }}" \
+            --channel "${{ inputs.publish }}" \
+            --version "${{ inputs.version }}" \
+            --tag "${{ inputs.tag }}" \
+            --pr-number "${{ inputs.pr_number }}" \
+            --dist dist \
+            --reports reports \
+            --out assembled
 
       - name: Comment PR build
         if: ${{ inputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -301,4 +341,12 @@ jobs:
             "${{ inputs.pr_number }}" \
             "${{ inputs.tag }}" \
             "${{ inputs.version }}" \
-            dist/*.jar
+            assembled
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: release-${{ inputs.connector }}
+          path: assembled/
+          if-no-files-found: ignore
+          retention-days: 30

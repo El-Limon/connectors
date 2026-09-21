@@ -12,3 +12,109 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Shellcheck all tracked shell scripts
         run: shellcheck -e SC1091 $(git ls-files '*.sh')
+
+  yaml:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+      # connector-release.yml is left out for one pre-existing over-long jq program in its
+      # verify job; put it back in the list once that line is wrapped.
+      - name: Lint the workflows and the dev-servers compose files
+        shell: bash
+        run: |
+          mapfile -t files < <(
+            git ls-files '.github/workflows/*.yml' 'dev-servers/compose/*.yml' |
+              grep -v '^.github/workflows/connector-release.yml$'
+          )
+          uvx yamllint@1.38.0 --no-warnings -f github "${files[@]}"
+
+  actionlint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # Pinned by checksum: this runs against every workflow, including the release ones.
+      - name: Lint every workflow
+        run: |
+          curl -fsSL \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" \
+            | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  compose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # --no-interpolate checks the structure without needing any of the rig's secrets;
+      # several compose files declare required variables that only a real .env supplies.
+      - name: Every dev-servers compose file parses
+        shell: bash
+        working-directory: dev-servers
+        run: |
+          for file in compose/*.yml; do
+            echo "::group::$file"
+            docker compose --env-file .env.example -f "$file" config -q --no-interpolate
+            echo "::endgroup::"
+          done
+
+  release-config:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.15"
+      - run: uv python install
+      - run: uv sync --frozen --project maintenance
+      # The schema comes from the exact release-please version the pinned action bundles
+      # (17.6.1), so a key this repository relies on cannot silently stop being supported.
+      - name: release-please-config.json matches its schema
+        shell: bash
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/googleapis/release-please/11fbf2605870d7741a719efe6de50a4487a8b461/schemas/config.json \
+            -o "$RUNNER_TEMP/release-please.schema.json"
+          echo "82ae5d0a805cd3e4c437ce7a4d3eae1e3db51706ad414c624cc749ca02e7c1c5  $RUNNER_TEMP/release-please.schema.json" \
+            | sha256sum -c -
+          SCHEMA="$RUNNER_TEMP/release-please.schema.json" uv run --frozen --project maintenance python - <<'PY'
+          import json, os, sys
+          import jsonschema
+
+          schema = json.load(open(os.environ["SCHEMA"]))
+          config = json.load(open("release-please-config.json"))
+          validator = jsonschema.validators.validator_for(schema)(schema)
+          errors = sorted(validator.iter_errors(config), key=lambda e: list(e.absolute_path))
+          for error in errors:
+              path = "/".join(str(part) for part in error.absolute_path) or "<root>"
+              print(f"{path}: {error.message}", file=sys.stderr)
+          sys.exit(1 if errors else 0)
+          PY
+
+      - name: The manifest and the config describe the same packages
+        run: |
+          diff <(jq -r '.packages | keys[]' release-please-config.json) \
+               <(jq -r 'keys[]' .release-please-manifest.json)
+
+  release-scripts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: The release guard and the packaging library behave as documented
+        run: |
+          bash maintenance/tests/test_release_guard.sh
+          bash maintenance/tests/test_package_determinism.sh

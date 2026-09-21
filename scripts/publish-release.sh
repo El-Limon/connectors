@@ -73,6 +73,10 @@ publish() {
     --channel "$channel" --tag "$tag" --dist "$dist" --out "$out")
   if [ -n "$reports" ]; then assemble+=(--reports "$reports"); fi
   if [ -n "$release_mode" ]; then assemble+=(--mode "$release_mode"); fi
+  # A stable release must be attributable to a clean commit and nothing else. A dev or PR
+  # build is already stamped with a dev version, so a build script that leaves a stray file
+  # behind should not stop it from publishing — the record still says the tree was dirty.
+  if [ "$channel" != "stable" ]; then assemble+=(--allow-dirty); fi
   if [ "${#files[@]}" -gt 0 ]; then assemble+=("${files[@]}"); fi
   "${assemble[@]}"
 

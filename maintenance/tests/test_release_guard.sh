@@ -61,9 +61,9 @@ tag_origin "$clone" minecraft-v1.2.3
 expect 0 "a tag, a manifest and a checkout that agree" "$clone" minecraft 1.2.3 minecraft-v1.2.3
 grep -q "release-guard: ok minecraft-v1.2.3" "$WORK/out.0"
 
-# 2. An empty tag means nothing is published.
+# 2. An empty tag means nothing is published — the shape a push or pull_request run has.
 clone="$(fixture empty)"
-expect 0 "an empty tag stands down" "$clone" minecraft 1.2.3 ""
+expect 0 "an empty tag stands down" "$clone" minecraft "" ""
 grep -q "nothing to guard" "$WORK/out.1"
 
 # 3. The tag does not match the version it claims to release.
