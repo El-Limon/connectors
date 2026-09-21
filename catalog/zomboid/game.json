@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "zomboid",
+  "name": "Project Zomboid",
+  "connector": "zomboid",
+  "platforms": ["linux"],
+  "sources": {
+    "steam": {
+      "provider": "steam",
+      "baseUrl": "https://store.steampowered.com",
+      "watch": {
+        "kind": "game",
+        "component": "zomboid",
+        "app": 380870,
+        "os": "linux",
+        "depots": ["380871", "380873"],
+        "channels": {
+          "public": {"branch": "public"}
+        },
+        "knownBranches": ["regex:^[0-9]+\\.[0-9]+$", "regex:^legacy[0-9]+$", "regex:^b[0-9]+"]
+      }
+    }
+  },
+  "build": {"system": "script", "projectDir": "games/zomboid"},
+  "componentRoles": {
+    "agent": {
+      "description": "Server-side -javaagent jar loaded into the dedicated server JVM (JAVA_TOOL_OPTIONS)",
+      "artifactPattern": "takaro-zomboid-agent-{target}-{version}.jar"
+    }
+  },
+  "legacyAssetAliases": {"TakaroConnector-{version}.jar": "linux-42.20.4/agent"},
+  "devServers": {"composeFile": "zomboid.yml"}
+}
