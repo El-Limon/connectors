@@ -1,0 +1,146 @@
+name: VEIN Connector
+
+on:
+  push:
+    branches: [main]
+    paths: ['games/vein/**', 'scripts/**', '.github/workflows/vein.yml']
+  pull_request:
+    paths: ['games/vein/**', 'scripts/**', '.github/workflows/vein.yml']
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+  # Manual re-run to (re)attach assets to an existing release tag, for recovering a
+  # release that release-please published without them.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to embed in the built artifact (e.g. 0.1.0)
+        required: true
+        type: string
+      tag:
+        description: Existing release tag to upload the assets to (e.g. vein-v0.1.0)
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: ${{ !inputs.tag }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: games/vein/sidecar/package-lock.json
+      - name: Install sidecar dependencies
+        working-directory: games/vein/sidecar
+        run: npm ci
+      - name: Typecheck sidecar
+        working-directory: games/vein/sidecar
+        run: npm run typecheck
+      - name: Test sidecar
+        working-directory: games/vein/sidecar
+        run: npm test
+      - name: Build the plugin and run its unit tests (debian:bookworm toolchain)
+        run: |
+          chmod +x games/vein/mod/build.sh games/vein/mod/tests/run.sh
+          docker run --rm -v "$PWD/games/vein/mod":/src -w /src \
+            debian:bookworm bash -c 'apt-get update -qq && apt-get install -y -qq build-essential >/dev/null && ./build.sh --native --tests'
+          sudo chown -R "$(id -u):$(id -g)" games/vein/mod
+
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Generate token
+        id: app-token
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.TAKARO_CI_APP_ID }}
+          private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: games/vein/sidecar/package-lock.json
+
+      - name: Make scripts executable
+        run: chmod +x games/vein/scripts/*.sh games/vein/mod/*.sh games/vein/mod/tests/*.sh scripts/*.sh
+
+      - name: Resolve release params
+        id: params
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_TAG: ${{ inputs.tag }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEV_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/release-params.sh vein >> "$GITHUB_OUTPUT"
+
+      - name: Build release artifacts
+        run: games/vein/scripts/build-release.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
+
+      - name: Publish stable release assets
+        if: ${{ steps.params.outputs.publish == 'stable' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          scripts/publish-release.sh upload "${{ steps.params.outputs.tag }}" \
+            "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" \
+            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" \
+            "$RUNNER_TEMP/dist/SHA256SUMS"
+
+      - name: Publish rolling dev build
+        if: ${{ steps.params.outputs.publish == 'rolling' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          scripts/publish-release.sh rolling vein-dev \
+            "VEIN Connector - latest dev build" \
+            "Rolling development build (\`${{ steps.params.outputs.version }}\`), updated on every push to main. Not for production." \
+            "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" \
+            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" \
+            "$RUNNER_TEMP/dist/SHA256SUMS"
+
+      - name: Publish PR build
+        if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          scripts/publish-release.sh rolling "${{ steps.params.outputs.tag }}" \
+            "VEIN Connector - build for PR #${{ github.event.pull_request.number }}" \
+            "Disposable build (\`${{ steps.params.outputs.version }}\`) for PR #${{ github.event.pull_request.number }}. Replaced on every push, deleted when the PR closes. Not for production." \
+            "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" \
+            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" \
+            "$RUNNER_TEMP/dist/SHA256SUMS"
+
+      - name: Comment PR build
+        if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          scripts/comment-pr-build.sh vein \
+            "${{ github.event.pull_request.number }}" \
+            "${{ steps.params.outputs.tag }}" \
+            "${{ steps.params.outputs.version }}" \
+            "$RUNNER_TEMP/dist/takaro-vein-plugin.tar.gz" \
+            "$RUNNER_TEMP/dist/takaro-vein-sidecar.tar.gz" \
+            "$RUNNER_TEMP/dist/SHA256SUMS"

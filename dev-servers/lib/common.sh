@@ -9,6 +9,7 @@ DS_DATA="${DS_DIR}/_data"
 DS_COMPOSE_DIR="${DS_DIR}/compose"
 DS_TEMPLATES="${DS_DIR}/templates"
 DS_ENV_FILE="${DS_DIR}/.env"
+DS_FOCUS="${DS_DATA}/.focus"
 
 # ── Game registry ────────────────────────────────────────────────────────────
 # id | compose | profile | services | ram_gb | disk_gb | kind | description | datadir
@@ -25,6 +26,7 @@ minecraft-fabric-26.1.2|minecraft.yml|fabric-26-1-2|fabric-26-1-2|3|2|connector|
 valheim|valheim.yml|-|valheim|4|6|connector|Valheim + BepInEx + Takaro Valheim plugin|valheim
 dayz|dayz.yml|-|dayz dayz-takaro|6|4|sidecar|DayZ (Linux, app 223350) + @TakaroIntegration mod + Takaro TypeScript sidecar|dayz
 dragonwilds|dragonwilds.yml|-|dragonwilds dragonwilds-takaro|4|8|sidecar|RuneScape: Dragonwilds (Linux, app 4019830) + Takaro LD_PRELOAD plugin + TypeScript sidecar|dragonwilds-dev
+vein|vein.yml|-|vein vein-takaro|4|20|sidecar|VEIN (Linux, app 2131400) + Takaro LD_PRELOAD plugin + TS sidecar|vein-dev
 rust|rust.yml|-|rust|8|12|connector|Rust + Carbon + TakaroConnector.cs|rust
 7d2d|7d2d.yml|-|7d2d|8|32|connector|7 Days to Die + Takaro mod|7d2d
 zomboid|zomboid.yml|-|zomboid|8|16|connector|Project Zomboid B42 + Takaro javaagent|zomboid
@@ -88,6 +90,14 @@ for line in lines:
         b = re.match(r'^    build:\s*(\S.*?)\s*$', line)
         if b:
             ctx = b.group(1).strip('"\'')
+            # Expand ${VAR} / ${VAR:-default} so a build context supplied through
+            # .env is resolved instead of being treated as a missing directory.
+            def _sub(m):
+                name, _, default = m.group(1).partition(':-')
+                return os.environ.get(name) or default
+            ctx = re.sub(r'\$\{([^}]*)\}', _sub, ctx)
+            if not ctx:
+                sys.exit(0)
             sys.exit(0 if not os.path.isdir(os.path.join(base, ctx)) else 1)
 sys.exit(1)
 PYEOF
@@ -165,6 +175,15 @@ ds_compose() {
         done
     fi
     ( cd "$DS_COMPOSE_DIR" && docker compose "${args[@]}" "$@" )
+}
+
+# Compose project name for a game (every dev-servers compose file sets `name:`).
+ds_compose_project() {
+    local file name
+    file="$(ds_compose_file "$1")"
+    name="$(awk -F': *' '/^name:[[:space:]]*/ {print $2; exit}' "$file" 2>/dev/null | tr -d '"'"'"'[:space:]')"
+    [ -n "$name" ] || name="$(basename "$(dirname "$file")")"
+    printf '%s' "$name"
 }
 
 # Running containers for a game, one id per line.
@@ -301,6 +320,7 @@ ds_source_paths() {
         valheim)            echo "games/valheim/mod/src games/valheim/version.txt" ;;
         terraria)           echo "games/terraria/mod/src games/terraria/version.txt" ;;
         dragonwilds)        echo "games/dragonwilds/mod games/dragonwilds/sidecar/src games/dragonwilds/version.txt" ;;
+        vein)               echo "games/vein/mod games/vein/sidecar/src games/vein/version.txt" ;;
         conan-exiles)       echo "games/conan-exiles/bridge/src games/conan-exiles/bridge/package.json games/conan-exiles/bridge/tsconfig.json" ;;
         *)                  echo "" ;;
     esac

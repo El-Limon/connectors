@@ -249,6 +249,46 @@ install_dragonwilds() {
     "${DS_DIR}/scripts/deploy-connector.sh" dragonwilds
 }
 
+install_vein() {
+    # VEIN dev rig (Steam app 2131400, anonymous login). Version-locked after the
+    # install: a client must match the server build id, so the rig never updates
+    # itself behind our back (VEIN_AUTO_UPDATE=false in compose/vein.yml).
+    mkdir -p "${DS_DATA}/vein-dev" "${DS_DATA}/vein-plugin" "${DS_DATA}/vein-sidecar"
+
+    ds_info "Building the VEIN server image (steamcmd base + Takaro entrypoint)..."
+    ds_compose vein build vein
+
+    ds_info "First boot: downloading VEIN server files (SteamCMD app 2131400)..."
+    ds_info "The first SteamCMD attempt sometimes fails; the entrypoint retries."
+    ds_compose vein up -d vein
+
+    local bin="${DS_DATA}/vein-dev/Vein/Binaries/Linux/VeinServer-Linux-Test"
+    ds_wait_for_condition vein "[ -s '${bin}' ]" 5400 "VEIN server binary" \
+        || ds_die "VEIN server files never appeared; check 'dev-servers/scripts/logs.sh vein'"
+    ds_wait_for_condition vein \
+        "ds_steam_app_ready '${DS_DATA}/vein-dev/steamapps/appmanifest_2131400.acf'" \
+        1800 "VEIN install manifest (fully installed)" \
+        || ds_warn "appmanifest never reached StateFlags 4 — the server may re-download on the next boot"
+
+    # First boot must reach readiness before we call this installed. This build never
+    # prints "Created session GameSession." (that marker comes from an older build);
+    # the real signals are the Steam heartbeat line in Vein.log and the built-in HTTP
+    # API answering on 127.0.0.1:8080.
+    ds_wait_for_condition vein \
+        "grep -aq 'LogRamjetNetworking: Heartbeating' '${DS_DATA}/vein-dev/Vein/Saved/Logs/Vein.log' 2>/dev/null" \
+        1800 "VEIN first boot (LogRamjetNetworking: Heartbeating)" \
+        || ds_die "VEIN never reached its heartbeat; check 'dev-servers/scripts/logs.sh vein'"
+    ds_wait_for_condition vein \
+        "docker exec takaro-dev-vein curl -fsS -m 5 http://127.0.0.1:8080/status >/dev/null 2>&1" \
+        300 "VEIN built-in HTTP API (127.0.0.1:8080/status)" \
+        || ds_warn "the built-in HTTP API did not answer within 5 min"
+
+    ds_fix_ownership "${DS_DATA}/vein-dev"
+
+    # The plugin and sidecar are built separately; a no-op until those trees exist.
+    "${DS_DIR}/scripts/deploy-connector.sh" vein
+}
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 ds_info "Installing ${GAME} — $(ds_description "$GAME")"
@@ -264,6 +304,7 @@ case "$GAME" in
     zomboid)            install_zomboid ;;
     dayz)               install_dayz ;;
     dragonwilds)        install_dragonwilds ;;
+    vein)               install_vein ;;
     valheim)            install_valheim ;;
     terraria)           install_terraria ;;
     conan-exiles)       install_conan ;;
