@@ -663,3 +663,40 @@ def test_a_takaro_api_that_refuses_a_call_fails_that_row_and_still_cleans_up(
     assert row(report, "hosted-registration")["status"] == "pass"
     assert report["outcome"] == "fail"
     assert rest.servers == {}, "a failed hosted run still deletes the gameserver it registered"
+
+
+def test_a_hosted_identity_always_fits_takaros_identity_column() -> None:
+    """Takaro answers an over-long identityToken with a bare 400 on identify.
+
+    Observed against the real Takaro: every identity of 50 characters or fewer registered,
+    and `takaro-maint-minecraft-neoforge-1.21.11-p1fh-374e93` (51) failed with
+    "Identify failed: Request failed with status code 400" and no gameserver. The identity
+    must therefore be built to fit instead of assembled and hoped for.
+    """
+    from takaro_maint import catalog as catalog_pkg
+    from takaro_maint import paths
+    from takaro_maint.games.minecraft.verify import (
+        IDENTITY_LIMIT,
+        hosted_identity,
+        hosted_identity_prefix,
+    )
+
+    paths.set_repo_root(REPO_ROOT)
+    catalog = catalog_pkg.load()
+    targets = list(catalog.game("minecraft").targets)
+    assert targets, "the minecraft catalog should declare targets"
+
+    for target in targets:
+        prefix = hosted_identity_prefix(target)
+        for run_id in ("p1", "p1fh2", "gha-35553725171-1", "x" * 40):
+            identity = hosted_identity(target, run_id, "abc123")
+            assert len(identity) <= IDENTITY_LIMIT, (target.id, run_id, identity)
+            # The stale-registration sweep matches on the prefix and the nonce keeps two
+            # runs apart, so neither may be what the clamp eats.
+            assert identity.startswith(prefix), (target.id, run_id, identity)
+            assert identity.endswith("abc123"), (target.id, run_id, identity)
+
+    # The prefix cannot depend on the run id, or a later run could not sweep an earlier one.
+    neoforge = next(t for t in targets if t.id == "neoforge-1.21.11")
+    assert hosted_identity(neoforge, "p1h", "525b35").startswith(hosted_identity_prefix(neoforge))
+    assert hosted_identity(neoforge, "p1fh", "374e93").startswith(hosted_identity_prefix(neoforge))

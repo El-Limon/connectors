@@ -72,19 +72,36 @@ def sibling_target(catalog: Any, target: Any) -> Any | None:
     return sorted(others, key=lambda other: other.id)[0] if others else None
 
 
+# Takaro stores an identity token in a 50-character column and answers anything longer with a
+# bare 400 on identify, naming nothing. An identity is therefore built to fit rather than
+# assembled and hoped for: `neoforge-1.21.11` plus a four-character run id is already 51.
+IDENTITY_LIMIT = 50
+
+# Length of `TargetRun.nonce` (``secrets.token_hex(3)``). The prefix reserves this much room so
+# that a prefix and a nonce always fit, whatever the target id.
+NONCE_CHARS = 6
+
+
 def hosted_identity_prefix(target: Any) -> str:
-    """Every identity a hosted verification of this target has ever registered under."""
-    return f"takaro-maint-{target.game}-{target.id}-"
+    """Every identity a hosted verification of this target has ever registered under.
+
+    The stale-registration sweep matches on exactly this string, so it must not depend on the
+    run id — only on the target.
+    """
+    return f"takaro-maint-{target.game}-{target.id}-"[: IDENTITY_LIMIT - NONCE_CHARS]
 
 
 def hosted_identity(target: Any, run_id: str, nonce: str) -> str:
     """The identity token this hosted run registers its gameserver under.
 
     It has to be new every time: Takaro answers a registration under an identity whose
-    gameserver was deleted with 409, so a fixed identity works exactly once. The run id
-    keeps it traceable and the nonce keeps two runs with the same id apart.
+    gameserver was deleted with 409, so a fixed identity works exactly once. The nonce is what
+    guarantees that; the run id is only there to make a registration traceable, so it is the
+    part that gives way when the whole thing would exceed ``IDENTITY_LIMIT``.
     """
-    return f"{hosted_identity_prefix(target)}{run_id}-{nonce}"
+    prefix = hosted_identity_prefix(target)
+    room = IDENTITY_LIMIT - len(prefix) - len(nonce)
+    return f"{prefix}{f'{run_id}-'[:room] if room > 0 else ''}{nonce}"
 
 
 # --------------------------------------------------------------------------- local hooks
