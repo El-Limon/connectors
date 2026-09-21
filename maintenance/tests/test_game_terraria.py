@@ -538,11 +538,14 @@ def test_verify_hooks_render_both_configs_and_know_the_terraria_lines(run: Any, 
     assert hooks.TERRARIA_BANNER.search("Terraria Server v1.4.5.6")
     assert hooks.TSHOCK_BANNER.search("TShock 6.1.0.0 (Mintaka) now running.")
 
-    # The container the runner will start: the world on the command line, and not as root.
+    # The container the runner will start: the world is on the command line, because TShock
+    # reads no environment variable for it and stops on its world-selection menu without one.
     command = adapter.container_command(resolved, fake_run.data_dir)
     assert command[:2] == ["-world", "/worlds/takaro-verify.wld"]
     assert command[command.index("-autocreate") + 1] == "1"
-    assert adapter.container_options(resolved) == ["--user", f"{os.getuid()}:{os.getgid()}"]
+    # And nothing asks for a non-root run: TShock writes inside /server, which is neither
+    # writable nor a volume, so a --user run dies before it reads its configuration.
+    assert not hasattr(adapter, "container_options")
 
     mounts = adapter.container_mounts(resolved, fake_run.data_dir)
     assert [mount.split(":")[-1] for mount in mounts] == ["/tshock", "/worlds", "/plugins"]
@@ -1134,3 +1137,28 @@ def test_setup_environment_refuses_a_reference_cache_that_is_not_the_catalogs(
         import shutil as _shutil
 
         _shutil.rmtree(refs, ignore_errors=True)
+
+
+def test_after_shutdown_hands_the_data_directory_back_to_the_caller(
+    run: Any, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server runs as root, so something has to give its files back, and say so."""
+    import asyncio
+
+    recorder = tmp_path / "docker-argv.txt"
+    stub = tmp_path / "docker-stub.sh"
+    stub.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> {recorder}\nexit 0\n', encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("TAKARO_MAINT_DOCKER", str(stub))
+
+    resolved = resolve(run, repo)
+    fake_run = FakeRun(tmp_path, resolved)
+
+    asyncio.run(hooks.after_shutdown(fake_run, None, "ws://unused/", None))
+
+    argv = recorder.read_text().split()
+    # chown has to replace the image's entrypoint, which is the server itself.
+    assert argv[argv.index("--entrypoint") + 1] == "chown"
+    assert f"{fake_run.data_dir}:/target" in argv
+    assert f"{os.getuid()}:{os.getgid()}" in argv
+    assert argv[-1] == "/target"

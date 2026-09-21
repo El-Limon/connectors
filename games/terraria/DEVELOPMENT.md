@@ -161,8 +161,10 @@ connector is deferred, so the release claims `contract` verification rather than
 
 - `container_command` puts the world on the server's command line. TShock reads no environment
   variable for it, and without it the server stops on its interactive world-selection menu.
-- `container_options` runs the container as the calling user; the image runs as root and would
-  otherwise leave root-owned files in the harness's data directory.
+- the container runs as **root**, because this image gives no choice: TerrariaServerAPI opens
+  its own `ServerLog.txt` in `/server` and TShock writes `/server/GeoIP.dat`, neither of which is
+  a declared volume, so a `--user` run dies before it has read its configuration.
+  `after_shutdown` hands the run's data directory back to the calling user afterwards.
 - `before_boot` writes `tshock/config.json` (REST on, one application token) and the bridge's
   `TakaroConfig.txt`, both mode 0600. Neither value is ever printed.
 - `after_boot` starts the bridge as a **second container** with `--network container:<server>`, so

@@ -12,6 +12,12 @@ container exists. That is what ``after_boot`` is for.
 ``TakaroConfig.txt``. Both are written before the server starts, both mode 0600, and
 neither value is ever printed.
 
+*Root, and then not root.* This image has to run as root: TerrariaServerAPI opens its own
+``ServerLog.txt`` in ``/server`` and TShock writes ``/server/GeoIP.dat``, neither of which is
+a declared volume, so a ``--user`` run dies before it has read its configuration. The run
+therefore leaves root-owned files behind in its data directory, and ``after_shutdown`` gives
+them back to the calling user with a throwaway container.
+
 *Which checks are honest here.* ``identify`` and ``connector-load`` look for lines in the
 *server* log that this connector does not write — it writes them in its own log — so they
 are not run; ``handshake`` is the equivalent and says so in its detail. ``catalog-items``
@@ -194,6 +200,42 @@ def after_boot(run: Any, container: Any, takaro_env: dict[str, str]) -> None:
     bridge.start()
     output.info(f"bridge container {name} joined {container.name}'s network namespace")
     del takaro_env
+
+
+async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: Any) -> None:
+    """Give the run's data directory back to the caller.
+
+    TShock has to run as root here (see the module docstring), so everything the server
+    wrote — the world, the logs, its own config — belongs to root. The harness's own
+    cleanup would silently leave it behind in the temp directory, so one throwaway
+    container hands it back. It is best effort: failing to chown is not a verification
+    result, and it is never allowed to fail the run.
+    """
+    del fake, ws_url, ledger_inputs
+    completed = subprocess.run(
+        [
+            *runner.docker_command(),
+            "run",
+            "--rm",
+            # The image's entrypoint is the server itself, so chown has to replace it
+            # rather than be handed to it as arguments.
+            "--entrypoint",
+            "chown",
+            "-v",
+            f"{run.data_dir}:/target",
+            str(run.resolved["containerRef"]),
+            "-R",
+            f"{os.getuid()}:{os.getgid()}",
+            "/target",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        output.warn(f"could not reclaim ownership of the verification data dir: {completed.stderr.strip()[:200]}")
+    else:
+        output.info("reclaimed ownership of the verification data dir")
 
 
 def scan_runtime_identity(adapter: Any, log_file: Path) -> dict[str, Any]:

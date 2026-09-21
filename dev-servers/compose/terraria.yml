@@ -12,8 +12,10 @@ services:
   terraria:
     image: "${TERRARIA_IMAGE:-target-not-resolved}"
     container_name: "${TERRARIA_CONTAINER_NAME:-takaro-dev-terraria}"
-    # The image runs as root; without this it leaves root-owned files in _data.
-    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
+    # No `user:`. TShock has to run as root in this image: TerrariaServerAPI opens its own
+    # ServerLog.txt in /server and TShock writes /server/GeoIP.dat, neither of which is a
+    # declared volume, so a non-root run dies before it reads its configuration.
+    # install.sh reclaims ownership of _data afterwards (ds_fix_ownership).
     stdin_open: true
     tty: true
     environment:

@@ -163,11 +163,6 @@ class TerrariaAdapter:
             "DOTNET_CLI_HOME": "/tmp",
         }
 
-    def container_options(self, resolved: dict[str, Any]) -> list[str]:
-        """The image runs as root; without this it leaves root-owned files in the data dir."""
-        del resolved
-        return ["--user", f"{os.getuid()}:{os.getgid()}"]
-
     def container_command(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
         """The world, on the command line, because TShock reads no environment variable for it.
 
