@@ -144,6 +144,21 @@ connector's version as BepInEx's. It now carries the real loader version, record
 at setup time. `target.{game,id,revision,fingerprint}` names the build the zip was made
 for, and `processRole` is `dedicated-server` or `graphical-client`.
 
+## Catalogue names
+
+`listItems` and `listEntities` return `code = prefab.name` (`SwordBronze`) and
+`name = the prefab's localisation key with its `$` stripped` (`item_sword_bronze`). The key
+is not a human name, and the dedicated server cannot turn it into one from what the plugin
+references: Valheim's `Localization` lives in `assembly_guiutils.dll`, which is not among
+the assemblies `build.references` selects, and a headless server has no reason to load a
+translation table.
+
+Making those names human therefore costs a reference: add `assembly_guiutils.dll` to the
+target's `build.references` and `files`, re-pin, add the `HintPath`, and then **prove on a
+real headless server** that `Localization.instance.Localize("$item_sword_bronze")` returns
+a word rather than the key back. Do not ship the call without that proof — an unresolved key
+comes back unchanged or in brackets, and the catalogue would be no better than it is now.
+
 ## Companion evidence policy
 
 `takaro-maint verify --game valheim` boots a **dedicated server**. The companion never
