@@ -1205,3 +1205,37 @@ def test_npms_own_dot_metadata_never_reaches_a_deployable_bridge_archive(run: An
 
     release = (REPO_ROOT / "games" / "terraria" / "scripts" / "build-release.sh").read_text()
     assert "find \"${STAGE}/TakaroTerrariaBridge/node_modules\" -name '.*' -prune -exec rm -rf {} +" in release
+
+
+def test_a_corrupt_bridge_archive_leaves_the_working_bridge_in_place(run: Any, pinned: Any, tmp_path: Path) -> None:
+    """A half-extracted replacement is worse than no replacement: the old one stays."""
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    bridge_zip(directory)
+    deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))
+    live = dest / "bridge" / "TakaroTerrariaBridge" / "dist" / "index.js"
+    assert live.read_text() == "bridge"
+
+    # The same archive with one member's stored bytes flipped: the name check passes, the
+    # CRC does not, and extraction fails partway through.
+    broken = tmp_path / "broken"
+    make_zip(
+        broken / BRIDGE_ZIP,
+        "TakaroTerrariaBridge",
+        {"dist/index.js": "replacement", "package.json": "{}", "node_modules/ws/index.js": "ws"},
+    )
+    raw = bytearray((broken / BRIDGE_ZIP).read_bytes())
+    marker = raw.index(b"replacement")
+    raw[marker] = raw[marker] ^ 0xFF
+    (broken / BRIDGE_ZIP).write_bytes(bytes(raw))
+    plugin_zip(broken)
+
+    code, payload, stderr = deploy(run, pinned.root, dest, manifest_for(run, pinned.root, broken))
+
+    # The archive is refused where it breaks -- on its own bytes, not on its file name.
+    assert code != 0, payload
+    assert "CRC" in stderr, stderr
+    assert live.read_text() == "bridge"
+    assert not (dest / "bridge" / ".TakaroTerrariaBridge.incoming").exists()

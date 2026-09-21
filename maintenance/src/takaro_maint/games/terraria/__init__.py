@@ -40,6 +40,8 @@ PLUGIN_FOLDER = "TakaroTerrariaEvents"
 PLUGIN_DLL = "TakaroTerrariaEvents.dll"
 #: The one folder a bridge zip may write; the operator's TakaroConfig.txt sits beside it.
 BRIDGE_FOLDER = "TakaroTerrariaBridge"
+# Where a bridge archive is unpacked before it replaces the live folder.
+BRIDGE_STAGE = ".TakaroTerrariaBridge.incoming"
 
 #: The world one verification run creates, inside the container's ``/worlds`` mount.
 VERIFY_WORLD = "takaro-verify"
@@ -240,9 +242,17 @@ class TerrariaAdapter:
         """The bridge folder is replaced wholesale; ``bridge/TakaroConfig.txt`` is never touched."""
         self._entries(artifact, BRIDGE_FOLDER)
         folder = install_dir / BRIDGE_FOLDER
-        shutil.rmtree(folder, ignore_errors=True)
-        with zipfile.ZipFile(artifact) as archive:
-            archive.extractall(install_dir)
+        # Staged, not extracted over the live folder: a truncated or corrupt archive would
+        # otherwise delete a working bridge and leave half of a broken one behind.
+        stage = install_dir / BRIDGE_STAGE
+        shutil.rmtree(stage, ignore_errors=True)
+        try:
+            with zipfile.ZipFile(artifact) as archive:
+                archive.extractall(stage)
+            shutil.rmtree(folder, ignore_errors=True)
+            os.replace(stage / BRIDGE_FOLDER, folder)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
         for stale in sorted(install_dir.glob("takaro-terraria-bridge-*.zip")):
             if stale.name != artifact.name:
                 stale.unlink()
