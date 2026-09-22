@@ -1073,8 +1073,8 @@ def test_the_stamp_line_the_harness_reads_is_the_one_the_bridge_writes() -> None
     """The contract is across two languages, so it has to be bound rather than restated.
 
     `hooks.STAMP_LINE` is a Python regex with named groups; the line it reads is built by
-    a TypeScript template. Renaming a word in either used to leave the other looking
-    correct, and `bridge-identify` would then report an unstamped bridge.
+    a TypeScript template. The test binds their literal text so a rename in either cannot
+    leave the other looking correct while `bridge-identify` reports an unstamped bridge.
     """
     source = (REPO_ROOT / "games/conan-exiles/bridge/src/targetStamp.ts").read_text(encoding="utf-8")
 

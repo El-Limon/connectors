@@ -412,7 +412,7 @@ class ValheimAdapter(BaseAdapter):
         install_dir.mkdir(parents=True, exist_ok=True)
         # Unpacked beside the install rather than over it: a CRC error, a full disk or an
         # interrupt part-way through the extraction would otherwise leave a half-written
-        # plugin folder where a working one used to be, with the ledger still naming the
+        # plugin folder in place of the working one, with the ledger still naming an
         # artifact that is no longer there. The staging area is outside BepInEx/plugins so
         # a crash cannot leave the chainloader a second copy of the assemblies to load.
         staging_root = dest / ".takaro" / "deploy"

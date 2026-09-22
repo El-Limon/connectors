@@ -722,8 +722,8 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
 
     The request is made here rather than inside one of the checks, because both of them
     read its consequences: ``event`` waits for the log line the plugin forwards, ``stop``
-    waits for the save and the respawn. Selecting one without the other used to mean
-    waiting out three budgets for a shutdown nobody had asked for.
+    waits for the save and the respawn. One request here serves either selected check and
+    prevents either from waiting for a shutdown that was never requested.
     """
     del ws_url
     note = "shutdown requested"

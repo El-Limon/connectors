@@ -161,10 +161,9 @@ class OciRegistryProvider(Provider):
         """Exchange an anonymous bearer challenge for a token. The token is never printed.
 
         The realm comes from a ``WWW-Authenticate`` header, which is to say from whoever
-        answered the request -- so it is a URL an attacker controls. It used to be followed
-        as given, which is a fetch of ``file:///etc/passwd`` or of a cloud metadata service
-        for the price of one hostile 401, and the rest of the challenge was pasted into the
-        query string unencoded, so a value carrying ``&`` or ``=`` rewrote it.
+        answered the request -- so it is a URL an attacker controls. Only an HTTPS URL to
+        a named public host is followed, keeping local files and cloud metadata services
+        out of reach; challenge values are encoded before entering its query string.
         """
         realm = challenge.get("realm")
         if not realm:

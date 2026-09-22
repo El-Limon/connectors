@@ -1564,8 +1564,8 @@ def test_the_identify_line_the_harness_waits_for_is_the_one_the_bridge_writes() 
     """The contract is across two languages, so it has to be bound rather than restated.
 
     `hooks.IDENTIFIED_LINE` is a Python regex; the line it waits for is built by a
-    TypeScript template. Renaming either used to leave the other looking correct, and the
-    check would then wait out its budget on a line that is being written under a new name.
+    TypeScript template. The test binds their literal text so a rename cannot leave the
+    other side looking correct while the check waits out its budget for a different line.
     """
     source = (REPO_ROOT / "games/terraria/bridge/src/takaro/connectionLog.ts").read_text(encoding="utf-8")
 
