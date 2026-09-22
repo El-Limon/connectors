@@ -560,6 +560,13 @@ def test_verify_hooks_regexes_and_check_ids() -> None:
         "Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/steam/ZomboidDedicatedServer/Takaro/TakaroConnector.jar"
     )
     assert hooks.HOOKS_INSTALLED_LINE.search("[2026-09-21 10:00:00.000] [Takaro] premain: hooks installed")
+    unbound = hooks.UNBOUND_HOOKS_LINE.search(
+        "[2026-09-21 10:00:00.000] [Takaro] premain: hooks installed; unbound: [chat, death]"
+    )
+    assert unbound and unbound.group(1) == "chat, death"
+    assert hooks.UNBOUND_HOOKS_LINE.search(
+        "[2026-09-21 10:00:00.000] [Takaro] ERROR hook chat: matcher bound nothing on zombie.network.chat.ChatServer"
+    )
     # Those two lines are the agent's, built in Java, and matched here by a Python regex.
     # The samples come out of the agent source rather than being restated, so a renamed
     # literal fails here instead of making a check wait out its budget in a live run.

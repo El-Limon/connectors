@@ -15,11 +15,17 @@ import io.takaro.zomboid.agent.hooks.ZLoggerAdvice;
 import io.takaro.zomboid.agent.hooks.ZombieKilledAdvice;
 
 import java.lang.instrument.Instrumentation;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
+import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.utility.JavaModule;
 
 /**
@@ -36,12 +42,36 @@ public final class HookInstaller {
 
     private static volatile boolean sawTickTarget;   // RCONServer transformed
     private static volatile boolean sawGameServer;   // GameServer transformed
+    private static final Set<String> UNBOUND = ConcurrentHashMap.newKeySet();
 
     private HookInstaller() {
     }
 
     public static boolean sawTickTarget() {
         return sawTickTarget;
+    }
+
+    public static List<String> unboundHooks() {
+        return UNBOUND.stream().sorted().toList();
+    }
+
+    static List<String> unbound(
+            TypeDescription type,
+            Map<String, ElementMatcher<? super MethodDescription>> hooks) {
+        return hooks.entrySet().stream()
+                .filter(hook -> type.getDeclaredMethods().stream().noneMatch(hook.getValue()::matches))
+                .map(Map.Entry::getKey)
+                .sorted()
+                .toList();
+    }
+
+    private static void recordUnbound(
+            TypeDescription type,
+            Map<String, ElementMatcher<? super MethodDescription>> hooks) {
+        for (String hook : unbound(type, hooks)) {
+            UNBOUND.add(hook);
+            AgentLog.error("hook " + hook + ": matcher bound nothing on " + type.getName());
+        }
     }
 
     public static void install(Instrumentation inst) {
@@ -55,41 +85,59 @@ public final class HookInstaller {
                 .with(new LoggingListener())
                 // tick — main-loop drain + reconcile + connector start
                 .type(named("zombie.network.RCONServer"))
-                .transform((builder, type, loader, module, pd) -> builder.visit(
-                        Advice.to(TickAdvice.class)
-                                .on(named("update").and(isStatic()).and(takesArguments(0)))))
+                .transform((builder, type, loader, module, pd) -> {
+                    ElementMatcher.Junction<MethodDescription> tick =
+                            named("update").and(isStatic()).and(takesArguments(0));
+                    recordUnbound(type, Map.of("tick", tick));
+                    return builder.visit(Advice.to(TickAdvice.class).on(tick));
+                })
                 // join + leave
                 .type(named("zombie.network.GameServer"))
-                .transform((builder, type, loader, module, pd) -> builder
-                        .visit(Advice.to(PlayerConnectAdvice.class)
-                                .on(named("receivePlayerConnect").and(isStatic()).and(takesArguments(3))))
-                        .visit(Advice.to(PlayerDisconnectAdvice.class)
-                                .on(named("disconnectPlayer").and(isStatic()).and(takesArguments(2)))))
+                .transform((builder, type, loader, module, pd) -> {
+                    ElementMatcher.Junction<MethodDescription> connect =
+                            named("receivePlayerConnect").and(isStatic()).and(takesArguments(3));
+                    ElementMatcher.Junction<MethodDescription> disconnect =
+                            named("disconnectPlayer").and(isStatic()).and(takesArguments(2));
+                    recordUnbound(type, Map.of("connect", connect, "disconnect", disconnect));
+                    return builder
+                            .visit(Advice.to(PlayerConnectAdvice.class).on(connect))
+                            .visit(Advice.to(PlayerDisconnectAdvice.class).on(disconnect));
+                })
                 // chat
                 .type(named("zombie.network.chat.ChatServer"))
-                .transform((builder, type, loader, module, pd) -> builder.visit(
-                        Advice.to(ChatAdvice.class)
-                                .on(named("sendMessage")
-                                        .and(takesArgument(0, named("zombie.chat.ChatMessage"))))))
+                .transform((builder, type, loader, module, pd) -> {
+                    ElementMatcher.Junction<MethodDescription> chat = named("sendMessage")
+                            .and(takesArgument(0, named("zombie.chat.ChatMessage")));
+                    recordUnbound(type, Map.of("chat", chat));
+                    return builder.visit(Advice.to(ChatAdvice.class).on(chat));
+                })
                 // death
                 .type(named("zombie.characters.IsoPlayer"))
-                .transform((builder, type, loader, module, pd) -> builder.visit(
-                        Advice.to(PlayerDeathAdvice.class)
-                                .on(named("onKilled").and(takesArguments(3)))))
+                .transform((builder, type, loader, module, pd) -> {
+                    ElementMatcher.Junction<MethodDescription> death =
+                            named("onKilled").and(takesArguments(3));
+                    recordUnbound(type, Map.of("death", death));
+                    return builder.visit(Advice.to(PlayerDeathAdvice.class).on(death));
+                })
                 // entity-killed (zombie killed by a player)
                 .type(named("zombie.characters.IsoZombie"))
-                .transform((builder, type, loader, module, pd) -> builder.visit(
-                        Advice.to(ZombieKilledAdvice.class)
-                                .on(named("onKilled").and(takesArguments(3)))))
+                .transform((builder, type, loader, module, pd) -> {
+                    ElementMatcher.Junction<MethodDescription> zombieKilled =
+                            named("onKilled").and(takesArguments(3));
+                    recordUnbound(type, Map.of("zombie-killed", zombieKilled));
+                    return builder.visit(Advice.to(ZombieKilledAdvice.class).on(zombieKilled));
+                })
                 // log (user logger writes) — emission gated on logEvents in the Bridge.
                 // Hook the write(String,String,boolean) funnel every public
                 // write(..) overload routes through (the 1-arg form is rarely called).
                 .type(named("zombie.core.logger.ZLogger"))
-                .transform((builder, type, loader, module, pd) -> builder.visit(
-                        Advice.to(ZLoggerAdvice.class)
-                                .on(named("write").and(takesArguments(3))
-                                        .and(takesArgument(0, named("java.lang.String")))
-                                        .and(takesArgument(2, boolean.class)))))
+                .transform((builder, type, loader, module, pd) -> {
+                    ElementMatcher.Junction<MethodDescription> log = named("write").and(takesArguments(3))
+                            .and(takesArgument(0, named("java.lang.String")))
+                            .and(takesArgument(2, boolean.class));
+                    recordUnbound(type, Map.of("log", log));
+                    return builder.visit(Advice.to(ZLoggerAdvice.class).on(log));
+                })
                 .installOn(inst);
         retransformLateTargets(inst);
     }

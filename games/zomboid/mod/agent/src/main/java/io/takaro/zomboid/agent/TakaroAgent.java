@@ -67,7 +67,10 @@ public final class TakaroAgent {
 
             // --- install hooks (binds only in the JVM that loads the game classes) ---
             HookInstaller.install(inst);
-            AgentLog.log("premain: hooks installed");
+            var unbound = HookInstaller.unboundHooks();
+            AgentLog.log(unbound.isEmpty()
+                    ? "premain: hooks installed"
+                    : "premain: hooks installed; unbound: " + unbound);
 
             startTickWatchdog();
 

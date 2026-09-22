@@ -22,7 +22,7 @@ class TargetGuardTest {
 
     @Test
     void theRightServerBuildIsAccepted() {
-        TargetGuard.Decision decision = TargetGuard.decide("enforce", PINNED, PINNED, true, true);
+        TargetGuard.Decision decision = TargetGuard.decide("enforce", PINNED, PINNED, true, true, false);
 
         assertEquals("ok", decision.result());
         assertTrue(decision.proceed());
@@ -31,7 +31,7 @@ class TargetGuardTest {
 
     @Test
     void anotherServerBuildIsRefusedUnderEnforce() {
-        TargetGuard.Decision decision = TargetGuard.decide("enforce", PINNED, OTHER, true, true);
+        TargetGuard.Decision decision = TargetGuard.decide("enforce", PINNED, OTHER, true, true, false);
 
         assertEquals("refuse", decision.result());
         assertFalse(decision.proceed());
@@ -41,7 +41,7 @@ class TargetGuardTest {
 
     @Test
     void warnContinuesAfterSayingSo() {
-        TargetGuard.Decision decision = TargetGuard.decide("warn", PINNED, OTHER, true, true);
+        TargetGuard.Decision decision = TargetGuard.decide("warn", PINNED, OTHER, true, true, false);
 
         assertEquals("refuse", decision.result());
         assertTrue(decision.proceed());
@@ -50,13 +50,13 @@ class TargetGuardTest {
 
     @Test
     void anUnknownPolicyIsTreatedAsEnforce() {
-        assertFalse(TargetGuard.decide("nonsense", PINNED, OTHER, true, true).proceed());
-        assertFalse(TargetGuard.decide(null, PINNED, OTHER, true, true).proceed());
+        assertFalse(TargetGuard.decide("nonsense", PINNED, OTHER, true, true, false).proceed());
+        assertFalse(TargetGuard.decide(null, PINNED, OTHER, true, true, false).proceed());
     }
 
     @Test
     void offDoesNotCheckAtAll() {
-        TargetGuard.Decision decision = TargetGuard.decide("off", PINNED, null, true, false);
+        TargetGuard.Decision decision = TargetGuard.decide("off", PINNED, null, true, false, false);
 
         assertEquals("skipped", decision.result());
         assertTrue(decision.proceed());
@@ -64,7 +64,7 @@ class TargetGuardTest {
 
     @Test
     void aJarWithoutATargetIsUnpinnedNotRefused() {
-        TargetGuard.Decision decision = TargetGuard.decide("enforce", null, PINNED, false, true);
+        TargetGuard.Decision decision = TargetGuard.decide("enforce", null, PINNED, false, true, false);
 
         assertEquals("unpinned", decision.result());
         assertTrue(decision.proceed());
@@ -72,7 +72,7 @@ class TargetGuardTest {
 
     @Test
     void aTargetWithoutAPinnedHashIsUnpinned() {
-        TargetGuard.Decision decision = TargetGuard.decide("enforce", "", PINNED, true, true);
+        TargetGuard.Decision decision = TargetGuard.decide("enforce", "", PINNED, true, true, false);
 
         assertEquals("unpinned", decision.result());
         assertTrue(decision.proceed());
@@ -81,7 +81,7 @@ class TargetGuardTest {
     @Test
     void aProbeJvmWithoutTheGameJarContinues() {
         // premain runs three times per boot; the first two JVMs never load the game.
-        TargetGuard.Decision decision = TargetGuard.decide("enforce", PINNED, null, true, false);
+        TargetGuard.Decision decision = TargetGuard.decide("enforce", PINNED, null, true, false, false);
 
         assertEquals("no-game-jar", decision.result());
         assertTrue(decision.proceed());
@@ -94,5 +94,32 @@ class TargetGuardTest {
 
         // printf takaro | sha256sum
         assertEquals("1c3b1c0cedbb2ddf5f4d03a36ab1b111370e4043372b8f43eecb1bddfb6057ce", TargetGuard.sha256(file));
+    }
+
+    @Test
+    void anUnreadableJarIsRefusedUnderEnforce() {
+        TargetGuard.Decision decision = TargetGuard.decide("enforce", PINNED, null, true, true, true);
+
+        assertEquals("unreadable", decision.result());
+        assertFalse(decision.proceed());
+        assertTrue(decision.reasons().stream().anyMatch(r -> r.contains("could not be hashed")));
+        assertTrue(decision.reasons().stream().anyMatch(r -> r.contains("warn")));
+    }
+
+    @Test
+    void warnContinuesWhenTheJarCannotBeHashed() {
+        TargetGuard.Decision decision = TargetGuard.decide("warn", PINNED, null, true, true, true);
+
+        assertEquals("unreadable", decision.result());
+        assertTrue(decision.proceed());
+        assertTrue(decision.reasons().stream().anyMatch(r -> r.contains("could not be hashed")));
+    }
+
+    @Test
+    void offSkipsEvenWhenHashingWouldFail() {
+        TargetGuard.Decision decision = TargetGuard.decide("off", PINNED, null, true, true, true);
+
+        assertEquals("skipped", decision.result());
+        assertTrue(decision.proceed());
     }
 }
