@@ -7,8 +7,9 @@ from tracker state alone, filing nothing twice.
 
 The workflow, the container recipe and the two documents are checked as the files they
 are. The scheduled run's gate is a shell literal inside the workflow, so rather than
-restate it the test extracts that literal and executes it — against this branch, where it
-must refuse, and against a copy that says ``enabled``, where it must allow.
+restate it the test extracts that literal and executes it — against a copy that says
+``disabled``, where it must refuse, against one that says ``enabled``, where it must
+allow, and against this branch, which must agree with whichever value it tracks.
 """
 
 from __future__ import annotations
@@ -284,19 +285,29 @@ def test_the_schedule_gate_is_the_tracked_config(tmp_path: Path) -> None:
     assert match, "the workflow no longer gates scheduled publication on the tracked file"
     literal = match.group(0)
 
-    disabled = subprocess.run(["bash", "-c", literal], cwd=REPO_ROOT, check=False)
-    assert disabled.returncode == 1, "scheduled publication is enabled on this branch"
+    tracked = SCHEDULE.read_text(encoding="utf-8")
+    setting = re.search(r"^publish_schedule: *(\S+)$", tracked, re.MULTILINE)
+    assert setting, "maintenance/config/schedule.yaml no longer carries a publish_schedule value"
+    value = setting.group(1)
+    assert value in ("disabled", "enabled"), value
 
-    staged = tmp_path / "maintenance" / "config"
-    staged.mkdir(parents=True)
-    (staged / "schedule.yaml").write_text(
-        SCHEDULE.read_text(encoding="utf-8").replace("publish_schedule: disabled", "publish_schedule: enabled"),
-        encoding="utf-8",
-    )
-    enabled = subprocess.run(["bash", "-c", literal], cwd=tmp_path, check=False)
-    assert enabled.returncode == 0, "the gate does not open when the file says enabled"
+    # Both answers are exercised against staged copies, so what is asserted is what the gate
+    # does with each value, not which value the branch happens to track today.
+    codes = {"disabled": 1, "enabled": 0}
+    for staged_value, code in codes.items():
+        root = tmp_path / staged_value
+        staged = root / "maintenance" / "config"
+        staged.mkdir(parents=True)
+        (staged / "schedule.yaml").write_text(
+            re.sub(r"^publish_schedule: *\S+$", f"publish_schedule: {staged_value}", tracked, flags=re.MULTILINE),
+            encoding="utf-8",
+        )
+        run = subprocess.run(["bash", "-c", literal], cwd=root, check=False)
+        assert run.returncode == code, f"the gate is wrong for publish_schedule: {staged_value}"
 
-    assert "publish_schedule: disabled" in SCHEDULE.read_text(encoding="utf-8").splitlines()
+    # And the branch as it stands opens the gate exactly when its own tracked file says enabled.
+    here = subprocess.run(["bash", "-c", literal], cwd=REPO_ROOT, check=False)
+    assert here.returncode == codes[value], f"the gate disagrees with the tracked {value!r}"
 
 
 def test_the_container_recipe_is_pinned_and_carries_no_credentials() -> None:
