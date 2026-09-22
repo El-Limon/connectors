@@ -13,6 +13,7 @@ module under `src/takaro_maint` mentions the game at all.
 | `catalog/<game>/game.json` | the sources it downloads from, the watch blocks it observes, its platforms and artifact roles |
 | `catalog/<game>/targets/<platform>-<revision>.json` | one exact, hash-pinned target |
 | `maintenance/src/takaro_maint/games/<game>/` | the adapter (`__init__.py`, subclassing `games.base.BaseAdapter`) and its `verify.py`, which ends in one `HOOKS = GameHooks(...)` |
+| `games/<game>/scripts/lib-target.sh` | a shim over `scripts/lib/target.sh`: `<g>_repo_root`, `<g>_resolve_target`, `<g>_parse_target_flag`, plus anything only this game's scripts need |
 | `dev-servers/lib/games/<game>.sh` and `dev-servers/<game>.yml` | the local rig |
 | `.github/workflows/<game>.yml` | its build, on the shared `connector-release.yml` wrapper |
 
