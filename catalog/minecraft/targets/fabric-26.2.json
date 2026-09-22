@@ -77,7 +77,7 @@
     "gradleVersion": "9.5.1",
     "toolchain": {
       "kind": "container-image",
-      "image": "eclipse-temurin:latest",
+      "image": "eclipse-temurin",
       "tag": "25-jdk",
       "digest": "sha256:010ab2b79329b951bf052dbf515843ab345ae4e4f0ef72287d85c9fa54da275f"
     },
