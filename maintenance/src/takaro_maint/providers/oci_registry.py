@@ -50,7 +50,7 @@ import re
 import urllib.error
 from dataclasses import replace
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse, urlsplit
 
 from .. import channels, net, observations, readiness
 from ..exit_codes import UpstreamUnavailable, UsageError
@@ -231,7 +231,15 @@ class OciRegistryProvider(Provider):
             tags += [str(tag) for tag in document["tags"]]
             link = headers.get("Link") if headers is not None else None
             match = _LINK_RE.search(str(link)) if link else None
-            url = urljoin(base + "/", match.group("url")) if match else ""
+            next_url = urljoin(base + "/", match.group("url")) if match else ""
+            if next_url:
+                origin = urlsplit(base)
+                destination = urlsplit(next_url)
+                if destination.scheme != origin.scheme or destination.netloc != origin.netloc:
+                    raise UpstreamUnavailable(
+                        f"{url}: the tag listing's next link leaves {base} for {next_url}", url=url
+                    )
+            url = next_url
         return tags
 
     def _manifest(self, base: str, repository: str, reference: str) -> tuple[dict[str, Any], str, bytes, str]:

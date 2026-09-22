@@ -18,8 +18,8 @@ SCHEMA_NAME = "observation.schema.json"
 
 #: The alphabet `observation.schema.json` allows in a `rev` (and a `branch`). A provider
 #: that builds a revision out of an upstream string has to pass it through `safe_rev`
-#: first: a valid GitHub tag like `carbon@2.0` is not a valid revision, and it used to
-#: reach the schema as written and fail the whole scan rather than that one source.
+#: first: a valid GitHub tag like `carbon@2.0` is not a valid revision, and an
+#: unsanitised one would fail the whole scan rather than that one source.
 REV_RE = re.compile(r"^[A-Za-z0-9._+/-]+$")
 
 

@@ -99,7 +99,7 @@ def _deploy(args: Any) -> int:
         output.info(f"deployed {relative} ({row['sha256'][:16]}…)")
 
         # Every role this directory holds stays attested. A two-role game deploys twice,
-        # and a ledger that only ever remembered the last one left the other unguarded --
+        # and a ledger that only remembered the last one would leave the other unguarded --
         # `ledger check` could not tell a tampered first artifact from a good one. The
         # ledger is rewritten after each role rather than once at the end, so a run that
         # dies between roles still attests the ones that landed.

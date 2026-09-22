@@ -851,6 +851,31 @@ class ScriptedTransport:
         raise urllib.error.HTTPError(url, 404, "not found", None, None)  # type: ignore[arg-type]
 
 
+def test_oci_registry_never_follows_pagination_to_another_origin() -> None:
+    from takaro_maint.exit_codes import MaintError
+
+    listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
+    transport = ScriptedTransport(
+        {
+            "/tags/list": lambda: Response(
+                listing,
+                {"Link": '<https://elsewhere.example/v2/pryaxis/tshock/tags/list?last=6.1.0>; rel="next"'},
+            )
+        }
+    )
+    net.set_transport(transport)
+    try:
+        with pytest.raises(MaintError) as caught:
+            provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    assert caught.value.code == 4
+    assert "next link leaves https://registry.invalid" in str(caught.value)
+    assert "elsewhere.example" in str(caught.value)
+    assert not [url for url, _ in transport.seen if "elsewhere.example" in url]
+
+
 def test_oci_registry_fails_the_source_when_the_digest_header_disagrees() -> None:
     from takaro_maint.exit_codes import MaintError
 
@@ -931,7 +956,7 @@ def test_a_hostile_bearer_realm_is_never_followed(realm: str) -> None:
 
 
 def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query() -> None:
-    """The challenge's own values were pasted into the query string unencoded."""
+    """The challenge's own values are encoded into the query string."""
     listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
     challenged = {"done": False}
 
@@ -971,7 +996,7 @@ def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query() -> None:
 
 
 def test_a_prerelease_is_never_the_channel_head() -> None:
-    """`6.1.0-pre3` sorted after `6.1.0`, so a scan called the prerelease the head."""
+    """A prerelease is never the channel head, whatever the tag order."""
     readiness.reset_registry()
     with FakeUpstream() as upstream:
         serve_registry(upstream, tags=["6.1.0-pre3", "6.1.0"])
