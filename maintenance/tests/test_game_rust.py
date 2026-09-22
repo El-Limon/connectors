@@ -679,12 +679,28 @@ def test_the_plugin_source_keeps_its_release_markers() -> None:
     # the client to speak first must not be left waiting for a greeting that never comes.
     assert re.search(r'LogInfo\("WebSocket connected"\);\s*(?://[^\n]*\n\s*)*SendIdentify\(\);', source)
     # Rust's console echoes neither a command it was handed nor a broadcast, so the
-    # connector is what records them.
-    assert 'LogInfo($"console: {command}")' in source
+    # connector is what records them -- the console one by verb and argument count only,
+    # because the arguments are whatever Takaro was asked to run.
+    assert 'LogInfo($"console: {CommandSummary(command)}")' in source
+    assert 'LogInfo($"console: {command}")' not in source
     assert 'LogInfo($"broadcast: {message}")' in source
-    # listEntities answers with display names, never the dev short name.
+    # listEntities answers with display names, never the dev short name. What those names
+    # come out as is `games/rust/tests/names/run.sh`, which compiles the region below and
+    # runs it; all this file can say is that the region exists and is what is called.
     assert not re.search(r'\["name"\]\s*=\s*shortName', source)
-    assert "Humanize(shortName)" in source
+    assert "EntityNames.EntityDisplayName(shortName)" in source
+    region = source[source.index("// takaro:names-begin") : source.index("// takaro:names-end")]
+    assert "RustPlugin" not in region and "UnityEngine" not in region, "the region has to compile alone"
+    vectors = dict(
+        line.split("\t", 1)
+        for line in (REPO_ROOT / "games/rust/tests/names/names.tsv").read_text(encoding="utf-8").splitlines()
+        if line
+    )
+    table = dict(re.findall(r'\{\s*"([^"]+)",\s*"([^"]+)"\s*\}', region[: region.index("// Prefab words")]))
+    assert table, "the curated table is what the harness covers"
+    missing = sorted(code for code in table if code not in vectors)
+    assert not missing, f"names.tsv does not cover {missing}"
+    assert all(vectors[code] == name for code, name in table.items())
 
 
 # --------------------------------------------------------------------------- scan
@@ -1114,3 +1130,72 @@ def test_an_escaping_link_in_the_carbon_asset_fails_the_install(
     assert (outside / "pwned.txt").read_text(encoding="utf-8") == "host bytes"
     assert not dest.exists()
     assert staging_siblings(dest) == []
+
+
+# ------------------------------------------------------- the entity catalogue, directly
+
+
+class _EntityFake:
+    """Only what `check_catalog` reaches for: one canned answer."""
+
+    def __init__(self, entries: Any) -> None:
+        self.entries = entries
+
+    async def request(self, action: str, params: Any, timeout: float | None = None) -> Any:
+        del action, params, timeout
+        return self.entries
+
+
+def _entities(entries: Any) -> Any:
+    import asyncio
+
+    from takaro_maint.verify import checks
+
+    return asyncio.run(
+        checks.check_catalog(
+            _EntityFake(entries), "listEntities", "entities", hooks.ENTITY_SPOT, hooks._prefab_name_problems
+        )
+    )
+
+
+def test_the_entity_check_passes_on_curated_display_names() -> None:
+    result = _entities(
+        [
+            {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},
+            {"code": "scientistnpc_full_lr300", "name": "Scientist (LR-300)"},
+            {"code": "wolf2", "name": "Wolf"},
+        ]
+    )
+
+    assert result.status == "pass", result.detail["problems"]
+    assert result.detail["spotCheck"] == {
+        "code": "scientistnpc_heavy",
+        "expected": "Heavy Scientist",
+        "actual": "Heavy Scientist",
+    }
+
+
+def test_the_entity_check_fails_on_a_formatted_prefab_code() -> None:
+    """`Scientistnpc Heavy` is what the connector answered before the curated table."""
+    result = _entities(
+        [
+            {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},
+            {"code": "scientistnpc_cargo_turret_lr300", "name": "Scientistnpc Cargo Turret Lr300"},
+            {"code": "wolf2", "name": "Wolf2"},
+        ]
+    )
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "2 of 3 names are formatted prefab codes" in problems
+    assert "scientistnpc_cargo_turret_lr300 -> Scientistnpc Cargo Turret Lr300" in problems
+
+
+def test_the_entity_spot_check_is_a_name_the_old_derivation_could_not_produce() -> None:
+    """`bear` -> `Bear` passed whether or not anything was curated; this one cannot."""
+    assert hooks.ENTITY_SPOT == ("scientistnpc_heavy", "Heavy Scientist")
+
+    result = _entities([{"code": "scientistnpc_heavy", "name": "Scientistnpc Heavy"}])
+
+    assert result.status == "fail"
+    assert any("Heavy Scientist" in problem for problem in result.detail["problems"])

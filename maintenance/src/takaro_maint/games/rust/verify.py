@@ -73,7 +73,32 @@ ACTION_BUDGET = 30.0
 QUIT_BUDGET = 120.0
 
 ITEM_SPOT = ("rifle.ak", "Assault Rifle")
-ENTITY_SPOT = ("bear", "Bear")
+ENTITY_SPOT = ("scientistnpc_heavy", "Heavy Scientist")
+
+#: A prefab short name that survived into the display name: `Scientistnpc Heavy` is what
+#: capitalising `scientistnpc_heavy` gives, and it is what an operator used to read.
+_GLUED_NPC = re.compile(r"[a-z]npc\b", re.I)
+#: `Cargo Turret Lr300`, `Wolf2`: a raw variant number or a mangled abbreviation.
+_RAW_VARIANT = re.compile(r"[A-Za-z]\d+$")
+
+
+def _prefab_name_problems(entries: list[Any]) -> list[str]:
+    """The two ways a Rust prefab name goes wrong that the shared rules cannot see.
+
+    The shared check refuses a name equal to its code and a translation key; neither
+    catches `Scientistnpc Heavy`. These names are the whole point of the catalogue, so
+    they are asserted against the live answer rather than by trusting the curated table
+    in `TakaroConnector.cs` to have stayed curated.
+    """
+    offenders = [
+        f"{entry.get('code')} -> {entry.get('name')}"
+        for entry in entries
+        if isinstance(entry, dict)
+        and (_GLUED_NPC.search(str(entry.get("name", ""))) or _RAW_VARIANT.search(str(entry.get("name", ""))))
+    ]
+    if not offenders:
+        return []
+    return [f"{len(offenders)} of {len(entries)} names are formatted prefab codes, e.g. {', '.join(offenders[:3])}"]
 
 
 def scan_runtime_identity(adapter: Any, log_file: Path) -> dict[str, Any]:
@@ -135,7 +160,10 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
     for check_id, coroutine in (
         ("carbon-compile", lambda: _check_carbon_compile(run, alive)),
         ("items", lambda: checks.check_catalog(fake, "listItems", "items", ITEM_SPOT)),
-        ("entities", lambda: checks.check_catalog(fake, "listEntities", "entities", ENTITY_SPOT)),
+        (
+            "entities",
+            lambda: checks.check_catalog(fake, "listEntities", "entities", ENTITY_SPOT, _prefab_name_problems),
+        ),
         ("action", lambda: _check_action(run, fake, alive)),
         ("reconnect", lambda: checks_lifecycle.check_reconnect(run, fake, alive)),
     ):

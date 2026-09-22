@@ -96,6 +96,11 @@ jobs:
       - name: Compile-check the plugin against the pinned target
         run: games/rust/scripts/compile-check.sh --target "${{ steps.target.outputs.target }}"
 
+      # The entity display names, run rather than grepped: the name region compiles on its
+      # own, so the vectors and the prefab list a real server returned are asserted here.
+      - name: Check the entity display names
+        run: games/rust/tests/names/run.sh --target "${{ steps.target.outputs.target }}"
+
   params:
     runs-on: ubuntu-latest
     permissions:
