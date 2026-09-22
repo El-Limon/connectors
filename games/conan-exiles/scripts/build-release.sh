@@ -55,6 +55,8 @@ docker run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e npm_config_cache=/tmp/npm-cache \
+    -e CONAN_EXILES_LOCKFILE_PATH \
+    -e CONAN_EXILES_LOCKFILE_SHA256 \
     "${DEP_ARGS[@]}" \
     -v "${REPO_ROOT}:${REPO_ROOT}" \
     -w "${REPO_ROOT}/games/conan-exiles/bridge" \

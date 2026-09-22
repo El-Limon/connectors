@@ -102,6 +102,12 @@ def catalog_copy(tmp_path: Path) -> Path:
             destination = root / script
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+        lockfile = target.get("build", {}).get("lockfile", {}).get("path")
+        if lockfile:
+            source = REPO_ROOT / lockfile
+            destination = root / lockfile
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
     mod = root / "games" / "minecraft" / "mod"
     (mod / "gradle").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "games/minecraft/mod/gradle/libs.versions.toml", mod / "gradle")

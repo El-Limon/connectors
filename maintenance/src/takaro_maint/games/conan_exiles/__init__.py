@@ -82,6 +82,10 @@ class ConanExilesAdapter(BaseAdapter):
             f"{prefix}_ARTIFACT": str(resolved["artifactFileNames"]["bridge"]),
             f"{prefix}_BRIDGE_DIR": f"{self._install_dir(resolved)}/{BRIDGE_FOLDER}",
         }
+        lockfile = resolved["build"].get("lockfile")
+        if lockfile:
+            env[f"{prefix}_LOCKFILE_PATH"] = str(paths.repo_root() / str(lockfile["path"]))
+            env[f"{prefix}_LOCKFILE_SHA256"] = str(lockfile["sha256"])
         declared_hashes = (
             (f"{prefix}_LAUNCHER_SHA256", LAUNCHER),
             (f"{prefix}_SERVER_BINARY_SHA256", SERVER_BINARY),

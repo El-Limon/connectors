@@ -19,6 +19,15 @@
       "description": "Selectors for the pinned server files the build compiles against.",
       "items": {"type": "string", "minLength": 1}
     },
+    "lockfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^games/[a-z0-9-]+/bridge/package-lock\\.json$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "deps": {
       "type": "object",
       "minProperties": 1,

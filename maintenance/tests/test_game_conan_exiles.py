@@ -172,6 +172,18 @@ def test_catalog_validate_accepts_the_conan_target(run: Any) -> None:
     assert all(check["status"] == "pass" for check in rows), rows
 
 
+def test_catalog_validate_refuses_a_changed_conan_lockfile(run: Any, catalog_copy: Path) -> None:
+    lockfile = catalog_copy / "games/conan-exiles/bridge/package-lock.json"
+    lockfile.write_bytes(lockfile.read_bytes() + b"\n")
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code == 2
+    failure = next(check for check in payload["failures"] if check["id"] == "lockfile-pinned")
+    assert "expected ea07d7c7" in failure["detail"]
+    assert "actual " in failure["detail"]
+
+
 def test_targets_resolve_env_for_conan_exiles(run: Any) -> None:
     code, payload, _ = run("targets", "resolve", "--game", GAME, "--target", TARGET, "--prefix", "CONAN_EXILES")
 
@@ -191,6 +203,8 @@ def test_targets_resolve_env_for_conan_exiles(run: Any) -> None:
     assert env["CONAN_EXILES_IMAGE"].startswith("node:22.23.2-bookworm-slim@sha256:")
     assert env["CONAN_EXILES_DEP_WS_URL"].endswith("ws-8.21.0.tgz")
     assert len(env["CONAN_EXILES_DEP_WS_SHA256"]) == 64
+    assert env["CONAN_EXILES_LOCKFILE_PATH"].endswith("games/conan-exiles/bridge/package-lock.json")
+    assert env["CONAN_EXILES_LOCKFILE_SHA256"] == "ea07d7c7d65d57765279815990fd77ad74a0bef8c1cea326f05bd103f727c1b8"
     declared = payload["inputs"]["server"]["files"]
     assert env["CONAN_EXILES_LAUNCHER_SHA256"] == declared["ConanSandboxServer.sh"]["sha256"]
     assert env["CONAN_EXILES_SERVER_BINARY_SHA256"] == declared[SHIPPING]["sha256"]

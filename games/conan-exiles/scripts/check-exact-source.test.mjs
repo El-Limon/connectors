@@ -1,15 +1,13 @@
 // What `check-exact-source.mjs` does when the lockfile and the catalog disagree.
 //
-// It is the only gate between `npm ci` and whatever the lockfile happens to point at, and
-// until this file nothing ran it: it is not under the bridge's `src/**/*.test.ts` glob, so
-// `npm test` never saw it, and the workflow only ever ran it for real. Each case drives
-// the real script as a subprocess against a temporary lockfile and a local server that
-// serves the tarball bytes the case chose.
+// The lockfile is pinned whole by digest, and each direct dependency is additionally
+// checked by URL and tarball hash. Each case drives the real script as a subprocess
+// against a temporary lockfile and a local server that serves the chosen bytes.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -46,11 +44,16 @@ function lockfile(resolved) {
 
 function run(cwd, env) {
   return new Promise((resolve) => {
+    const path = join(cwd, 'package-lock.json');
+    const lockfileEnv = {
+      CONAN_EXILES_LOCKFILE_PATH: path,
+      CONAN_EXILES_LOCKFILE_SHA256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+    };
     const child = spawn(process.execPath, [SCRIPT], {
       cwd,
       // A clean environment: a real CONAN_EXILES_DEP_* in the caller's shell must not
       // decide what these cases check.
-      env: { PATH: process.env.PATH, ...env },
+      env: { PATH: process.env.PATH, ...lockfileEnv, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -70,6 +73,38 @@ test('a lockfile and a tarball that both match the catalog pass', async () => {
 
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`exact source: express ${DIGEST}`));
+});
+
+test('an added lockfile package is a re-pin even when direct dependencies still match', async () => {
+  const url = `${base}/express.tgz`;
+  const original = lockfile(url);
+  const dir = workspace(original);
+  const expected = createHash('sha256').update(readFileSync(join(dir, 'package-lock.json'))).digest('hex');
+  original.packages['node_modules/unpinned'] = { resolved: `${base}/unpinned.tgz` };
+  writeFileSync(join(dir, 'package-lock.json'), JSON.stringify(original), 'utf8');
+
+  const result = await run(dir, {
+    CONAN_EXILES_LOCKFILE_SHA256: expected,
+    CONAN_EXILES_DEP_EXPRESS_URL: url,
+    CONAN_EXILES_DEP_EXPRESS_SHA256: DIGEST,
+  });
+
+  assert.equal(result.code, 7);
+  assert.match(result.stderr, /re-pin, not a build/);
+  assert.match(result.stderr, /expected:/);
+  assert.match(result.stderr, /actual:/);
+});
+
+test('a missing lockfile digest means the target was not resolved', async () => {
+  const url = `${base}/express.tgz`;
+  const result = await run(workspace(lockfile(url)), {
+    CONAN_EXILES_LOCKFILE_SHA256: '',
+    CONAN_EXILES_DEP_EXPRESS_URL: url,
+    CONAN_EXILES_DEP_EXPRESS_SHA256: DIGEST,
+  });
+
+  assert.equal(result.code, 7);
+  assert.match(result.stderr, /resolve the target first/);
 });
 
 test('a tarball whose hash disagrees is refused rather than installed', async () => {

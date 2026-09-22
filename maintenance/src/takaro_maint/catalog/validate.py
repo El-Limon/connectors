@@ -339,6 +339,31 @@ def _check_build_paths_exist(result: ValidationResult, catalog: Catalog, target:
         result.add("build-script-exists", True, "the build names no path in this repository", file)
 
 
+def _check_lockfile_pin(result: ValidationResult, target: Target) -> None:
+    file = _relative(target.path)
+    lockfile = target.record["build"].get("lockfile")
+    if lockfile is None:
+        result.add("lockfile-pinned", True, "the build declares no lockfile", file)
+        return
+    try:
+        relative = paths.safe_relative(str(lockfile["path"]), field="build.lockfile.path")
+    except UsageError as exc:
+        result.add("lockfile-pinned", False, exc.message, file)
+        return
+    path = paths.repo_root() / relative
+    if not path.is_file():
+        result.add("lockfile-pinned", False, f"{_relative(path)} is missing", file)
+        return
+    expected = str(lockfile["sha256"])
+    actual = net.sha256_file(path)
+    result.add(
+        "lockfile-pinned",
+        actual == expected,
+        f"{_relative(path)} expected {expected}, actual {actual}",
+        file,
+    )
+
+
 def _check_deps_consistent(result: ValidationResult, target: Target) -> None:
     file = _relative(target.path)
     problems: list[str] = []
@@ -434,6 +459,7 @@ def validate_catalog(catalog: Catalog, *, online: bool = False, cache: Path | No
         ("minecraft-java-chain", _check_java_chain),
         ("plugins-match-toml", lambda r, t: _check_plugins_match_toml(r, catalog, t)),
         ("build-script-exists", lambda r, t: _check_build_paths_exist(r, catalog, t)),
+        ("lockfile-pinned", _check_lockfile_pin),
         ("deps-consistent", _check_deps_consistent),
         ("maven-path-derivable", _check_maven_path),
         ("launcher-path-derivable", _check_launcher_path),
