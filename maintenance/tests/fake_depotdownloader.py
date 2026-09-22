@@ -12,6 +12,8 @@ Environment it reads:
   FAKE_DD_LICENSE_DENIED  the account owns no licence for the app
   FAKE_DD_CORRUPT         a depot-relative path served with altered bytes
   FAKE_DD_IGNORE_MANIFEST a tool that quietly serves the branch head and still exits 0
+  FAKE_DD_BRANCHES        {"<branch>": {"depots": {"<depot>": "<manifest>"}, "protected": bool}}
+  FAKE_DD_NO_LISTING      -manifest-only exits 0 having written no listing file
 """
 
 from __future__ import annotations
@@ -58,15 +60,28 @@ def _listing(tree: Path) -> list[tuple[str, int, str]]:
 
 
 def _selected(name: str, selectors: list[str]) -> bool:
+    """The real tool's file-list semantics: an exact, case-insensitive path match.
+
+    DepotDownloader does not treat a plain entry as a directory prefix -- only a
+    `regex:` entry matches more than one path, and it too is case-insensitive. A fake
+    that matched prefixes let a file list naming a directory pass while the real tool
+    would have downloaded nothing.
+    """
     if not selectors:
         return True
     for selector in selectors:
         if selector.startswith("regex:"):
-            if re.search(selector[len("regex:") :], name):
+            if re.search(selector[len("regex:") :], name, re.IGNORECASE):
                 return True
-        elif name == selector or name.startswith(selector.rstrip("/") + "/"):
+        elif name.lower() == selector.lower():
             return True
     return False
+
+
+def _branches() -> dict[str, Any]:
+    """``FAKE_DD_BRANCHES``: ``{"<branch>": {"depots": {...}, "protected": true}}``."""
+    raw = os.environ.get("FAKE_DD_BRANCHES")
+    return json.loads(raw) if raw else {}
 
 
 def main(argv: list[str]) -> int:
@@ -78,9 +93,19 @@ def main(argv: list[str]) -> int:
 
     depot = _flag(argv, "-depot") or DEPOT
     manifest = _flag(argv, "-manifest")
+    branch = _flag(argv, "-branch") or "public"
+    declared = _branches().get(branch)
+    if declared is not None and declared.get("protected") and not _flag(argv, "-branchpassword"):
+        # What Steam answers for a password-protected branch with no password: the head
+        # is not served at all, so nothing downstream may treat it as observed.
+        print(f"Password required for branch {branch} (result: AccessDenied)")
+        return 1
     if not manifest or os.environ.get("FAKE_DD_IGNORE_MANIFEST"):
-        head = json.loads((root / "head.json").read_text(encoding="utf-8"))
-        manifest = str(head[depot])
+        if declared is not None and str(depot) in declared.get("depots", {}):
+            manifest = str(declared["depots"][str(depot)])
+        else:
+            head = json.loads((root / "head.json").read_text(encoding="utf-8"))
+            manifest = str(head[depot])
         print(f"Using branch head manifest {manifest} for depot {depot}")
 
     if os.environ.get("FAKE_DD_LICENSE_DENIED"):
@@ -92,6 +117,11 @@ def main(argv: list[str]) -> int:
         return 1
 
     tree = _tree(root, depot, manifest)
+    if not tree.is_dir() and declared is not None and str(depot) in declared.get("depots", {}):
+        # A branch whose head the fixtures do not carry a tree for still has content:
+        # the rows are the public tree's, published under the branch's own manifest id.
+        head = json.loads((root / "head.json").read_text(encoding="utf-8"))
+        tree = _tree(root, depot, str(head[depot]))
     if not tree.is_dir():
         print(f"Depot {depot} manifest {manifest} is not available")
         return 1
@@ -114,7 +144,8 @@ def main(argv: list[str]) -> int:
         # Where the real tool puts it: under its install directory, not next to the process.
         listing = Path(_flag(argv, "-dir") or Path.cwd() / "depots" / depot / manifest)
         listing.mkdir(parents=True, exist_ok=True)
-        (listing / f"manifest_{depot}_{manifest}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if not os.environ.get("FAKE_DD_NO_LISTING"):
+            (listing / f"manifest_{depot}_{manifest}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
         print("\n".join(lines))
         return 0
 
