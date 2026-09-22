@@ -492,6 +492,29 @@ async def _check_players(run: Any, fake: Any) -> checks.CheckResult:
     )
 
 
+#: A dev token that has no business in a name an operator reads. The same set the mod's
+#: own corpus test asserts over ``kEntities``/``kLocations`` (``mod/tests/names_test.cpp``),
+#: applied here to what the running server actually answered.
+_DEV_TOKENS = frozenset({"ag2", "deprecated", "placement", "noui", "healthbar"})
+_BARE_TIER = re.compile(r"^[Tt]\d$")
+
+
+def _looks_like_a_dev_name(name: str, code: str) -> bool:
+    """A template code handed back rather than a name, by the mod's own rules.
+
+    Entity and location names are derived from the codes, because the dedicated server
+    ships no localisation to read them from. That derivation is only worth anything if its
+    output is actually readable, so every predicate the C++ corpus test asserts over the
+    shipped table is asserted here over the live answer too -- otherwise a mod that
+    regressed to opening underscores would still pass this check.
+    """
+    if not name or name[0] == " " or name[0].isdigit() or "_" in name:
+        return True
+    if name == code.replace("_", " "):
+        return True
+    return any(word.lower() in _DEV_TOKENS or _BARE_TIER.match(word) for word in name.split())
+
+
 async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
     """Enshrouded's ``catalog-items``/``catalog-entities``, read out of the server's own kfc."""
     del run
@@ -499,7 +522,7 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
         problems: list[str] = []
         samples: dict[str, list[str]] = {}
         counts: dict[str, int] = {}
-        for action in ("listItems", "listEntities"):
+        for action in ("listItems", "listEntities", "listLocations"):
             entries: Any = None
             try:
                 entries = await fake.request(action, {})
@@ -511,16 +534,34 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
                 continue
             counts[action] = len(entries)
             samples[action] = [str(entry.get("name")) for entry in entries[:3] if isinstance(entry, dict)]
-            for entry in entries:
-                if not isinstance(entry, dict) or not entry.get("code") or not entry.get("name"):
-                    problems.append(f"{action} holds an entry without a code and a name: {entry!r}")
-                    break
-                if entry["name"] == entry["code"]:
-                    problems.append(f"{action} holds {entry['code']!r} whose name is its code")
-                    break
-                if "_" in str(entry["name"]):
-                    problems.append(f"{action} holds the name {entry['name']!r}, which is still a dev code")
-                    break
+            malformed = next(
+                (e for e in entries if not isinstance(e, dict) or not e.get("code") or not e.get("name")), None
+            )
+            if malformed is not None:
+                problems.append(f"{action} holds an entry without a code and a name: {malformed!r}")
+                continue
+            same = [e for e in entries if e["name"] == e["code"]]
+            if same:
+                problems.append(
+                    f"{action}: {len(same)} of {len(entries)} names are the code itself, "
+                    f"e.g. {', '.join(str(e['code']) for e in same[:3])}"
+                )
+            if action == "listItems":
+                # Items keep the name gen_gamedata.py baked into ItemDef::name, which is the
+                # code with its underscores opened. Deriving 3,609 item names is follow-up F1.
+                underscored = [e for e in entries if "_" in str(e["name"])]
+                if underscored:
+                    problems.append(
+                        f"{action}: {len(underscored)} of {len(entries)} names are still dev codes, "
+                        f"e.g. {', '.join(str(e['name']) for e in underscored[:3])}"
+                    )
+                continue
+            offenders = [e for e in entries if _looks_like_a_dev_name(str(e["name"]), str(e["code"]))]
+            if offenders:
+                problems.append(
+                    f"{action}: {len(offenders)} of {len(entries)} names are dev codes rather than "
+                    f"display names, e.g. " + ", ".join(f"{e['code']} -> {e['name']}" for e in offenders[:3])
+                )
     return checks.CheckResult(
         "sidecar-catalog",
         "pass" if not problems else "fail",
@@ -529,8 +570,8 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
             "counts": counts,
             "firstNames": samples,
             "note": (
-                "Enshrouded's `catalog-items`/`catalog-entities`; the names are the server's codes "
-                "with spaces because no localisation ships with the dedicated server"
+                "Enshrouded's `catalog-items`/`catalog-entities`; entity and location names are "
+                "derived from the template codes because the dedicated server ships no localisation"
             ),
             "problems": problems,
         },

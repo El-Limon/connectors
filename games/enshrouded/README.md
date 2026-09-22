@@ -232,8 +232,8 @@ plugin **0.4.2**) with a real game client connected.
 | Player location | ✅ | Matches the in-game position within 0.2 m and follows teleports. |
 | Player inventory | ✅ | Matches the in-game backpack. Takaro's inventory history only records changes, so unchanged starting equipment never shows up there. |
 | Item catalogue | ✅ | 3,609 items synced. |
-| Entity catalogue | ✅ | 979 creature/NPC templates (Takaro stored 977 — two share a code). This is the fixed template list, not live creatures. |
-| Locations / points of interest | ⚠️ | The plugin has 1,031 map locations and the sidecar serves them, but Takaro never asks for them, so this cannot be checked end to end. |
+| Entity catalogue | ✅ | 979 creature/NPC templates (Takaro stored 977 — two share a code). This is the fixed template list, not live creatures. Names are derived from the template codes: the dedicated server ships no localisation to read real display names from. |
+| Locations / points of interest | ⚠️ | The plugin has 1,031 map locations and the sidecar serves them, but Takaro never asks for them, so this cannot be checked end to end. Names are derived from the template codes, as for entities. |
 | Chat messages from players | ✅ | Real player chat reaches Takaro with the player attached. |
 | Broadcast a message | ✅ | Shown to everyone in the server chat, but under the character name of an online player — Enshrouded has no "server" sender. |
 | Whisper a player | ⚠️ | The message reaches the intended player. Only one player account was available, so "nobody else sees it" was never confirmed. |

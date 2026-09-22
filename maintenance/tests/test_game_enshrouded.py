@@ -946,3 +946,88 @@ def test_compat_record_carries_both_roles_and_the_steam_pin(run: Any, repo: Path
     assert (out / "takaro-enshrouded-plugin.zip").read_bytes() == (out / PLUGIN_ZIP).read_bytes()
     assert (out / "takaro-enshrouded-sidecar.zip").read_bytes() == (out / SIDECAR_ZIP).read_bytes()
     assert (out / "SHA256SUMS").is_file()
+
+
+# ------------------------------------------------------- the catalogue check, directly
+
+
+class _CatalogFake:
+    """Only what `_check_catalog` reaches for: one canned answer per action."""
+
+    def __init__(self, answers: dict[str, Any]) -> None:
+        self.answers = answers
+
+    async def request(self, action: str, params: Any, timeout: float | None = None) -> Any:
+        del params, timeout
+        return self.answers[action]
+
+
+def _catalog(answers: dict[str, Any]) -> Any:
+    import asyncio
+
+    return asyncio.run(hooks._check_catalog(None, _CatalogFake(answers)))
+
+
+def _derived_answers() -> dict[str, Any]:
+    """What the mod answers after names.cpp: items keep their baked name, the rest derive."""
+    return {
+        "listItems": [{"code": "Sword_Bronze", "name": "Sword Bronze"}],
+        "listEntities": [
+            {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+            {"code": "Animal_Baby_T1_Goat", "name": "Baby Goat (Tier 1)"},
+            {"code": "1_Player_AG2", "name": "Player"},
+        ],
+        "listLocations": [
+            {"code": "8kMapLabel_deepforest_Town_07_Whitewind", "name": "Whitewind"},
+            {"code": "Prop_OpenWorld_SavePoint", "name": "Open World Save Point"},
+        ],
+    }
+
+
+def test_the_catalog_check_passes_on_derived_display_names() -> None:
+    result = _catalog(_derived_answers())
+
+    assert result.status == "pass", result.detail["problems"]
+    assert result.detail["counts"] == {"listItems": 1, "listEntities": 3, "listLocations": 2}
+
+
+def test_the_catalog_check_fails_on_a_formatted_dev_code() -> None:
+    """`1 Player AG2` is what the old underscore-opening derivation put in front of an operator."""
+    answers = _derived_answers()
+    answers["listEntities"] = [
+        {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+        {"code": "1_Player_AG2", "name": "1 Player AG2"},
+    ]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "1 of 2" in problems
+    assert "1_Player_AG2 -> 1 Player AG2" in problems
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Cat Black AG2", "Baby T1 Goat", "Placement Helper Pet Cat", "Skeleton_Heavy", "8k Map Label Whitewind"],
+)
+def test_every_predicate_the_corpus_test_asserts_is_asserted_on_the_live_answer(name: str) -> None:
+    """The C++ test proves the shipped table; this proves the server did not regress past it."""
+    answers = _derived_answers()
+    answers["listLocations"] = [{"code": "Some_Template_Code", "name": name}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail", name
+    assert "listLocations" in " ".join(result.detail["problems"])
+
+
+def test_an_item_name_that_is_still_a_dev_code_is_named() -> None:
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Sword_Bronze", "name": "Sword_Bronze"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "names are the code itself" in problems
