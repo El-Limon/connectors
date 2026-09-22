@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/gettakaro/connectors/compare/conan-exiles-v1.0.2...conan-exiles-v1.1.0) (2026-09-22)
+
+
+### Features
+
+* **maintenance:** exact Steam targets for the remaining connectors — [#148](https://github.com/gettakaro/connectors/issues/148) phase 2 ([#249](https://github.com/gettakaro/connectors/issues/249)) ([7e5481b](https://github.com/gettakaro/connectors/commit/7e5481be878f4617297afaba121f136fea544c94))
+
+
+### Documentation
+
+* make connector READMEs the source of takaro.io game docs ([#218](https://github.com/gettakaro/connectors/issues/218)) ([b45d6cd](https://github.com/gettakaro/connectors/commit/b45d6cd682a61b11d485b1724e79b1e0b61e5305))
+
 ## [1.0.2](https://github.com/gettakaro/connectors/compare/conan-exiles-v1.0.1...conan-exiles-v1.0.2) (2026-09-16)
 
 
