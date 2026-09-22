@@ -982,3 +982,33 @@ def test_the_rig_runs_the_resolved_target_and_never_steamcmd() -> None:
     )
     # git grep exits 1 when nothing matched, which is exactly what this asserts.
     assert found.returncode == 1, f"a floating coordinate survived:\n{found.stdout}"
+
+
+def test_the_server_container_gets_the_memory_and_the_user_the_adapter_asks_for(tmp_path: Path) -> None:
+    """``container_options`` was declared and never reached a ``docker run``.
+
+    The runner looked the hook up by name on the adapter and Conan's spelling was never
+    the one it looked for, so the server ran at the generic 3g cap and as root -- which is
+    how a Unreal dedicated server dies on its own saved world.
+    """
+    import os
+
+    from takaro_maint import paths
+    from takaro_maint.catalog.loader import load
+    from takaro_maint.games.conan_exiles import MEMORY
+    from takaro_maint.verify.runner import RunOptions, TargetRun
+
+    paths.set_repo_root(REPO_ROOT)
+    catalog = load()
+    options = RunOptions(artifacts=tmp_path / "dist", out=tmp_path / "out", run_id="argv")
+    run = TargetRun(catalog, catalog.select(GAME, target_id=TARGET), options)
+    try:
+        argv = run.container_argv("ws://host.docker.internal:1/")
+    finally:
+        run.cleanup()
+
+    memory = [index for index, item in enumerate(argv) if item == "--memory"]
+    assert [argv[index + 1] for index in memory] == ["3g", MEMORY], "docker takes the last one"
+    user = argv.index("--user")
+    assert argv[user + 1] == f"{os.getuid()}:{os.getgid()}"
+    assert user > memory[0], "the adapter's options come after the runner's own"

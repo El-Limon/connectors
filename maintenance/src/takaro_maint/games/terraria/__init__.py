@@ -28,7 +28,7 @@ from typing import Any
 
 from ... import output, paths
 from ...exit_codes import BuildFailed, ConflictError
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env
 
 GAME_ID = "terraria"
 REFERENCES_ROOT = "games/terraria/_data/refs"
@@ -56,7 +56,7 @@ def _env_key(name: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
 
 
-class TerrariaAdapter:
+class TerrariaAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -65,10 +65,7 @@ class TerrariaAdapter:
         server = resolved["inputs"]["server"]
         deps = resolved["build"]["deps"]
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_IMAGE_DIGEST": str(resolved["runtime"]["container"]["digest"]),
             f"{prefix}_TSHOCK_TAG": str(resolved["runtime"]["container"]["tag"]),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),

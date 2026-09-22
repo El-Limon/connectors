@@ -23,7 +23,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed, ConflictError
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env
 
 GAME_ID = "conan-exiles"
 DIST_ROOT = "games/conan-exiles/_data/dist"
@@ -62,7 +62,7 @@ def _env_key(name: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
 
 
-class ConanExilesAdapter:
+class ConanExilesAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -71,10 +71,7 @@ class ConanExilesAdapter:
         server = resolved["inputs"]["server"]
         depots = ";".join(f"{depot}:{server['depots'][depot]['manifest']}" for depot in sorted(server["depots"]))
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_STEAM_APP": str(server["app"]),
@@ -214,7 +211,7 @@ class ConanExilesAdapter:
         ]
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """The whole installation is one Steam depot set, so the adapter owns it."""
         del catalog
         dest = Path(args.dest).expanduser().resolve()

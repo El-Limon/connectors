@@ -632,7 +632,7 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
     from takaro_maint import paths
     from takaro_maint.exit_codes import ConflictError
     from takaro_maint.games.enshrouded import plugin_token
-    from takaro_maint.verify.runner import RunOptions, check_ids
+    from takaro_maint.verify.runner import RunOptions, check_ids, game_hooks
 
     class Target:
         record = _record()
@@ -650,21 +650,23 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
 
     # A bare `verify --game enshrouded` runs this target's own checks and nothing else: the
     # base protocol ladder watches the game container for a connector that is in the sidecar.
-    assert run.options.only == ["build", *Target.record["verification"]["separate"]]
-    assert set(hooks.CHECK_IDS) < set(run.options.only)
-    assert "startup" in run.options.only
-    for base in ("connector-load", "identify", "heartbeat", "players", "catalog-items", "console", "shutdown"):
-        assert base not in run.options.only
-    # One RunOptions is shared by every target of a command; narrowing replaces, never mutates.
-    shared = RunOptions(artifacts=tmp_path, out=tmp_path, run_id="test")
-    other = Run()
-    other.options = shared
-    hooks.before_boot(other, takaro_env)
-    assert shared.only is None and other.options.only is not None
-    # An explicit --checks is taken literally, including a check this game cannot pass.
-    named = Run(only=["stop"])
-    hooks.before_boot(named, takaro_env)
-    assert named.options.only == ["stop"]
+    # The runner narrows the selection now, so what these hooks owe is the declaration.
+    declared = game_hooks("enshrouded")
+    assert set(declared.unsupported_checks) == {
+        "connector-load",
+        "identify",
+        "heartbeat",
+        "players",
+        "catalog-items",
+        "catalog-entities",
+        "console",
+        "shutdown",
+    }
+    selected = [check for check in check_ids("enshrouded") if check not in declared.unsupported_checks]
+    # The record and the hooks cannot drift: what a bare run selects is what the target says
+    # it verifies separately, plus the two rows every game climbs.
+    assert selected == ["build", "startup", *hooks.CHECK_IDS]
+    assert selected == ["build", *Target.record["verification"]["separate"]]
 
     assert written == tmp_path / "takaro" / "plugin.json"
     assert oct(written.stat().st_mode)[-3:] == "600"

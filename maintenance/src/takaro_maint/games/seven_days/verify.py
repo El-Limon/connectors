@@ -23,11 +23,23 @@ from typing import Any
 
 from ... import net, output
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
 from ...verify.runner import docker_command
 
 CHECK_IDS = ("handshake", "action", "reconnect", "stop")
 
 READY_LINE = re.compile(r"INF StartGame done")
+
+#: Base checks this connector cannot satisfy, and the check that stands in for each.
+#: A run that names no ``--checks`` excludes these rather than failing them.
+UNSUPPORTED_CHECKS = {
+    "connector-load": ("the load line is a Minecraft connector's; `handshake` asserts the mod loaded here"),
+    "identify": ("the mod identifies in its own log line; `handshake` asserts the frame Takaro received"),
+    "catalog-items": ("spot-checks a Minecraft item id; 7D2D ships no item catalogue over this protocol"),
+    "catalog-entities": ("spot-checks a Minecraft entity id; 7D2D ships no entity catalogue over this protocol"),
+    "shutdown": ("asserts an exit code this server's teardown does not give; `stop` asserts the shutdown"),
+}
+
 HANDSHAKE_LINE = re.compile(r"\[Takaro\] \*INFO\* WebSocket connection confirmed")
 LOADED_LINE = re.compile(r"\[MODS\]\s+Loaded Mod: Takaro \((?P<version>[^)]+)\)")
 QUIT_LINE = re.compile(r"INF Preparing quit|\[NET\] ServerShutdown")
@@ -281,3 +293,15 @@ def _rehash(data_dir: Path, ledger_inputs: list[dict[str, Any]]) -> tuple[list[s
         else:
             intact.append(entry["path"])
     return intact, changed
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    ready_line=READY_LINE,
+    check_ids=CHECK_IDS,
+    unsupported_checks=UNSUPPORTED_CHECKS,
+    before_boot=before_boot,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    scan_runtime_identity=scan_runtime_identity,
+)

@@ -26,7 +26,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env
 
 GAME_ID = "zomboid"
 REFERENCES_ROOT = "games/zomboid/_data/references"
@@ -114,7 +114,7 @@ def _restore_executables(root: Path) -> int:
     return marked
 
 
-class ZomboidAdapter:
+class ZomboidAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -123,11 +123,7 @@ class ZomboidAdapter:
         server = resolved["inputs"]["server"]
         depots = ";".join(f"{depot}:{server['depots'][depot]['manifest']}" for depot in sorted(server["depots"]))
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
-            f"{prefix}_JAVA": str(resolved["runtime"]["java"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_STEAM_APP": str(server["app"]),
@@ -273,7 +269,7 @@ class ZomboidAdapter:
         ]
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """This game's whole installation is one Steam depot set, so the adapter owns it."""
         del catalog
         dest = Path(args.dest).expanduser().resolve()

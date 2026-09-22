@@ -31,7 +31,7 @@ from ...exit_codes import OK, BuildFailed, ConflictError, IntegrityError
 from ...install.ledger import check_ledger, ledger_path, read_ledger, write_ledger
 from ...providers import provider_for
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env
 
 GAME_ID = "rust"
 REFERENCES_ROOT = "games/rust/_data/rust-binaries"
@@ -289,7 +289,7 @@ def _append_carbon_rows(dest: Path, spec: dict[str, Any]) -> list[dict[str, Any]
     return rows
 
 
-class RustAdapter:
+class RustAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -299,10 +299,7 @@ class RustAdapter:
         carbon = _carbon_spec(resolved)
         depots = ";".join(f"{depot}:{server['depots'][depot]['manifest']}" for depot in sorted(server["depots"]))
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_STEAM_APP": str(server["app"]),
@@ -441,7 +438,7 @@ class RustAdapter:
         return list(CONTAINER_COMMAND)
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """Two pinned depots plus the pinned Carbon archive, or nothing at all."""
         dest = Path(args.dest).expanduser().resolve()
         cache = paths.cache_dir()

@@ -614,7 +614,7 @@ def test_verify_hooks_render_both_configs_and_know_the_terraria_lines(run: Any, 
     assert command[command.index("-autocreate") + 1] == "1"
     # And nothing asks for a non-root run: TShock writes inside /server, which is neither
     # writable nor a volume, so a --user run dies before it reads its configuration.
-    assert not hasattr(adapter, "container_options")
+    assert adapter.container_options(resolved, fake_run.data_dir) == []
 
     mounts = adapter.container_mounts(resolved, fake_run.data_dir)
     assert [mount.split(":")[-1] for mount in mounts] == ["/tshock", "/worlds", "/plugins"]
@@ -1342,19 +1342,17 @@ def test_a_corrupt_bridge_archive_leaves_the_working_bridge_in_place(run: Any, p
 
 
 def test_a_default_run_drops_the_checks_this_connector_cannot_answer(run: Any, repo: Path, tmp_path: Path) -> None:
-    """The obvious command must not be four guaranteed failures."""
-    from takaro_maint.verify.runner import check_ids
+    """The obvious command must not be four guaranteed failures.
 
-    resolved = resolve(run, repo)
-    fake_run = FakeRun(tmp_path, resolved)
-    assert fake_run.options.only is None
+    The narrowing itself lives in the runner and is tested for every game in
+    `test_verify_selection.py`; what Terraria owes is the declaration behind it.
+    """
+    from takaro_maint.verify.runner import check_ids, game_hooks
 
-    hooks.before_boot(fake_run, TAKARO_ENV)
+    declared = game_hooks("terraria")
+    selected = set(check_ids("terraria")) - set(declared.unsupported_checks)
 
-    assert fake_run.options.only is not None
-    selected = set(fake_run.options.only)
-    assert selected.isdisjoint(hooks.UNSUPPORTED_CHECKS)
-    assert selected == set(check_ids("terraria")) - set(hooks.UNSUPPORTED_CHECKS)
+    assert declared.unsupported_checks == hooks.UNSUPPORTED_CHECKS
     # Each dropped check names the Terraria check that stands in for it, and the report
     # carries that map under `handshake` -- the runner's own skip reason cannot say it.
     assert set(hooks.UNSUPPORTED_CHECKS) == {"connector-load", "identify", "catalog-items", "catalog-entities"}
@@ -1362,12 +1360,6 @@ def test_a_default_run_drops_the_checks_this_connector_cannot_answer(run: Any, r
     # Everything Terraria does answer is still in, including the base lifecycle.
     assert {"build", "startup", "heartbeat", "players", "console", "shutdown"} <= selected
     assert set(hooks.CHECK_IDS) <= selected
-
-    # A caller that named its own set gets exactly that set, untouched.
-    chosen = FakeRun(tmp_path / "second", resolved)
-    chosen.options.only = ["startup", "identify"]
-    hooks.before_boot(chosen, TAKARO_ENV)
-    assert chosen.options.only == ["startup", "identify"]
 
 
 @pytest.mark.parametrize(

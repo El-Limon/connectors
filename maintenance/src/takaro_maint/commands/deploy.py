@@ -93,9 +93,7 @@ def _deploy(args: Any) -> int:
             removed.append(f"{component['installDir']}/{existing.name}")
         # A game whose artifact is not loaded as it lands -- an archive the server expects
         # unpacked, say -- unpacks it here, once the file itself is in place.
-        after_deploy = getattr(adapter_for(target.game), "after_deploy", None)
-        if after_deploy is not None:
-            after_deploy(dest, component, install_dir / row["file"])
+        adapter_for(target.game).after_deploy(dest, component, install_dir / row["file"])
         relative = f"{component['installDir']}/{row['file']}"
         deployed.append({"role": role, "path": relative, "sha256": row["sha256"]})
         output.info(f"deployed {relative} ({row['sha256'][:16]}…)")

@@ -13,7 +13,7 @@ from typing import Any
 
 from ... import output
 from ...exit_codes import BuildFailed, ConflictError
-from ..base import BuildResult, common_env
+from ..base import BaseAdapter, BuildResult, common_env
 
 
 @lru_cache(maxsize=1)
@@ -44,7 +44,7 @@ def _platform(resolved: dict[str, Any]) -> Any:
     return known[platform]
 
 
-class MinecraftAdapter:
+class MinecraftAdapter(BaseAdapter):
     id = "minecraft"
 
     def env(self, resolved: dict[str, Any], prefix: str) -> dict[str, str]:

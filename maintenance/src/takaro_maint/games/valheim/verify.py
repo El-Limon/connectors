@@ -31,6 +31,7 @@ from typing import Any
 
 from ... import net, output
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
 from ...verify.runner import docker_command
 
 CHECK_IDS = ("handshake", "items", "entities", "action", "reconnect", "stop")
@@ -38,6 +39,18 @@ CHECK_IDS = ("handshake", "items", "entities", "action", "reconnect", "stop")
 #: The server registers with Steam once the world is up; this is the marker every previous
 #: live run has used to say "the server is serving".
 READY_LINE = re.compile(r"Game server connected")
+
+#: Base checks this connector cannot satisfy, and the check that stands in for each.
+#: A run that names no ``--checks`` excludes these rather than failing them.
+UNSUPPORTED_CHECKS = {
+    "connector-load": ("the load line is a Minecraft connector's; `handshake` asserts the plugin loaded here"),
+    "identify": ("the plugin identifies over the socket; `handshake` asserts the frame Takaro received"),
+    "catalog-items": ("spot-checks a Minecraft item id; `items` spot-checks a Valheim one"),
+    "catalog-entities": ("spot-checks a Minecraft entity id; `entities` spot-checks a Valheim one"),
+    "console": ("the base console check drives a Minecraft command; `action` drives a Valheim one"),
+    "shutdown": ("asserts an exit code this server's teardown does not give; `stop` asserts the shutdown"),
+}
+
 HANDSHAKE_LINE = re.compile(r"Takaro Valheim identified as gameServerId=")
 LOADED_LINE = re.compile(r"Loading \[Takaro Valheim (?P<version>[^\]]+)\]")
 STARTED_LINE = re.compile(r"Takaro Valheim connector started\.")
@@ -403,3 +416,15 @@ def _rehash(data_dir: Path, ledger_inputs: list[dict[str, Any]]) -> tuple[list[s
         else:
             intact.append(entry["path"])
     return intact, changed
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    ready_line=READY_LINE,
+    check_ids=CHECK_IDS,
+    unsupported_checks=UNSUPPORTED_CHECKS,
+    before_boot=before_boot,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    scan_runtime_identity=scan_runtime_identity,
+)

@@ -28,6 +28,7 @@ from typing import Any
 from ... import net, output
 from ...exit_codes import UpstreamUnavailable
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
 from ...verify.runner import Container, docker_command
 from . import BRIDGE_FOLDER
 
@@ -41,6 +42,19 @@ CHECK_IDS = (
 )
 
 READY_LINE = re.compile(r"LogInit: Display: Engine is initialized\. Leaving FEngineLoop::Init\(\)")
+
+#: Base checks this connector cannot satisfy, and the check that stands in for each.
+#: A run that names no ``--checks`` excludes these rather than failing them.
+UNSUPPORTED_CHECKS = {
+    "connector-load": ("the connector is the bridge, not a server plugin; `bridge-identify` asserts it loaded"),
+    "identify": ("the bridge identifies from its own process; `bridge-identify` asserts that frame"),
+    "heartbeat": ("the bridge answers Takaro, not the game server; `bridge-reachability` asserts it"),
+    "players": ("the player list comes from the bridge's RCON poll; `bridge-players` asserts it"),
+    "catalog-items": ("spot-checks a Minecraft item id; Conan Exiles ships no item catalogue over this protocol"),
+    "catalog-entities": ("spot-checks a Minecraft entity id; Conan Exiles ships no entity catalogue here"),
+    "console": ("the base console check drives a Minecraft command; `bridge-console` drives an RCON one"),
+}
+
 RCON_READY_LINE = re.compile(r"LogRcon: Display: Rcon is ready for client connections on 0\.0\.0\.0:(?P<port>\d+)")
 BANNER_MARKERS = ("LogInit: Build:", "LogInit: Engine Version:")
 
@@ -597,3 +611,15 @@ def _rehash(data_dir: Path, ledger_inputs: list[dict[str, Any]]) -> tuple[list[s
         else:
             intact.append(entry["path"])
     return intact, changed
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    ready_line=READY_LINE,
+    check_ids=CHECK_IDS,
+    unsupported_checks=UNSUPPORTED_CHECKS,
+    before_boot=before_boot,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    scan_runtime_identity=scan_runtime_identity,
+)

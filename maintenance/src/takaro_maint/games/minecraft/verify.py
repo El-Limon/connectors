@@ -19,6 +19,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import UpstreamUnavailable
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
 from ...verify.report import build_report, write_report
 from .fabric import TARGET_CHECK_PREFIX
 
@@ -385,3 +386,14 @@ async def _hosted_shutdown(takaro: Any, container: Any, server_ids: list[str]) -
         timer.elapsed_ms,
         {"exitCode": code, "note": "shutdown requested through the Takaro API", "problems": problems},
     )
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    check_ids=CHECK_IDS,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    negative=negative,
+    run_hosted=run_hosted,
+    scan_runtime_identity=scan_runtime_identity,
+)

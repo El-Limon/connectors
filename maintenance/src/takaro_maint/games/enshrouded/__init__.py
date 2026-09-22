@@ -24,7 +24,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed, ConflictError
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env
 
 GAME_ID = "enshrouded"
 DIST_ROOT = "games/enshrouded/_data/dist"
@@ -62,8 +62,13 @@ def plugin_token(takaro_env: dict[str, str]) -> str:
     return hashlib.sha256(b"takaro-plugin:" + takaro_env["TAKARO_REGISTRATION_TOKEN"].encode("utf-8")).hexdigest()
 
 
-class EnshroudedAdapter:
+class EnshroudedAdapter(BaseAdapter):
     id = GAME_ID
+
+    #: The image the last ``container_mounts`` resolved to. The runtime-identity hook reads
+    #: the Proton version out of it, and an empty string means no container was described
+    #: yet -- which is a missing loader version in the report, never an attribute error.
+    last_container_ref: str = ""
 
     # -- description ----------------------------------------------------------
     def env(self, resolved: dict[str, Any], prefix: str) -> dict[str, str]:
@@ -73,10 +78,7 @@ class EnshroudedAdapter:
         container_env = resolved["runtime"]["container"].get("env", {})
         deps = resolved["build"]["deps"]
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_GAME_BUILD": str(resolved["revision"]),
@@ -208,7 +210,7 @@ class EnshroudedAdapter:
         ]
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """The whole installation is one pinned Steam depot set, so the adapter owns it."""
         del catalog
         dest = Path(args.dest).expanduser().resolve()

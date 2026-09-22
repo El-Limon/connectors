@@ -149,8 +149,19 @@ def test_steam_pin_write_keeps_the_depots_it_did_not_read(run: Any, repo: Path, 
         record_args += ["--record-files", path]
 
     code, payload, err = run(
-        "steam", "pin", "--game", GAME, "--target", TARGET,
-        "--depot", fake.DEPOT, "--buildid", "25000001", "--write", *record_args, repo=repo,
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--depot",
+        fake.DEPOT,
+        "--buildid",
+        "25000001",
+        "--write",
+        *record_args,
+        repo=repo,
     )
 
     assert code == 0, f"{err}\n{payload}"
@@ -174,8 +185,19 @@ def test_steam_pin_write_records_the_branch_it_read(
         record_args += ["--record-files", path]
 
     code, payload, err = run(
-        "steam", "pin", "--game", GAME, "--target", TARGET,
-        "--branch", "latest_experimental", "--buildid", "25200000", "--write", *record_args, repo=repo,
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--branch",
+        "latest_experimental",
+        "--buildid",
+        "25200000",
+        "--write",
+        *record_args,
+        repo=repo,
     )
 
     assert code == 0, f"{err}\n{payload}"
@@ -197,8 +219,18 @@ def test_steam_pin_refuses_a_depot_subset_on_a_different_branch(
     before = add_second_depot(repo)
 
     code, payload, _ = run(
-        "steam", "pin", "--game", GAME, "--target", TARGET,
-        "--branch", "latest_experimental", "--depot", fake.DEPOT, "--write", repo=repo,
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--branch",
+        "latest_experimental",
+        "--depot",
+        fake.DEPOT,
+        "--write",
+        repo=repo,
     )
 
     assert code == 2, payload

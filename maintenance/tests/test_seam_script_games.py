@@ -30,8 +30,9 @@ from typing import Any
 
 from takaro_maint import output
 from takaro_maint.exit_codes import OK
+from takaro_maint.games.base import BaseAdapter
 
-class StubAdapter:
+class StubAdapter(BaseAdapter):
     id = "stubgame"
 
     def env(self, resolved: dict[str, Any], prefix: str) -> dict[str, str]:
@@ -82,6 +83,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from takaro_maint.verify.hooks import GameHooks
+
 READY_LINE = re.compile(r"INF StartGame done")
 BOOTED: list[dict[str, str]] = []
 
@@ -91,6 +94,19 @@ def before_boot(run: Any, takaro_env: dict[str, str]) -> None:
     marker = run.data_dir / "config-written-before-boot"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(takaro_env["TAKARO_WS_URL"], encoding="utf-8")
+
+
+HOOKS = GameHooks(ready_line=READY_LINE, before_boot=before_boot)
+'''
+
+HOOKLESS_SOURCE = '''
+"""A verification module that forgot to assemble its hooks."""
+
+from __future__ import annotations
+
+import re
+
+READY_LINE = re.compile(r"INF StartGame done")
 '''
 
 DOCKER_STUB = """
@@ -448,13 +464,49 @@ def target_run(root: Path, tmp_path: Path, game: str = GAME_ID, target: str | No
 
 
 def test_the_hooks_are_found_next_to_the_adapter(stub_game: Path) -> None:
+    from takaro_maint.verify.hooks import GameHooks
     from takaro_maint.verify.runner import game_hooks
 
-    hooks = game_hooks(GAME_ID)
-    assert hooks is not None
-    assert hooks.__name__ == f"takaro_maint.games.{GAME_ID}.verify"
-    assert game_hooks("minecraft") is importlib.import_module("takaro_maint.games.minecraft.verify")
-    assert game_hooks("no-such-game") is None
+    module = importlib.import_module(f"takaro_maint.games.{GAME_ID}.verify")
+    assert game_hooks(GAME_ID) is module.HOOKS
+    assert game_hooks("minecraft") is importlib.import_module("takaro_maint.games.minecraft.verify").HOOKS
+    assert game_hooks("no-such-game") == GameHooks()
+
+
+def test_a_verify_module_without_hooks_is_refused(stub_game: Path) -> None:
+    """A module that ships hooks but never assembles them is a mistake, not a game with none."""
+    from takaro_maint.exit_codes import UsageError
+    from takaro_maint.verify.runner import game_hooks
+
+    package = Path(str(importlib.import_module(f"takaro_maint.games.{GAME_ID}").__file__)).parent
+    (package / "verify.py").write_text(HOOKLESS_SOURCE, encoding="utf-8")
+    sys.modules.pop(f"takaro_maint.games.{GAME_ID}.verify", None)
+    importlib.invalidate_caches()
+    try:
+        with pytest.raises(UsageError) as caught:
+            game_hooks(GAME_ID)
+    finally:
+        (package / "verify.py").write_text(HOOKS_SOURCE, encoding="utf-8")
+        sys.modules.pop(f"takaro_maint.games.{GAME_ID}.verify", None)
+        importlib.invalidate_caches()
+
+    assert f"takaro_maint.games.{GAME_ID}.verify" in str(caught.value)
+
+
+def test_common_env_names_a_runtime_without_a_jvm(stub_game: Path, tmp_path: Path) -> None:
+    """``str(None)`` would have written the literal ``JAVA=None`` into the rig's env file."""
+    from takaro_maint import paths
+    from takaro_maint.catalog.loader import load, resolve
+    from takaro_maint.games.base import common_env
+
+    paths.set_repo_root(stub_game)
+    catalog = load()
+    stub = resolve(catalog, catalog.select(GAME_ID))
+    fabric = resolve(catalog, catalog.select("minecraft", target_id="fabric-26.2"))
+
+    assert stub["runtime"]["java"] is None
+    assert "STUB_JAVA" not in common_env(stub, "STUB")
+    assert common_env(fabric, "MC")["MC_JAVA"] == str(fabric["runtime"]["java"])
 
 
 def test_the_startup_check_waits_for_the_line_it_is_given(tmp_path: Path) -> None:

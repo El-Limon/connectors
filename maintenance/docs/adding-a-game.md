@@ -12,7 +12,7 @@ module under `src/takaro_maint` mentions the game at all.
 |---|---|
 | `catalog/<game>/game.json` | the sources it downloads from, the watch blocks it observes, its platforms and artifact roles |
 | `catalog/<game>/targets/<platform>-<revision>.json` | one exact, hash-pinned target |
-| `maintenance/src/takaro_maint/games/<game>/` | the adapter: build, install and verification hooks *specific to this game* |
+| `maintenance/src/takaro_maint/games/<game>/` | the adapter (`__init__.py`, subclassing `games.base.BaseAdapter`) and its `verify.py`, which ends in one `HOOKS = GameHooks(...)` |
 | `dev-servers/lib/games/<game>.sh` and `dev-servers/<game>.yml` | the local rig |
 | `.github/workflows/<game>.yml` | its build, on the shared `connector-release.yml` wrapper |
 
@@ -26,6 +26,18 @@ A game adapter is *not* an exemption from this. It holds what is genuinely speci
 game (how its mod is built, how its server is verified). Acquisition and discovery come
 from a provider, and `scan` never asks for an adapter at all: a game with a watch block
 and no adapter scans perfectly well.
+
+What the adapter and its hooks may contribute is a closed set rather than whatever name
+the core happens to look for. The adapter subclasses `games.base.BaseAdapter` and
+overrides only the hooks it needs -- `install`, `after_deploy`, `container_mounts`,
+`container_options`, `container_command` -- each of which has a default there, so a
+misspelled or renamed hook is a type error rather than a hook that is silently never
+called. Verification goes the same way: `games/<game>/verify.py` keeps its module-level
+constants and ends with one `HOOKS = GameHooks(...)` naming the ready line, the check ids
+this game adds, the base checks it cannot pass (`UNSUPPORTED_CHECKS`, which the runner
+uses to narrow a `--checks`-less run) and whichever of the lifecycle callables it
+implements. A `verify.py` without a `HOOKS` object is refused, not treated as a game with
+no hooks. [Runtime verification](verify.md) has the field list.
 
 ## Input kinds
 

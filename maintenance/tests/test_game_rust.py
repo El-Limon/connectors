@@ -933,43 +933,27 @@ def test_a_bare_verify_run_selects_only_the_checks_this_target_proves() -> None:
     Without this, `takaro-maint verify --game rust` -- exactly as DEVELOPMENT.md documents it,
     with no `--checks` -- would select `connector-load` (a line only the Minecraft connector
     writes), `catalog-items`/`catalog-entities` (Minecraft spot values) and the base
-    `shutdown` (an exit code Rust's Unity teardown does not give), and fail on all four.
+    `shutdown` (an exit code Rust's Unity teardown does not give), and fail on all four. The
+    narrowing itself is the runner's (`test_verify_selection.py`); what Rust owes is the
+    declaration, and that it agrees with the target record.
     """
-    from dataclasses import dataclass, field
-
-    from takaro_maint.verify.runner import RunOptions, check_ids
+    from takaro_maint.verify.runner import check_ids, game_hooks
 
     record = json.loads((REPO_ROOT / f"catalog/{GAME}/targets/{TARGET}.json").read_text(encoding="utf-8"))
 
-    @dataclass
-    class StubTarget:
-        record: dict[str, Any] = field(default_factory=lambda: record)
+    declared = game_hooks(GAME)
+    selection = [check for check in check_ids(GAME) if check not in declared.unsupported_checks]
+    # Same rows as the record names, in the ladder's own order rather than the record's.
+    assert set(selection) == {"build", *record["verification"]["separate"]}
+    assert selection == [check for check in check_ids(GAME) if check in selection]
 
-    @dataclass
-    class StubRun:
-        target: Any = field(default_factory=StubTarget)
-        options: RunOptions = field(
-            default_factory=lambda: RunOptions(artifacts=Path("dist"), out=Path("reports"), run_id="r")
-        )
-
-    selection = hooks.default_checks(StubRun())
-    assert selection == ["build", *record["verification"]["separate"]]
-
-    run = StubRun()
-    hooks.before_boot(run, {})
-    assert run.options.only == selection
     for unreachable in ("connector-load", "catalog-items", "catalog-entities", "shutdown"):
         assert unreachable in check_ids(GAME), unreachable
-        assert unreachable not in run.options.only, unreachable
+        assert unreachable not in selection, unreachable
+        assert declared.unsupported_checks[unreachable], unreachable
     # Everything the hooks add, and the base checks Rust does pass, are in.
-    assert set(hooks.CHECK_IDS) <= set(run.options.only)
-    assert {"startup", "identify", "heartbeat", "players", "console"} <= set(run.options.only)
-
-    # An explicit --checks is left exactly as it was written: naming a check is asking for it.
-    named = StubRun()
-    named.options = RunOptions(artifacts=Path("dist"), out=Path("reports"), run_id="r", only=["shutdown"])
-    hooks.before_boot(named, {})
-    assert named.options.only == ["shutdown"]
+    assert set(hooks.CHECK_IDS) <= set(selection)
+    assert {"startup", "identify", "heartbeat", "players", "console"} <= set(selection)
 
 
 def test_a_failed_carbon_repair_leaves_the_install_and_its_ledger_intact(

@@ -87,9 +87,9 @@ def _install(args: Any) -> int:
 
     # A game whose inputs are not a list of downloads (a Steam depot set, say) owns the
     # whole installation: staging, swap, ledger, --dry-run and --rollback included.
-    custom_install = getattr(adapter, "install", None)
-    if custom_install is not None:
-        return int(custom_install(catalog, target, resolved, args))
+    result = adapter.install(catalog, target, resolved, args)
+    if result is not None:
+        return int(result)
 
     game_record = catalog.game(target.game).record
     dest = Path(args.dest).expanduser().resolve()
