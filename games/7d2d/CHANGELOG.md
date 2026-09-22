@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.0](https://github.com/gettakaro/connectors/compare/7d2d-v0.1.6...7d2d-v0.2.0) (2026-09-22)
+
+
+### Features
+
+* **maintenance:** exact Steam targets for the remaining connectors — [#148](https://github.com/gettakaro/connectors/issues/148) phase 2 ([#249](https://github.com/gettakaro/connectors/issues/249)) ([7e5481b](https://github.com/gettakaro/connectors/commit/7e5481be878f4617297afaba121f136fea544c94))
+
+
+### Miscellaneous Chores
+
+* retire the legacy per-game compose files in favour of dev-servers ([#146](https://github.com/gettakaro/connectors/issues/146)) ([1f20486](https://github.com/gettakaro/connectors/commit/1f20486e470230c3c5ebb531f5827aa94ae4ba67))
+
+
+### Documentation
+
+* make connector READMEs the source of takaro.io game docs ([#218](https://github.com/gettakaro/connectors/issues/218)) ([b45d6cd](https://github.com/gettakaro/connectors/commit/b45d6cd682a61b11d485b1724e79b1e0b61e5305))
+
 ## [0.1.6](https://github.com/gettakaro/connectors/compare/7d2d-v0.1.5...7d2d-v0.1.6) (2026-09-15)
 
 
