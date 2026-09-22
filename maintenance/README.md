@@ -120,3 +120,6 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [Lifecycle](docs/lifecycle.md) — how `reconcile` and `run` move a maintenance issue from detection to a verified, published release.
 - [Operations](docs/operations.md) — running the one-shot maintenance command on a host, in the tool container and from CI; credentials, dashboard health, the schedule gate.
 - [Private integration](docs/integration.md) — the contract a private deployment follows: resolve, exact install, artifact validation, deployment and verification, with no floating pins of its own.
+- [Recovery](docs/recovery.md) — the operator runbook: what a red run, a degraded dashboard or a half-published release means and the one command that fixes each.
+- [Support policy](docs/support-policy.md) — candidate, maintained and retired; what the repository retains and what only upstream holds; when and how a target is retired.
+- [Source to release](docs/example-source-to-release.md) — one upstream release followed from observation to a closed issue, with every command on the way.

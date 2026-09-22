@@ -29,6 +29,18 @@ cp .env.example .env    # Fill in TAKARO_REGISTRATION_TOKEN at minimum
 
 All operations are in the `justfile`. Run `just --list` to see available commands.
 
+## Maintenance
+
+Every connector is built, verified and released against exact, reviewed server targets recorded in
+[`catalog/`](catalog/README.md). One command, [`takaro-maint`](maintenance/README.md), resolves a target, installs its
+pinned inputs, builds and validates the artifact, deploys it and proves it runs — on a laptop, in
+[`dev-servers/`](dev-servers/README.md) and in CI alike. A scheduled run watches every upstream source, files a
+maintenance issue when something new appears, and closes it only once a stable release demonstrably ships the target
+([lifecycle](maintenance/docs/lifecycle.md)). Operators start at [operations](maintenance/docs/operations.md) and
+[recovery](maintenance/docs/recovery.md); the [support policy](maintenance/docs/support-policy.md) says what is
+maintained, what is retained and how a target retires; private deployments follow the
+[integration contract](maintenance/docs/integration.md).
+
 ## Test Environment
 
 [`dev-servers/`](dev-servers/README.md) is a unified Docker Compose environment that runs a
