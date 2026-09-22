@@ -69,6 +69,15 @@ def game_hooks(game: str) -> GameHooks:
     hooks = getattr(module, "HOOKS", None)
     if not isinstance(hooks, GameHooks):
         raise UsageError(f"{module.__name__} ships verification hooks but no HOOKS = GameHooks(...)")
+    unsupported = set(hooks.unsupported_checks)
+    own_exclusions = unsupported & set(hooks.check_ids)
+    if own_exclusions:
+        names = ", ".join(sorted(own_exclusions))
+        raise UsageError(f"{game} excludes its own verification check(s): {names}")
+    unknown = unsupported - set(CHECK_IDS)
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise UsageError(f"{game} excludes check(s) outside the base verification ladder: {names}")
     return hooks
 
 
@@ -386,15 +395,14 @@ class TargetRun:
         things the other seven games do not have -- a load line only that connector
         writes, Minecraft item and entity spot values, an exit code a Unity teardown does
         not give. Left in, `takaro-maint verify --game <g>` would spend a timeout failing
-        on each. Each game declares which base checks cannot pass on it and what stands in
-        for them, and the exclusion happens here, once, for every game -- three of them
-        used to do it in their own `before_boot`, which is after the install and the
-        deploy and only for the games that remembered to.
+        on each. Each game declares which base checks cannot apply to it and what stands
+        in for them, and the exclusion happens here, once, for every game. A check the
+        game implements but fails is run and reported.
 
         An explicit ``--checks`` is left exactly as written: naming a check is asking for
-        it, including one this game is known to fail. ``replace`` rather than a field
-        assignment, because one ``RunOptions`` is shared by every target of the command
-        and one target's default must not narrow the next one's.
+        it. ``replace`` rather than a field assignment, because one ``RunOptions`` is
+        shared by every target of the command and one target's default must not narrow
+        the next one's.
         """
         if self.options.only is not None:
             return
@@ -417,6 +425,10 @@ class TargetRun:
 
     def skip(self, check_id: str, reason: str) -> None:
         self.record(base_checks.CheckResult(check_id, "skip", 0, {"reason": reason}))
+
+    def not_selected_reason(self, check_id: str) -> str:
+        """Use a game's declared reason when its default selection drops a check."""
+        return self.hooks.unsupported_checks.get(check_id, "not selected by --checks")
 
     async def run(self) -> dict[str, Any]:
         started_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
@@ -443,7 +455,7 @@ class TargetRun:
         if self.wanted("build"):
             self.record(base_checks.check_build(self.options.artifacts, manifest, self.target))
         else:
-            self.skip("build", "not selected by --checks")
+            self.skip("build", self.not_selected_reason("build"))
 
         fake = FakeTakaro(host=bridge_gateway(), log_path=self.fake_log)
         port = await fake.start()
@@ -469,7 +481,7 @@ class TargetRun:
                     )
                 )
             else:
-                self.skip("startup", "not selected by --checks")
+                self.skip("startup", self.not_selected_reason("startup"))
 
             identity = await asyncio.to_thread(self._scan_runtime_identity)
             runtime = {
@@ -484,12 +496,12 @@ class TargetRun:
                     await asyncio.to_thread(base_checks.check_connector_load, self.server_log, self.target, 120, alive)
                 )
             else:
-                self.skip("connector-load", "not selected by --checks")
+                self.skip("connector-load", self.not_selected_reason("connector-load"))
 
             if self.wanted("identify"):
                 self.record(await base_checks.check_identify(fake, self.server_log, 180, alive))
             else:
-                self.skip("identify", "not selected by --checks")
+                self.skip("identify", self.not_selected_reason("identify"))
 
             for check_id, coroutine in (
                 ("heartbeat", lambda: base_checks.check_heartbeat(fake)),
@@ -516,7 +528,7 @@ class TargetRun:
                 if self.wanted(check_id):
                     self.record(await coroutine())
                 else:
-                    self.skip(check_id, "not selected by --checks")
+                    self.skip(check_id, self.not_selected_reason(check_id))
 
             if self.hooks.after_protocol is not None:
                 await self.hooks.after_protocol(self, fake, alive)
@@ -524,7 +536,7 @@ class TargetRun:
             if self.wanted("shutdown"):
                 self.record(await base_checks.check_shutdown(fake, container.wait_for_exit))
             else:
-                self.skip("shutdown", "not selected by --checks")
+                self.skip("shutdown", self.not_selected_reason("shutdown"))
 
             if self.hooks.after_shutdown is not None:
                 await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)

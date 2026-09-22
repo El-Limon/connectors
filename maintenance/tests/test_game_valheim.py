@@ -1020,19 +1020,10 @@ def test_the_catalogue_check_fails_on_a_class_name(tmp_path: Path) -> None:
     assert "enemy_greydwarf" in " ".join(result.detail["problems"])
 
 
-def test_valheim_excludes_the_catalogue_checks_from_a_default_run() -> None:
-    """The plugin ships translation keys by documented design, so a bare run says so.
-
-    The check now fails on keys, and Valheim's plugin returns keys. A default run must
-    not go red on a known, documented limit that `verification.separate` never listed --
-    it says which checks it is not running and why, and `--checks items,entities` shows
-    the failure.
-    """
+def test_valheim_runs_its_catalogue_checks_by_default() -> None:
+    """Known translation-key failures remain visible in a default verification report."""
     from takaro_maint.verify.runner import check_ids, game_hooks
 
     unsupported = game_hooks(GAME).unsupported_checks
-    assert {"items", "entities"} <= set(unsupported)
-    for check in ("items", "entities"):
-        assert "translation keys" in unsupported[check]
-        assert "--checks items,entities" in unsupported[check]
+    assert {"items", "entities"}.isdisjoint(unsupported)
     assert {"items", "entities"} <= set(check_ids(GAME))
