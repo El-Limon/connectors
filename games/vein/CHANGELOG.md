@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/gettakaro/connectors/compare/vein-v0.2.1...vein-v0.2.2) (2026-09-22)
+
+
+### Documentation
+
+* make connector READMEs the source of takaro.io game docs ([#218](https://github.com/gettakaro/connectors/issues/218)) ([b45d6cd](https://github.com/gettakaro/connectors/commit/b45d6cd682a61b11d485b1724e79b1e0b61e5305))
+
 ## [0.2.1](https://github.com/gettakaro/connectors/compare/vein-v0.2.0...vein-v0.2.1) (2026-09-17)
 
 
