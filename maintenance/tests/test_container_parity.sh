@@ -103,7 +103,8 @@ pass "'catalog validate' is byte-identical, and the container needs no network t
 # developer's own tooling can supply a token the container would not have.
 BIN="$WORK/bin"
 mkdir -p "$BIN"
-for tool in env bash uv; do
+# bash, env and dirname are what the launcher script itself needs before it reaches uv.
+for tool in env bash dirname uv; do
   ln -s "$(command -v "$tool")" "$BIN/$tool"
 done
 capture "$WORK/c4.host" "$WORK/c4.host.err" env -u GH_TOKEN "PATH=$BIN" "$MAINT" run --repo example/none
