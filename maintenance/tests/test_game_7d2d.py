@@ -118,6 +118,94 @@ def test_steam_pin_writes_only_the_input_it_re_pinned(run: Any, repo: Path, dd_l
     }
 
 
+SECOND_DEPOT = "294423"
+#: The head `latest_experimental` publishes for the depot this target pins.
+EXPERIMENTAL_MANIFEST = "3000000000000000001"
+
+
+def add_second_depot(repo: Path) -> dict[str, Any]:
+    """A second pinned depot the fixtures serve nothing for, so `--depot` has to narrow."""
+    record = fake.read_target(repo)
+    record["inputs"]["server"]["depots"][SECOND_DEPOT] = {
+        "manifest": "2500000000000000002",
+        "size": 4096,
+        "files": 3,
+    }
+    fake.write_target(repo, record)
+    return record
+
+
+def test_steam_pin_write_keeps_the_depots_it_did_not_read(run: Any, repo: Path, dd_log: Path) -> None:
+    """`--depot` narrows what is observed, never what the record holds.
+
+    The snippet was built from the observation alone, so re-pinning one depot of a
+    multi-depot target wrote a record with only that depot in it -- the install would
+    then fetch a fraction of the game and the declared files of the dropped depots
+    would have nothing to come from.
+    """
+    before = add_second_depot(repo)
+    record_args: list[str] = []
+    for path in before["inputs"]["server"]["files"]:
+        record_args += ["--record-files", path]
+
+    code, payload, err = run(
+        "steam", "pin", "--game", GAME, "--target", TARGET,
+        "--depot", fake.DEPOT, "--buildid", "25000001", "--write", *record_args, repo=repo,
+    )
+
+    assert code == 0, f"{err}\n{payload}"
+    assert payload["snippet"]["depots"][SECOND_DEPOT] == before["inputs"]["server"]["depots"][SECOND_DEPOT]
+    after = fake.read_target(repo)["inputs"]["server"]["depots"]
+    assert after[fake.DEPOT]["manifest"] == fake.HEAD_MANIFEST
+    assert after[SECOND_DEPOT] == before["inputs"]["server"]["depots"][SECOND_DEPOT]
+
+
+def test_steam_pin_write_records_the_branch_it_read(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--branch X --write` wrote the branch the record already held, not X."""
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {fake.DEPOT: EXPERIMENTAL_MANIFEST}}}),
+    )
+    before = fake.read_target(repo)
+    record_args: list[str] = []
+    for path in before["inputs"]["server"]["files"]:
+        record_args += ["--record-files", path]
+
+    code, payload, err = run(
+        "steam", "pin", "--game", GAME, "--target", TARGET,
+        "--branch", "latest_experimental", "--buildid", "25200000", "--write", *record_args, repo=repo,
+    )
+
+    assert code == 0, f"{err}\n{payload}"
+    assert payload["branch"] == "latest_experimental" == payload["snippet"]["branch"]
+    after = fake.read_target(repo)["inputs"]["server"]
+    assert after["branch"] == "latest_experimental"
+    assert after["buildid"] == 25200000
+    assert after["depots"][fake.DEPOT]["manifest"] == EXPERIMENTAL_MANIFEST
+
+
+def test_steam_pin_refuses_a_depot_subset_on_a_different_branch(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record pins one branch, so a subset re-pin cannot relabel the depots it skipped."""
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {fake.DEPOT: EXPERIMENTAL_MANIFEST}}}),
+    )
+    before = add_second_depot(repo)
+
+    code, payload, _ = run(
+        "steam", "pin", "--game", GAME, "--target", TARGET,
+        "--branch", "latest_experimental", "--depot", fake.DEPOT, "--write", repo=repo,
+    )
+
+    assert code == 2, payload
+    assert "re-pin every depot when changing branch" in payload["error"]
+    assert fake.read_target(repo)["inputs"]["server"] == before["inputs"]["server"]
+
+
 def test_steam_pin_reports_an_unavailable_manifest_as_upstream(
     run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
