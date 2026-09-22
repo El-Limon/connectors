@@ -132,7 +132,7 @@ needed for is in that group. ❌ means it is not implemented or not supported.
 | Server restart / reconnect | ✅ | Reconnects on its own after the connection drops, with exponential backoff (5 s up to 5 min), and identifies again. |
 | Player list | ✅ | Answers with the connected players. Proven on an empty server only — the shape is verified, a populated list is not. |
 | Item catalogue | ✅ | Every item definition the server knows, with its display name (e.g. `rifle.ak` → "Assault Rifle"). |
-| Entity catalogue | ✅ | Built from the server's prefab manifest, with corpses and ragdolls filtered out, and display names from a curated table for NPCs and animals (e.g. `scientistnpc_heavy` → "Heavy Scientist"), derived from the prefab name otherwise. |
+| Entity catalogue | ✅ | Built from the server's prefab manifest, with corpses and ragdolls filtered out, and display names from a curated table for NPCs and animals (e.g. `scientistnpc_heavy` → "Heavy Scientist"). Every prefab a verified server returns is in that table; a prefab outside it gets a derived name and `takaro-maint verify` reports it. |
 | Run a console command | ✅ | Runs as a server console command and returns the output or the error. The connector logs each command it runs, because Rust's console does not echo them. |
 | Broadcast a message | ✅ | Sent to everyone in the server chat, and logged by the connector. Proven to reach the server; that a player sees it is not, because the automated run has no client. |
 | Shut the server down | ✅ | Runs the server's `quit` command: the world is saved, the plugin is unloaded and the server quits. Rust's own process then sometimes crashes inside Unity's teardown *after* all of that, so its exit code means nothing either way. |

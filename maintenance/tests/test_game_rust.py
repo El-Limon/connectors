@@ -1074,7 +1074,7 @@ def test_a_symlink_resolving_beside_the_install_is_refused(tmp_path: Path) -> No
 
 
 def test_a_hard_link_is_resolved_against_the_archive_root_not_the_entry(tmp_path: Path) -> None:
-    """A hard link's target is archive-relative; resolving it per-directory hid escapes."""
+    """A hard link's target is archive-relative, so it is resolved against the archive root."""
     root = tmp_path / "install"
     root.mkdir()
 
@@ -1175,8 +1175,38 @@ def test_the_entity_check_passes_on_curated_display_names() -> None:
     }
 
 
+def test_the_curated_table_covers_the_recorded_server_corpus() -> None:
+    table = hooks._curated_entity_names()
+    assert len(table) >= 60
+    codes = [
+        code
+        for code in (REPO_ROOT / "games/rust/tests/names/entity-codes.txt").read_text(encoding="utf-8").splitlines()
+        if code
+    ]
+
+    result = _entities([{"code": code, "name": table[code]} for code in codes])
+
+    assert len(codes) == 66
+    assert result.status == "pass", result.detail["problems"]
+
+
+def test_the_entity_check_refuses_a_prefab_outside_the_curated_table() -> None:
+    result = _entities(
+        [
+            {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},
+            {"code": "future_event_npc", "name": "Future Event NPC"},
+        ]
+    )
+
+    assert result.status == "fail"
+    assert any(
+        "1 prefabs have no curated name" in problem and "future_event_npc" in problem
+        for problem in result.detail["problems"]
+    )
+
+
 def test_the_entity_check_fails_on_a_formatted_prefab_code() -> None:
-    """`Scientistnpc Heavy` is what the connector answered before the curated table."""
+    """`Scientistnpc Heavy` is a formatted prefab code, and the check refuses it."""
     result = _entities(
         [
             {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},

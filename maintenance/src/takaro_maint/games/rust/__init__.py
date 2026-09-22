@@ -151,9 +151,9 @@ def _safe_members(archive: tarfile.TarFile, root: Path) -> list[tarfile.TarInfo]
             raise IntegrityError(f"the Carbon archive holds '{member.name}', which escapes the install directory")
         if member.islnk() or member.issym():
             # A hard link names a path relative to the archive root; a symlink names one
-            # relative to its own directory. Resolving both the same way let `root-evil`
-            # pass as a prefix of `root`, so containment is a path relationship, not a
-            # string one.
+            # relative to its own directory. Resolving both the same way would let
+            # `root-evil` pass as a prefix of `root`, so containment is a path
+            # relationship, not a string one.
             base = root_resolved if member.islnk() else (root_resolved / name).parent
             link = base.joinpath(member.linkname.replace("\\", "/")).resolve()
             if not link.is_relative_to(root_resolved):

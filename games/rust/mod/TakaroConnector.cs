@@ -144,7 +144,7 @@ namespace Oxide.Plugins
 
                 var message = sb.ToString();
                 if (_debug)
-                    LogDebug($"WS RECV: {message}");
+                    LogDebug($"WS RECV: {FrameSummary(message)}");
 
                 try
                 {
@@ -156,6 +156,24 @@ namespace Oxide.Plugins
                 }
             }
         }
+
+        // takaro:frames-begin
+        private static string FrameSummary(string message)
+        {
+            try
+            {
+                var json = JObject.Parse(message);
+                var type = json.Value<string>("type") ?? "";
+                if (type != "request") return $"type={type}";
+                return $"type=request action={json.Value<string>("action") ?? ""} " +
+                    $"requestId={json.Value<string>("requestId") ?? ""}";
+            }
+            catch
+            {
+                return $"unparseable frame ({Encoding.UTF8.GetByteCount(message ?? "")} bytes)";
+            }
+        }
+        // takaro:frames-end
 
         private void OnWsMessage(string message)
         {
@@ -600,8 +618,8 @@ namespace Oxide.Plugins
         // takaro:names-begin
         // Entity prefabs have no localised display name the way items do -- `bear`,
         // `scientistnpc_heavy`, `wolf2` is all the server knows them by. Opening the
-        // separators and capitalising, which is what this used to do, put "Scientistnpc
-        // Heavy" and "Missionprovider Floatingcity A" in the one field Takaro shows a
+        // separators and capitalising put "Scientistnpc Heavy" and "Missionprovider
+        // Floatingcity A" in the one field Takaro shows a
         // human: a formatted dev code, not a name.
         //
         // The table is the prefab list a real server returned; anything outside it goes
@@ -664,12 +682,26 @@ namespace Oxide.Plugins
                     { "gingerbread_meleedungeon", "Gingerbread Man (Melee Dungeon)" },
                     { "frankensteinpet", "Frankenstein Pet" },
                     { "apartment_vendor", "Apartment Vendor" },
+                    { "apartment_security", "Apartment Security" },
+                    { "farm_access_guard", "Farm Access Guard" },
                     { "bandit_conversationalist", "Bandit Conversationalist" },
                     { "bandit_shopkeeper", "Bandit Shopkeeper" },
                     { "bandit_shopkeeper_sitting", "Bandit Shopkeeper (Sitting)" },
                     { "boat_shopkeeper", "Boat Shopkeeper" },
                     { "stables_shopkeeper", "Stables Shopkeeper" },
-                    { "waterwell_shopkeeper", "Water Well Shopkeeper" }
+                    { "waterwell_shopkeeper", "Water Well Shopkeeper" },
+                    { "missionprovider_bandit_a", "Bandit Mission Provider A" },
+                    { "missionprovider_bandit_b", "Bandit Mission Provider B" },
+                    { "missionprovider_fishing_a", "Fishing Mission Provider A" },
+                    { "missionprovider_fishing_b", "Fishing Mission Provider B" },
+                    { "missionprovider_floatingcity_a", "Floating City Mission Provider A" },
+                    { "missionprovider_generic_a", "Generic Mission Provider A" },
+                    { "missionprovider_outpost_a", "Outpost Mission Provider A" },
+                    { "missionprovider_outpost_b", "Outpost Mission Provider B" },
+                    { "missionprovider_stables_a", "Stables Mission Provider A" },
+                    { "missionprovider_stables_b", "Stables Mission Provider B" },
+                    { "missionprovider_test", "Mission Provider (Test)" },
+                    { "missionprovider_tutorial", "Mission Provider (Tutorial)" }
                 };
 
             // Prefab words that are several words glued together, or an abbreviation that

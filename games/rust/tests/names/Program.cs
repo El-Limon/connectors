@@ -3,8 +3,7 @@
 //
 // `run.sh` lifts the region out of mod/TakaroConnector.cs between its markers and drops
 // it into this project, so what is proven here is the shipped code, not a copy of it that
-// can drift. The previous test for this was a grep over the source for the word
-// "Humanize", which said nothing at all about what the names come out as.
+// can drift.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -72,6 +71,18 @@ internal static class Program
             }
         }
         Console.WriteLine("corpus: " + codes.Count);
+
+        var request = Names.SummarizeFrame(
+            "{\"type\":\"request\",\"action\":\"executeConsoleCommand\",\"requestId\":\"r-7\"," +
+            "\"args\":{\"command\":\"say hunter2\"}}"
+        );
+        if (!request.Contains("type=request") || !request.Contains("action=executeConsoleCommand") ||
+            !request.Contains("requestId=r-7") || request.Contains("hunter2"))
+            Fail("request frame summary leaked arguments or omitted routing fields: " + request);
+        var identified = Names.SummarizeFrame("{\"type\":\"identifyResponse\",\"identityToken\":\"secret\"}");
+        if (identified != "type=identifyResponse") Fail("non-request frame summary: " + identified);
+        var broken = Names.SummarizeFrame("not json");
+        if (broken != "unparseable frame (8 bytes)") Fail("unparseable frame summary: " + broken);
 
         if (_failures > 0)
         {
