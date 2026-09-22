@@ -443,6 +443,34 @@ def test_install_refuses_a_pack_whose_manifest_disagrees_with_the_pin(
     assert not list(dest.parent.glob(".staging-*"))
 
 
+def test_a_pack_entry_that_escapes_the_install_directory_is_refused(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, upstream: FakeUpstream
+) -> None:
+    """`build_pack_zip(escape=True)` was written for this and never called.
+
+    A Thunderstore pack is an archive from a third party. `_safe_zip_entry` refuses an
+    entry whose path leaves the install directory -- and until this test nothing proved
+    it, on a fixture that exists precisely to prove it.
+    """
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    before = tree_hash(dest)
+
+    hostile = build_pack_zip(tmp_path / "hostile" / "pack.zip", escape=True)
+    upstream.files[PACK_PATH] = hostile
+    record = read_target(repo)
+    record["inputs"]["bepinex"]["sha256"] = _sha256(hostile)
+    record["inputs"]["bepinex"]["size"] = len(hostile)
+    write_target(repo, record)
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code == 5, payload
+    assert not list(tmp_path.rglob("escaped.txt")), "nothing was written outside the archive"
+    assert tree_hash(dest) == before, "the existing install is byte-identical"
+    assert not list(dest.parent.glob(".staging-*"))
+
+
 def test_install_refuses_a_pack_with_the_wrong_hash(
     run: Any, repo: Path, dd_log: Path, tmp_path: Path, upstream: FakeUpstream
 ) -> None:

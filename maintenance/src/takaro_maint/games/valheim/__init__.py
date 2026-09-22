@@ -36,7 +36,7 @@ from typing import Any
 
 from ... import net, output, paths
 from ...catalog import ids
-from ...exit_codes import OK, BuildFailed, ConflictError, IntegrityError, UsageError
+from ...exit_codes import OK, BuildFailed, ConflictError, IntegrityError
 from ...install.ledger import read_ledger, write_ledger
 from ...providers import provider_for
 from ...steam import install as steam_install
@@ -98,6 +98,10 @@ def _safe_zip_entry(value: str, *, field: str) -> PurePosixPath:
     BepInEx pack legitimately ships ``.doorstop_version``, and dropping it would make the
     install something other than the pack. So this keeps the part that matters — nothing may
     escape the staging directory — and allows a dotfile.
+
+    An entry that does escape is an `IntegrityError`, not a usage error: nobody typed it.
+    It is a third party's archive saying something about the bytes that arrived, which is
+    exactly what exit 5 means, and it leaves the existing install untouched.
     """
     text = str(value)
     segments = text.split("/")
@@ -110,7 +114,7 @@ def _safe_zip_entry(value: str, *, field: str) -> PurePosixPath:
         or re.fullmatch(r"[A-Za-z]:.*", text) is not None
     )
     if unsafe:
-        raise UsageError(
+        raise IntegrityError(
             f"{field} must be a relative path inside the install directory "
             f"(no leading '/', no '..', no backslash), not {value!r}"
         )

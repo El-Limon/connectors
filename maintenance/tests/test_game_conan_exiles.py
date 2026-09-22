@@ -1048,3 +1048,37 @@ def test_the_server_container_gets_the_memory_and_the_user_the_adapter_asks_for(
     user = argv.index("--user")
     assert argv[user + 1] == f"{os.getuid()}:{os.getgid()}"
     assert user > memory[0], "the adapter's options come after the runner's own"
+
+
+def test_the_stamp_line_the_harness_reads_is_the_one_the_bridge_writes() -> None:
+    """The contract is across two languages, so it has to be bound rather than restated.
+
+    `hooks.STAMP_LINE` is a Python regex with named groups; the line it reads is built by
+    a TypeScript template. Renaming a word in either used to leave the other looking
+    correct, and `bridge-identify` would then report an unstamped bridge.
+    """
+    source = (REPO_ROOT / "games/conan-exiles/bridge/src/targetStamp.ts").read_text(encoding="utf-8")
+
+    body = source[source.index("export function describeStamp") :]
+    body = body[: body.index("\n}")]
+    templates = re.findall(r"`([^`]*)`", body)
+    assert templates, "describeStamp builds its line from template literals"
+    # Every `${...}` becomes a value, and the literal text between them is the contract.
+    sample = "".join(templates)
+    values = {
+        "stamp.target": "linux-25356024",
+        "stamp.fingerprint.slice(0, 16)": "0123456789abcdef",
+        "stamp.revision": "25356024",
+        "stamp.connectorVersion": "1.2.3",
+        "stamp.sourceRevision": "deadbeef",
+    }
+    for expression, value in values.items():
+        sample = sample.replace("${" + expression + "}", value)
+    assert "${" not in sample, f"describeStamp interpolates something this test does not know: {sample}"
+
+    found = hooks.STAMP_LINE.search(sample)
+    assert found, f"{hooks.STAMP_LINE.pattern!r} does not match {sample!r}"
+    assert found.group("target") == "linux-25356024"
+    assert found.group("fp16") == "0123456789abcdef"
+    assert found.group("revision") == "25356024"
+    assert found.group("version") == "1.2.3"

@@ -1529,3 +1529,20 @@ def test_prerelease_tags_sort_by_number_not_by_string() -> None:
     assert max(tags, key=_sort_key) == "6.0.0"
     # And a deeper version still beats the one it extends.
     assert sorted(["6.1.0", "6.1.0.1", "6.1.0-pre3"], key=_sort_key) == ["6.1.0-pre3", "6.1.0", "6.1.0.1"]
+
+
+def test_the_identify_line_the_harness_waits_for_is_the_one_the_bridge_writes() -> None:
+    """The contract is across two languages, so it has to be bound rather than restated.
+
+    `hooks.IDENTIFIED_LINE` is a Python regex; the line it waits for is built by a
+    TypeScript template. Renaming either used to leave the other looking correct, and the
+    check would then wait out its budget on a line that is being written under a new name.
+    """
+    source = (REPO_ROOT / "games/terraria/bridge/src/takaro/connectionLog.ts").read_text(encoding="utf-8")
+
+    prefixes = re.findall(r"^export const IDENTIFIED_PREFIX = '([^']+)';$", source, re.MULTILINE)
+    assert len(prefixes) == 1, "exactly one IDENTIFIED_PREFIX, or this test is reading the wrong thing"
+    # `identifiedLine` interpolates the id after the prefix; the harness matches the prefix.
+    sample = f"info: {prefixes[0]} (gameServerId=gs_terraria)"
+
+    assert hooks.IDENTIFIED_LINE.search(sample), f"{hooks.IDENTIFIED_LINE.pattern!r} does not match {sample!r}"
