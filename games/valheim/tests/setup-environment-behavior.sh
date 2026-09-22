@@ -98,7 +98,15 @@ VALHEIM_BEPINEX_URL=https://example.invalid/package/download/denikson/BepInExPac
 VALHEIM_BEPINEX_SHA256=$STUB_PACK_SHA256
 VALHEIM_BEPINEX_SIZE=$STUB_PACK_SIZE
 VALHEIM_ASSEMBLY_VALHEIM_SHA256=$STUB_ASSEMBLY_SHA256
+VALHEIM_REFERENCE_ASSEMBLY_VALHEIM_SHA256=$STUB_ASSEMBLY_SHA256
+VALHEIM_REFERENCE_ASSEMBLY_UTILS_SHA256=$STUB_ASSEMBLY_SHA256
+VALHEIM_REFERENCE_SPLATFORM_SHA256=$STUB_ASSEMBLY_SHA256
+VALHEIM_REFERENCE_UNITYENGINE_SHA256=$STUB_ASSEMBLY_SHA256
+VALHEIM_REFERENCE_UNITYENGINE_COREMODULE_SHA256=$STUB_ASSEMBLY_SHA256
 ENV
+      if [ "$STUB_SCENARIO" = "missing_reference_hash" ]; then
+        sed -i '/VALHEIM_REFERENCE_SPLATFORM_SHA256=/d' "$out"
+      fi
       return 0
       ;;
     "steam references")
@@ -811,12 +819,19 @@ test_a_drifted_reference_cache_is_not_reused() {
 
   # Still a real managed assembly -- just no longer the one the target pins. Validation
   # alone cannot tell the difference, which is why the pinned digest is checked again.
-  printf 'tampered\n' >> "$RUN_CASE_DIR/server/valheim_server_Data/Managed/assembly_valheim.dll"
+  printf 'tampered\n' >> "$RUN_CASE_DIR/server/valheim_server_Data/Managed/assembly_utils.dll"
 
   run_setup drifted-references first_success
   assert_equals 0 "$RUN_STATUS" "the second run should repair the drifted cache" || return 1
   assert_equals 2 "$(call_count)" "a cache that is not the pinned bytes must be fetched again" || return 1
-  assert_output_contains "is not the one ${STUB_TARGET} pins" "the run must say why the cache was rejected" || return 1
+  assert_output_contains "assembly_utils.dll" "the run must name the assembly that drifted" || return 1
+}
+
+test_a_missing_required_reference_hash_is_refused() {
+  run_setup missing-reference-hash missing_reference_hash
+  assert_equals 5 "$RUN_STATUS" "a required assembly without a recorded hash must be refused" || return 1
+  assert_output_contains "Splatform.dll" "the refusal must name the unbound assembly" || return 1
+  assert_output_contains "VALHEIM_REFERENCE_SPLATFORM_SHA256" "the refusal must name the missing key" || return 1
 }
 
 test_a_drifted_pack_is_downloaded_again() {
@@ -919,6 +934,7 @@ for test_case in \
   test_valid_existing_cache_skips_the_fetch \
   test_a_prepared_pack_is_not_downloaded_again \
   test_a_drifted_reference_cache_is_not_reused \
+  test_a_missing_required_reference_hash_is_refused \
   test_a_drifted_pack_is_downloaded_again \
   test_failed_atomic_publication_rolls_back_and_next_run_retries \
   test_failed_first_publication_does_not_forge_cache_ownership \

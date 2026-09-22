@@ -192,9 +192,7 @@ public sealed class ReleasePackageContractTests
                     "graphical-client",
                     protocolCurrent: 3);
                 break;
-            // The three ways the corrected manifest can go wrong again: the loader version
-            // repeated from the plugin version (the bug this connector shipped before it
-            // had a target), a floating pack version, and no plugin version at all.
+            // The loader version, pack version and plugin version are independent fields.
             case "bepinex-version-equals-plugin-version":
                 WriteManifest(
                     Path.Combine(client, "manifest.json"),

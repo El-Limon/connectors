@@ -153,9 +153,15 @@ class ValheimAdapter(BaseAdapter):
             env[f"{prefix}_BEPINEX_URL"] = str(url)
         if pack.get("size") is not None:
             env[f"{prefix}_BEPINEX_SIZE"] = str(pack["size"])
-        assembly = server["files"].get(ASSEMBLY_VALHEIM, {}).get("sha256")
-        if assembly:
-            env[f"{prefix}_ASSEMBLY_VALHEIM_SHA256"] = str(assembly)
+        for path, spec in sorted(server["files"].items()):
+            if "/Managed/" not in path or not path.lower().endswith(".dll"):
+                continue
+            key = _env_key(Path(path).stem)
+            digest = spec.get("sha256")
+            if digest:
+                env[f"{prefix}_REFERENCE_{key}_SHA256"] = str(digest)
+                if path == ASSEMBLY_VALHEIM:
+                    env[f"{prefix}_ASSEMBLY_VALHEIM_SHA256"] = str(digest)
         # The dependency URLs and hashes the build verifies before it uses them.
         for name, dep in sorted(resolved["build"]["deps"].items()):
             key = _env_key(name)
