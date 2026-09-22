@@ -57,4 +57,8 @@ public final class AgentLog {
         t.printStackTrace(new PrintWriter(sw));
         log("ERROR " + message + System.lineSeparator() + sw);
     }
+
+    public static void error(String message) {
+        log("ERROR " + message);
+    }
 }

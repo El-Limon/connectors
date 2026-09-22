@@ -21,6 +21,7 @@ import pytest
 
 import fake_depotdownloader as fake
 from fake_upstream import FakeUpstream
+from fake_verify import CannedSocket, FakeRun
 from takaro_maint.games import adapter_for
 from takaro_maint.games.valheim import verify as hooks
 from takaro_maint.providers import provider_for
@@ -46,6 +47,76 @@ DEPOTS = VALHEIM_FIXTURES / "depots"
 PACK_SOURCE = VALHEIM_FIXTURES / "bepinex-pack"
 THUNDERSTORE_DOCUMENT = FIXTURES / "providers" / "thunderstore" / "bepinexpack-valheim.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_every_valheim_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = FakeRun(tmp_path)
+    fake = CannedSocket(
+        {
+            "listItems": [{"code": "SwordBronze", "name": "Bronze Sword"}],
+            "listEntities": [{"code": "Greydwarf_Elite", "name": "Greydwarf Brute"}],
+            "executeConsoleCommand": {"success": True},
+            "testReachability": {"connectable": True},
+            "shutdown": {},
+        },
+        identify_count=1,
+    )
+    monkeypatch.setattr(
+        hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "listItems returned 1 item prefab(s)")
+    )
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: (1, "Loading [Takaro Valheim 1.0.0]"))
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert asyncio.run(hooks._check_handshake(run, fake, lambda: True)).status == "pass"
+    assert (
+        asyncio.run(hooks._check_catalogue(run, fake, lambda: True, "listItems", "items", "SwordBronze")).status
+        == "pass"
+    )
+    assert asyncio.run(hooks._check_action(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, fake, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", wanted=set())
+    failed_run.container = None
+    failed = CannedSocket(
+        {
+            "listItems": [],
+            "executeConsoleCommand": {"success": False},
+            "testReachability": None,
+            "shutdown": RuntimeError("closed"),
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+
+    assert asyncio.run(hooks._check_handshake(failed_run, failed, lambda: False)).status == "fail"
+    assert (
+        asyncio.run(hooks._check_catalogue(failed_run, failed, lambda: False, "listItems", "items", "x")).status
+        == "fail"
+    )
+    assert asyncio.run(hooks._check_action(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_stop(failed_run, failed, [{"path": "missing"}])).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == {*hooks.CHECK_IDS, "stop"}
+
+
 BUILD_SCRIPT = "games/valheim/scripts/build-release.sh"
 
 
@@ -355,6 +426,17 @@ def test_targets_resolve_env_for_valheim(run: Any) -> None:
     assert env["VALHEIM_REFERENCES_DIR"].endswith(payload["fp16"])
     assert env["VALHEIM_BEPINEX_DIR"].endswith(payload["fp16"])
     assert env["VALHEIM_DEP_SYSTEM_TEXT_JSON_SHA256"]
+    references = payload["inputs"]["server"]["files"]
+    expected_reference_keys = {
+        "assembly_valheim.dll": "VALHEIM_REFERENCE_ASSEMBLY_VALHEIM_SHA256",
+        "assembly_utils.dll": "VALHEIM_REFERENCE_ASSEMBLY_UTILS_SHA256",
+        "Splatform.dll": "VALHEIM_REFERENCE_SPLATFORM_SHA256",
+        "UnityEngine.dll": "VALHEIM_REFERENCE_UNITYENGINE_SHA256",
+        "UnityEngine.CoreModule.dll": "VALHEIM_REFERENCE_UNITYENGINE_COREMODULE_SHA256",
+    }
+    for assembly, key in expected_reference_keys.items():
+        path = f"valheim_server_Data/Managed/{assembly}"
+        assert env[key] == references[path]["sha256"]
     assert not any(key.endswith("_JAVA") for key in env)
     assert payload["resolvedUrls"]["server"].startswith("steam://app/896660/branch/public/")
     assert payload["resolvedUrls"]["bepinex"].endswith(f"/{PACK_VERSION}/")
@@ -446,12 +528,7 @@ def test_install_refuses_a_pack_whose_manifest_disagrees_with_the_pin(
 def test_a_pack_entry_that_escapes_the_install_directory_is_refused(
     run: Any, repo: Path, dd_log: Path, tmp_path: Path, upstream: FakeUpstream
 ) -> None:
-    """`build_pack_zip(escape=True)` was written for this and never called.
-
-    A Thunderstore pack is an archive from a third party. `_safe_zip_entry` refuses an
-    entry whose path leaves the install directory -- and until this test nothing proved
-    it, on a fixture that exists precisely to prove it.
-    """
+    """An entry escaping the install directory is refused without changing the install."""
     dest = tmp_path / "server"
     assert install(run, repo, dest)[0] == 0
     before = tree_hash(dest)
@@ -995,7 +1072,7 @@ def test_a_compound_code_handed_back_as_its_own_name_is_a_dev_name(tmp_path: Pat
 
 
 def test_the_catalogue_check_fails_on_translation_keys(tmp_path: Path) -> None:
-    """`humanNames` was recorded and never asserted, so the check passed on keys."""
+    """The check fails on translation keys."""
     result = _catalogue(
         tmp_path,
         [
@@ -1020,19 +1097,10 @@ def test_the_catalogue_check_fails_on_a_class_name(tmp_path: Path) -> None:
     assert "enemy_greydwarf" in " ".join(result.detail["problems"])
 
 
-def test_valheim_excludes_the_catalogue_checks_from_a_default_run() -> None:
-    """The plugin ships translation keys by documented design, so a bare run says so.
-
-    The check now fails on keys, and Valheim's plugin returns keys. A default run must
-    not go red on a known, documented limit that `verification.separate` never listed --
-    it says which checks it is not running and why, and `--checks items,entities` shows
-    the failure.
-    """
+def test_valheim_runs_its_catalogue_checks_by_default() -> None:
+    """Known translation-key failures remain visible in a default verification report."""
     from takaro_maint.verify.runner import check_ids, game_hooks
 
     unsupported = game_hooks(GAME).unsupported_checks
-    assert {"items", "entities"} <= set(unsupported)
-    for check in ("items", "entities"):
-        assert "translation keys" in unsupported[check]
-        assert "--checks items,entities" in unsupported[check]
+    assert {"items", "entities"}.isdisjoint(unsupported)
     assert {"items", "entities"} <= set(check_ids(GAME))

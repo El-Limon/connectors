@@ -51,6 +51,10 @@ UNSUPPORTED_CHECKS = {
 
 JAVA_TOOL_OPTIONS_LINE = re.compile(r"Picked up JAVA_TOOL_OPTIONS:.*-javaagent:.*" + re.escape(STABLE_JAR))
 HOOKS_INSTALLED_LINE = re.compile(r"\[Takaro\] premain: hooks installed")
+UNBOUND_HOOKS_LINE = re.compile(
+    r"\[Takaro\] (?:premain: hooks installed; unbound: \[([^]]+)]"
+    r"|ERROR hook ([^:]+): matcher bound nothing on \S+)"
+)
 TARGET_CHECK_LINE = re.compile(r"\[Takaro\]\s*target-check:\s*\{")
 IDENTIFIED_LINE = re.compile(r"Identified successfully")
 STUB_LINE = re.compile(r"takaro-maint: SteamCMD is disabled")
@@ -177,6 +181,9 @@ async def _check_agent_load(run: Any, alive: Any) -> checks.CheckResult:
         )
         if not installed:
             problems.append("the agent never logged 'premain: hooks installed'")
+        unbound = await asyncio.to_thread(checks.find_line, run.server_log, UNBOUND_HOOKS_LINE)
+        if unbound:
+            problems.append(f"one or more agent hooks bound no method: {unbound[1].strip()[:200]}")
         found = await asyncio.to_thread(
             checks.wait_for_line, run.server_log, TARGET_CHECK_LINE, AGENT_LOAD_BUDGET, alive
         )
@@ -273,6 +280,9 @@ async def _check_hooks_bound(run: Any, alive: Any) -> checks.CheckResult:
         watchdog = await asyncio.to_thread(checks.find_line, run.server_log, TICK_WATCHDOG_LINE)
         if watchdog:
             problems.append("the tick watchdog warned that the matcher bound nothing")
+        unbound = await asyncio.to_thread(checks.find_line, run.server_log, UNBOUND_HOOKS_LINE)
+        if unbound:
+            problems.append(f"one or more agent hooks bound no method: {unbound[1].strip()[:200]}")
     return checks.CheckResult(
         "hooks-bound",
         "pass" if not problems else "fail",
@@ -343,8 +353,7 @@ async def _check_catalog(fake: Any) -> checks.CheckResult:
         problems: list[str] = []
         detail: dict[str, Any] = {}
         for action, kind, spot in (
-            # The names are this build's own, read off a real run: Base.Axe is the
-            # firefighter's axe in Build 42, whatever a planning note assumed.
+            # Base.Axe is the firefighter's axe in Build 42, read off a real run.
             ("listItems", "items", ("Base.Axe", "Firefighter Axe")),
             ("listEntities", "entities", ("Zombie", "Zombie")),
         ):

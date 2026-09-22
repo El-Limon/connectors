@@ -495,24 +495,58 @@ async def _check_players(run: Any, fake: Any) -> checks.CheckResult:
 #: A dev token that has no business in a name an operator reads. The same set the mod's
 #: own corpus test asserts over ``kEntities``/``kLocations`` (``mod/tests/names_test.cpp``),
 #: applied here to what the running server actually answered.
-_DEV_TOKENS = frozenset({"ag2", "deprecated", "placement", "noui", "healthbar"})
+_DEV_TOKENS = frozenset(
+    {
+        "ag2",
+        "deprecated",
+        "depricated",
+        "placement",
+        "noui",
+        "healthbar",
+        "unused",
+        "hasbugs",
+        "test",
+        "lvlxx",
+    }
+)
 _BARE_TIER = re.compile(r"^[Tt]\d$")
 
 
 def _looks_like_a_dev_name(name: str, code: str) -> bool:
     """A template code handed back rather than a name, by the mod's own rules.
 
-    Entity and location names are derived from the codes, because the dedicated server
-    ships no localisation to read them from. That derivation is only worth anything if its
-    output is actually readable, so every predicate the C++ corpus test asserts over the
-    shipped table is asserted here over the live answer too -- otherwise a mod that
+    Item, entity and location names are all derived from the codes, because the dedicated
+    server ships no localisation to read them from. That derivation is only worth anything
+    if its output is actually readable, so every predicate the C++ corpus test asserts over
+    the shipped table is asserted here over the live answer too -- otherwise a mod that
     regressed to opening underscores would still pass this check.
     """
-    if not name or name[0] == " " or name[0].isdigit() or "_" in name:
+    if not name or name[0] == " " or "_" in name:
+        return True
+    words = name.split()
+    if words and words[0].isdigit():
+        return True
+    if any(word[:1].islower() for word in words):
         return True
     if name == code.replace("_", " "):
         return True
-    return any(word.lower() in _DEV_TOKENS or _BARE_TIER.match(word) for word in name.split())
+    return any(word.lower() in _DEV_TOKENS or _BARE_TIER.match(word) for word in words)
+
+
+def _shared_names(entries: list[Any]) -> list[tuple[str, list[str]]]:
+    """Names that two different codes both answer with, worst first.
+
+    The plugin derives one name per code and re-derives the colliding ones at a more
+    detailed level until they separate, so a collision in the live answer means the
+    derivation lost that guarantee and an operator can no longer tell two templates apart.
+    """
+    by_name: dict[str, list[str]] = {}
+    for entry in entries:
+        name, code = str(entry["name"]), str(entry["code"])
+        codes = by_name.setdefault(name, [])
+        if code not in codes:
+            codes.append(code)
+    return sorted(((n, c) for n, c in by_name.items() if len(c) > 1), key=lambda pair: (-len(pair[1]), pair[0]))
 
 
 async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
@@ -546,22 +580,16 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
                     f"{action}: {len(same)} of {len(entries)} names are the code itself, "
                     f"e.g. {', '.join(str(e['code']) for e in same[:3])}"
                 )
-            if action == "listItems":
-                # Items keep the name gen_gamedata.py baked into ItemDef::name, which is the
-                # code with its underscores opened. Deriving 3,609 item names is follow-up F1.
-                underscored = [e for e in entries if "_" in str(e["name"])]
-                if underscored:
-                    problems.append(
-                        f"{action}: {len(underscored)} of {len(entries)} names are still dev codes, "
-                        f"e.g. {', '.join(str(e['name']) for e in underscored[:3])}"
-                    )
-                continue
             offenders = [e for e in entries if _looks_like_a_dev_name(str(e["name"]), str(e["code"]))]
             if offenders:
                 problems.append(
                     f"{action}: {len(offenders)} of {len(entries)} names are dev codes rather than "
                     f"display names, e.g. " + ", ".join(f"{e['code']} -> {e['name']}" for e in offenders[:3])
                 )
+            shared = _shared_names(entries)
+            if shared:
+                examples = "; ".join(f"{name} <- {', '.join(codes)}" for name, codes in shared[:3])
+                problems.append(f"{action}: {len(shared)} names are shared by more than one code, e.g. {examples}")
     return checks.CheckResult(
         "sidecar-catalog",
         "pass" if not problems else "fail",
@@ -570,8 +598,9 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
             "counts": counts,
             "firstNames": samples,
             "note": (
-                "Enshrouded's `catalog-items`/`catalog-entities`; entity and location names are "
-                "derived from the template codes because the dedicated server ships no localisation"
+                "Enshrouded's `catalog-items`/`catalog-entities`; item, entity and location names "
+                "are derived from the template codes because the dedicated server ships no "
+                "localisation, and every distinct code gets a distinct name"
             ),
             "problems": problems,
         },
@@ -617,6 +646,8 @@ async def _check_action(run: Any, fake: Any) -> checks.CheckResult:
             result = await fake.request("sendMessage", {"message": marker})
         except Exception as exc:  # noqa: BLE001 - reported as a check failure
             problems.append(f"sendMessage failed: {exc}")
+        if not isinstance(result, dict) or result.get("success") is not True:
+            problems.append(f"sendMessage returned {result!r}, expected success true")
     return checks.CheckResult(
         "action",
         "pass" if not problems else "fail",
@@ -691,8 +722,8 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
 
     The request is made here rather than inside one of the checks, because both of them
     read its consequences: ``event`` waits for the log line the plugin forwards, ``stop``
-    waits for the save and the respawn. Selecting one without the other used to mean
-    waiting out three budgets for a shutdown nobody had asked for.
+    waits for the save and the respawn. One request here serves either selected check and
+    prevents either from waiting for a shutdown that was never requested.
     """
     del ws_url
     note = "shutdown requested"
@@ -852,9 +883,6 @@ async def negative(run: Any, fake: Any, ws_url: str, manifest: dict[str, Any]) -
         run.skip("negative-degraded-hooks", "not selected by --checks")
         return
     zig = os.environ.get("TAKARO_MAINT_ZIG") or ""
-    if not zig or not Path(zig).is_file():
-        run.skip("negative-degraded-hooks", "no zig on this host (set TAKARO_MAINT_ZIG)")
-        return
     run.record(await _check_negative(run, fake, ws_url, zig))
 
 
@@ -872,7 +900,7 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
         reachable: Any = None
         ready = False
         try:
-            built = await asyncio.to_thread(_build_degraded, mod, zig, corrupted, run.out)
+            built = await asyncio.to_thread(_build_degraded, mod, zig, corrupted, run.out, run.resolved)
             dll.replace(kept)
             dll.write_bytes(built.read_bytes())
             os.chmod(dll, 0o644)
@@ -882,7 +910,7 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
                     checks.wait_for_line,
                     run.out / "server-degraded.log",
                     READY_LINE,
-                    run.options.startup_timeout,
+                    run.startup_timeout,
                     container.alive,
                 )
             )
@@ -946,22 +974,89 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
     )
 
 
-def _build_degraded(mod: Path, zig: str, signature: str, out: Path) -> Path:
+def _build_degraded(mod: Path, zig: str, signature: str, out: Path, resolved: dict[str, Any]) -> Path:
     """The same plugin, built with one signature deliberately corrupted."""
-    completed = subprocess.run(
-        ["bash", str(mod / "build.sh")],
-        cwd=str(mod),
-        capture_output=True,
-        text=True,
-        env={**os.environ, "ZIG": zig, "DEBUG_CORRUPT_SIG": signature},
-        check=False,
-    )
-    (out / "plugin-degraded-build.log").write_text(completed.stdout + completed.stderr, encoding="utf-8")
-    if completed.returncode != 0:
-        raise RuntimeError(f"mod/build.sh (DEBUG_CORRUPT_SIG={signature}) exited {completed.returncode}")
+    log = out / "plugin-degraded-build.log"
+    commands: list[tuple[list[str], dict[str, str] | None, Path]]
+    if zig and Path(zig).is_file():
+        commands = [
+            (
+                ["bash", str(mod / "build.sh")],
+                {**os.environ, "ZIG": zig, "DEBUG_CORRUPT_SIG": signature},
+                mod,
+            )
+        ]
+    else:
+        project = mod.parent
+        repo = project.parents[1]
+        zig_dep = resolved["build"]["deps"]["zig"]
+        image = f"takaro-enshrouded-builder:{resolved['fp16']}"
+        commands = [
+            (
+                [
+                    *docker_command(),
+                    "build",
+                    "-q",
+                    "-f",
+                    str(project / "Dockerfile.builder"),
+                    "--build-arg",
+                    f"TOOLCHAIN={resolved['toolchainRef']}",
+                    "--build-arg",
+                    f"ZIG_URL={zig_dep['resolvedCoordinate']}",
+                    "--build-arg",
+                    f"ZIG_SHA256={zig_dep['sha256']}",
+                    "-t",
+                    image,
+                    str(project),
+                ],
+                None,
+                project,
+            ),
+            (
+                [
+                    *docker_command(),
+                    "run",
+                    "--rm",
+                    "--user",
+                    f"{os.getuid()}:{os.getgid()}",
+                    "-e",
+                    "HOME=/tmp",
+                    "-e",
+                    "ZIG=/opt/zig/zig",
+                    "-e",
+                    f"DEBUG_CORRUPT_SIG={signature}",
+                    "-v",
+                    f"{repo}:/repo",
+                    "-w",
+                    "/repo/games/enshrouded",
+                    image,
+                    "bash",
+                    "-euo",
+                    "pipefail",
+                    "-c",
+                    "./mod/build.sh",
+                ],
+                None,
+                project,
+            ),
+        ]
+    transcripts: list[str] = []
+    for argv, env, cwd in commands:
+        completed = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        transcripts.append(f"$ {' '.join(argv)}\n{completed.stdout}{completed.stderr}")
+        log.write_text("\n".join(transcripts), encoding="utf-8")
+        if completed.returncode != 0:
+            raise RuntimeError(f"degraded plugin build exited {completed.returncode}; see {log.name}")
     built = mod / "build-debug" / PLUGIN_DLL
     if not built.is_file():
-        raise RuntimeError(f"{built} was not produced")
+        raise RuntimeError(f"{built} was not produced; see {log.name}")
     return built
 
 

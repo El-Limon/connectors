@@ -153,9 +153,15 @@ class ValheimAdapter(BaseAdapter):
             env[f"{prefix}_BEPINEX_URL"] = str(url)
         if pack.get("size") is not None:
             env[f"{prefix}_BEPINEX_SIZE"] = str(pack["size"])
-        assembly = server["files"].get(ASSEMBLY_VALHEIM, {}).get("sha256")
-        if assembly:
-            env[f"{prefix}_ASSEMBLY_VALHEIM_SHA256"] = str(assembly)
+        for path, spec in sorted(server["files"].items()):
+            if "/Managed/" not in path or not path.lower().endswith(".dll"):
+                continue
+            key = _env_key(Path(path).stem)
+            digest = spec.get("sha256")
+            if digest:
+                env[f"{prefix}_REFERENCE_{key}_SHA256"] = str(digest)
+                if path == ASSEMBLY_VALHEIM:
+                    env[f"{prefix}_ASSEMBLY_VALHEIM_SHA256"] = str(digest)
         # The dependency URLs and hashes the build verifies before it uses them.
         for name, dep in sorted(resolved["build"]["deps"].items()):
             key = _env_key(name)
@@ -406,7 +412,7 @@ class ValheimAdapter(BaseAdapter):
         install_dir.mkdir(parents=True, exist_ok=True)
         # Unpacked beside the install rather than over it: a CRC error, a full disk or an
         # interrupt part-way through the extraction would otherwise leave a half-written
-        # plugin folder where a working one used to be, with the ledger still naming the
+        # plugin folder in place of the working one, with the ledger still naming an
         # artifact that is no longer there. The staging area is outside BepInEx/plugins so
         # a crash cannot leave the chainloader a second copy of the assemblies to load.
         staging_root = dest / ".takaro" / "deploy"

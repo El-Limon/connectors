@@ -339,6 +339,31 @@ def _check_build_paths_exist(result: ValidationResult, catalog: Catalog, target:
         result.add("build-script-exists", True, "the build names no path in this repository", file)
 
 
+def _check_lockfile_pin(result: ValidationResult, target: Target) -> None:
+    file = _relative(target.path)
+    lockfile = target.record["build"].get("lockfile")
+    if lockfile is None:
+        result.add("lockfile-pinned", True, "the build declares no lockfile", file)
+        return
+    try:
+        relative = paths.safe_relative(str(lockfile["path"]), field="build.lockfile.path")
+    except UsageError as exc:
+        result.add("lockfile-pinned", False, exc.message, file)
+        return
+    path = paths.repo_root() / relative
+    if not path.is_file():
+        result.add("lockfile-pinned", False, f"{_relative(path)} is missing", file)
+        return
+    expected = str(lockfile["sha256"])
+    actual = net.sha256_file(path)
+    result.add(
+        "lockfile-pinned",
+        actual == expected,
+        f"{_relative(path)} expected {expected}, actual {actual}",
+        file,
+    )
+
+
 def _check_deps_consistent(result: ValidationResult, target: Target) -> None:
     file = _relative(target.path)
     problems: list[str] = []
@@ -408,6 +433,21 @@ def _check_launcher_path(result: ValidationResult, target: Target) -> None:
     )
 
 
+def _check_separate_names(result: ValidationResult, target: Target) -> None:
+    """Every separately claimed proof names a check the verifier can actually run."""
+    from ..verify.runner import check_ids
+
+    file = _relative(target.path)
+    declared = target.record.get("verification", {}).get("separate", [])
+    unknown = sorted(set(declared) - set(check_ids(target.game)))
+    result.add(
+        "separate-names-checks",
+        not unknown,
+        f"unknown verification.separate entries: {unknown}" if unknown else "every separate entry names a check",
+        file,
+    )
+
+
 def _guarded(result: ValidationResult, check_id: str, file: str, run: Any) -> None:
     """A malformed record must fail its check, not crash the validator."""
     try:
@@ -434,9 +474,11 @@ def validate_catalog(catalog: Catalog, *, online: bool = False, cache: Path | No
         ("minecraft-java-chain", _check_java_chain),
         ("plugins-match-toml", lambda r, t: _check_plugins_match_toml(r, catalog, t)),
         ("build-script-exists", lambda r, t: _check_build_paths_exist(r, catalog, t)),
+        ("lockfile-pinned", _check_lockfile_pin),
         ("deps-consistent", _check_deps_consistent),
         ("maven-path-derivable", _check_maven_path),
         ("launcher-path-derivable", _check_launcher_path),
+        ("separate-names-checks", _check_separate_names),
     )
     for target in catalog.all_targets():
         file = _relative(target.path)

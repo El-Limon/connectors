@@ -171,15 +171,23 @@ validate_bepinex_assemblies() {
 }
 
 references_match_pin() {
-  # The one pinned digest the target records for the reference set. The fetch path checks
-  # it before publishing, and the reuse path checks it again: bytes that were validated
-  # once are not thereby the bytes this target pins, and a cache is only a cache of this
-  # target while assembly_valheim.dll still hashes to what the record says.
   local managed_dir="$1"
+  local assembly stem key variable expected
 
-  [ -n "${VALHEIM_ASSEMBLY_VALHEIM_SHA256:-}" ] || return 0
-  printf '%s  %s\n' "$VALHEIM_ASSEMBLY_VALHEIM_SHA256" "$managed_dir/assembly_valheim.dll" \
-    | sha256sum --check --status
+  for assembly in "${REQUIRED_VALHEIM_ASSEMBLIES[@]}"; do
+    stem="${assembly%.dll}"
+    key="$(printf '%s' "$stem" | tr '[:lower:].-' '[:upper:]__')"
+    variable="VALHEIM_REFERENCE_${key}_SHA256"
+    expected="${!variable:-}"
+    if [ -z "$expected" ]; then
+      echo "No recorded hash for required Valheim assembly ${assembly} (${variable})." >&2
+      return 1
+    fi
+    if ! printf '%s  %s\n' "$expected" "$managed_dir/$assembly" | sha256sum --check --status; then
+      echo "Valheim assembly ${assembly} does not match ${variable}." >&2
+      return 1
+    fi
+  done
 }
 
 reference_cache_is_owned() {
@@ -354,10 +362,9 @@ install_valheim_references() {
     return 1
   fi
 
-  # The one assembly whose hash decides whether this plugin can be built at all. There is
-  # no override: an override would assert nothing about the build it let through.
+  # Every required reference is bound to the target before this staged set is published.
   if ! references_match_pin "$stage_managed_dir"; then
-    echo "error: $stage_managed_dir/assembly_valheim.dll is not the one ${VALHEIM_TARGET} pins" >&2
+    echo "error: the reference set in $stage_managed_dir is not the one ${VALHEIM_TARGET} pins" >&2
     return 5
   fi
 

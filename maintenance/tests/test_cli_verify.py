@@ -535,6 +535,39 @@ def test_a_failing_check_exits_eight_and_still_writes_a_report(
     assert (docker_stub / "removed").is_file()
 
 
+def test_a_failed_startup_skips_the_rest_of_the_ladder(
+    run: Any, wired: Any, tmp_path: Path, docker_stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STUB_FAIL", "hang")
+    artifacts = artifacts_for(run, wired, tmp_path)
+    out = tmp_path / "reports"
+
+    code, payload, _ = run(
+        "verify",
+        "--game",
+        "minecraft",
+        "--artifacts",
+        str(artifacts),
+        "--out",
+        str(out),
+        "--run-id",
+        "t1",
+        "--startup-timeout",
+        "0.2",
+        repo=wired.root,
+    )
+
+    assert code == 8, payload
+    report = json.loads((out / "fabric-26.2" / "report.json").read_text())
+    failures = [check for check in report["checks"] if check["status"] == "fail"]
+    assert [check["id"] for check in failures] == ["startup"]
+    later = [check for check in report["checks"] if check["id"] not in {"build", "startup"}]
+    assert later
+    assert all(check["status"] == "skip" for check in later)
+    assert {check["detail"]["reason"] for check in later} == {"startup did not complete; see the startup check"}
+    assert report["outcome"] == "fail"
+
+
 def test_a_subset_of_checks_marks_the_rest_skipped(run: Any, wired: Any, tmp_path: Path, docker_stub: Path) -> None:
     artifacts = artifacts_for(run, wired, tmp_path)
     out = tmp_path / "reports"

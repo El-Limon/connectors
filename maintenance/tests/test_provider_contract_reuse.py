@@ -343,11 +343,7 @@ def test_every_observation_matches_the_observation_schema() -> None:
 
 
 def test_a_tag_outside_the_revision_alphabet_does_not_abort_the_scan() -> None:
-    """`carbon@2.0` is a valid GitHub tag and an invalid `rev`; it used to fail the scan.
-
-    `scan.py` raises `RuntimeError` on an observation the schema refuses, which takes the
-    whole run down -- every other source with it -- for one upstream's choice of tag.
-    """
+    """`carbon@2.0` is a valid GitHub tag and an invalid `rev`; the scan files it as a failed source."""
     from fake_upstream import FakeUpstream
     from takaro_maint import observations
 
@@ -380,7 +376,7 @@ def test_safe_rev_collapses_runs_and_keeps_the_alphabet() -> None:
 
 
 def test_two_same_day_reuploads_without_a_digest_are_two_revisions() -> None:
-    """The fallback was the upload date, so the second upload of a day was never filed."""
+    """Two same-day re-uploads without a digest are two revisions."""
     from fake_upstream import FakeUpstream
 
     def observe(updated_at: str, size: int) -> Any:

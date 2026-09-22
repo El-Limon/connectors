@@ -12,6 +12,7 @@ signature self-check and the sidecar's socket -- are covered here by their *clas
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ import pytest
 
 import fake_depotdownloader as fake_dd
 import fake_steamcmd
+from fake_verify import CannedSocket, FakeContainer, FakeRun
 from takaro_maint.catalog import ids
 from takaro_maint.games import adapter_for
 from takaro_maint.games.enshrouded import verify as hooks
@@ -220,8 +222,8 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_one(
     issue = PROVIDER.presentation(head, "Enshrouded")
     assert issue is not None
     assert issue["title"] == "Enshrouded public: build 23999999 needs a target"
-    # `watch.readinessNote` was config nothing read: an Enshrouded build moving under the
-    # pinned code signatures is exactly the case the generic sentence gets wrong.
+    # `watch.readinessNote` is what the issue carries for a build moving under the pinned
+    # code signatures; the generic sentence would be wrong here.
     note = json.loads((repo / "catalog" / GAME / "game.json").read_text())["sources"]["steam"]["watch"]["readinessNote"]
     assert head.facts["readinessNote"] == note
     assert issue["readinessLines"] == [note]
@@ -634,6 +636,213 @@ def test_a_health_document_that_is_not_shaped_like_one_fails_rather_than_raises(
     assert any("no capabilities" in problem for problem in empty["problems"])
 
 
+def test_action_requires_an_explicit_success_answer(tmp_path: Path) -> None:
+    """Transport success alone is not enough: the action's answer must say it worked."""
+
+    class Run:
+        class Options:
+            run_id = "answer"
+
+        options = Options()
+
+    class Fake:
+        def __init__(self, answer: Any) -> None:
+            self.answer = answer
+
+        async def request(self, action: str, params: Any) -> Any:
+            assert action == "sendMessage"
+            assert params == {"message": "takaro-verify-answer-action"}
+            return self.answer
+
+    passed = asyncio.run(hooks._check_action(Run(), Fake({"success": True})))
+    assert passed.status == "pass"
+
+    for answer in ({"success": False}, {"result": "ok"}, None):
+        failed = asyncio.run(hooks._check_action(Run(), Fake(answer)))
+        assert failed.status == "fail"
+        assert repr(answer) in " ".join(failed.detail["problems"])
+
+
+def test_every_enshrouded_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _record()
+    target = type("Target", (), {"id": TARGET, "fp16": "0123456789abcdef", "record": record})()
+    run = FakeRun(tmp_path, target=target)
+    run.resolved = _degraded_resolved()
+    sidecar = FakeContainer(run.out / "sidecar.log")
+    answers = _derived_answers()
+    fake = CannedSocket(
+        {
+            **answers,
+            "testReachability": {"connectable": True, "reason": None},
+            "getPlayers": [],
+            "executeConsoleCommand": {"success": True, "rawResult": f"game build {record['revision']}"},
+            "sendMessage": {"success": True},
+            "shutdown": {},
+        },
+        identify_count=1,
+    )
+    fake.events = [{"type": "log", "data": {"msg": "Start Saving"}}]
+    monkeypatch.setattr(hooks, "start_sidecar", lambda *args, **kwargs: sidecar)
+    monkeypatch.setattr(hooks, "_sidecar_health", lambda name: {"takaroIdentified": True})
+    monkeypatch.setattr(
+        hooks,
+        "_check_plugin_health",
+        lambda *args: hooks.checks.CheckResult("plugin-health", "pass", 0, {"problems": []}),
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "matched"))
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+    monkeypatch.setattr(hooks, "_remove_images", lambda run: None)
+
+    assert asyncio.run(hooks._check_identify(run, fake, sidecar, sidecar.alive)).status == "pass"
+    assert asyncio.run(hooks._check_players(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_catalog(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_console(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, sidecar, sidecar.alive)).status == "pass"
+    assert asyncio.run(hooks._check_event(run, fake, "shutdown requested")).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, sidecar.alive))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    plugin_dir = run.data_dir / "takaro" / "plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / hooks.PLUGIN_DLL).write_bytes(b"release")
+    built = tmp_path / "degraded.dll"
+    built.write_bytes(b"degraded")
+    monkeypatch.setattr(hooks, "_build_degraded", lambda *args, **kwargs: built)
+    monkeypatch.setattr(hooks, "_plugin_health", lambda *args: _health("plugin-health-degraded.json"))
+    degraded_fake = CannedSocket(
+        {"testReachability": {"connectable": True, "reason": "degraded teleport"}}, identify_count=1
+    )
+    assert asyncio.run(hooks._check_negative(run, degraded_fake, run.ws_url, "")).status == "pass"
+    asyncio.run(hooks.negative(run, degraded_fake, run.ws_url, {}))
+
+    failed_run = FakeRun(tmp_path / "failed", target=target, wanted=set())
+    failed = CannedSocket(
+        {
+            "testReachability": None,
+            "getPlayers": ["unexpected"],
+            "executeConsoleCommand": {"success": False},
+            "sendMessage": {"success": False},
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks, "_sidecar_health", lambda name: {"takaroIdentified": False})
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(hooks, "EVENT_BUDGET", 0.0)
+    assert asyncio.run(hooks._check_identify(failed_run, failed, sidecar, sidecar.alive)).status == "fail"
+    assert asyncio.run(hooks._check_players(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_console(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, sidecar, sidecar.alive)).status == "fail"
+    assert asyncio.run(hooks._check_event(failed_run, failed, "no shutdown")).status == "fail"
+    failed_run.container = None
+    assert asyncio.run(hooks._check_stop(failed_run, [{"path": "missing"}])).status == "fail"
+    monkeypatch.setattr(hooks, "_build_degraded", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("build")))
+    assert asyncio.run(hooks._check_negative(failed_run, failed, failed_run.ws_url, "")).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    asyncio.run(hooks.negative(failed_run, failed, failed_run.ws_url, {}))
+    assert {check for check, _ in failed_run.skips} == {*hooks.CHECK_IDS, "negative-degraded-hooks"}
+
+
+def _degraded_resolved() -> dict[str, Any]:
+    record = _record()
+    return {
+        **record,
+        "fp16": "0123456789abcdef",
+        "toolchainRef": ids.container_ref(record["build"]["toolchain"]),
+    }
+
+
+def test_degraded_plugin_build_uses_the_resolved_builder_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The negative build uses the target's pinned toolchain and carries its corrupt signature."""
+    repo = tmp_path / "repo"
+    mod = repo / "games" / "enshrouded" / "mod"
+    mod.mkdir(parents=True)
+    out = tmp_path / "out"
+    out.mkdir()
+    calls = tmp_path / "docker-calls.txt"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$DOCKER_CALLS"\n'
+        "if [[ $1 == run ]]; then\n"
+        '  mkdir -p "$TEST_REPO/games/enshrouded/mod/build-debug"\n'
+        '  printf dll > "$TEST_REPO/games/enshrouded/mod/build-debug/dbghelp.dll"\n'
+        "fi\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    monkeypatch.setenv("TAKARO_MAINT_DOCKER", str(docker))
+    monkeypatch.setenv("DOCKER_CALLS", str(calls))
+    monkeypatch.setenv("TEST_REPO", str(repo))
+
+    built = hooks._build_degraded(mod, "", "addComponent", out, _degraded_resolved())
+
+    assert built.read_bytes() == b"dll"
+    argv = calls.read_text(encoding="utf-8")
+    image = "takaro-enshrouded-builder:0123456789abcdef"
+    assert f"TOOLCHAIN={_degraded_resolved()['toolchainRef']}" in argv
+    assert f"-t {image}" in argv
+    assert f"DEBUG_CORRUPT_SIG=addComponent -v {repo}:/repo" in argv
+    assert f"{image} bash -euo pipefail -c ./mod/build.sh" in argv
+
+
+def test_degraded_plugin_builder_failure_is_recorded_not_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a host Zig, a builder failure is a failed check with its build log."""
+    docker = tmp_path / "docker-fails"
+    docker.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    docker.chmod(0o755)
+    monkeypatch.setenv("TAKARO_MAINT_DOCKER", str(docker))
+    monkeypatch.delenv("TAKARO_MAINT_ZIG", raising=False)
+
+    class Target:
+        record = _record()
+
+    class Run:
+        target = Target()
+        resolved = _degraded_resolved()
+        data_dir = tmp_path / "data"
+        out = tmp_path / "out"
+
+        def __init__(self) -> None:
+            self.results: list[Any] = []
+            self.out.mkdir()
+
+        def wanted(self, check: str) -> bool:
+            return check == "negative-degraded-hooks"
+
+        def record(self, result: Any) -> None:
+            self.results.append(result)
+
+        def skip(self, check: str, reason: str) -> None:
+            raise AssertionError(f"{check} was skipped: {reason}")
+
+    run = Run()
+    asyncio.run(hooks.negative(run, object(), "ws://unused", {}))
+
+    assert len(run.results) == 1
+    assert run.results[0].status == "fail"
+    assert "plugin-degraded-build.log" in " ".join(run.results[0].detail["problems"])
+    assert (run.out / "plugin-degraded-build.log").is_file()
+
+
 def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Path) -> None:
     from takaro_maint import paths
     from takaro_maint.exit_codes import ConflictError
@@ -656,7 +865,7 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
 
     # A bare `verify --game enshrouded` runs this target's own checks and nothing else: the
     # base protocol ladder watches the game container for a connector that is in the sidecar.
-    # The runner narrows the selection now, so what these hooks owe is the declaration.
+    # The runner narrows the selection; these hooks owe the declaration.
     declared = game_hooks("enshrouded")
     assert set(declared.unsupported_checks) == {
         "connector-load",
@@ -797,7 +1006,10 @@ def test_every_container_selector_is_pinned_and_never_schedules_updates() -> Non
         assert froms and all(base == sidecar_runtime for base in froms), f"{relative}: {froms}"
 
     builder = (REPO_ROOT / "games/enshrouded/Dockerfile.builder").read_text(encoding="utf-8")
-    assert f"FROM {toolchain}\n" in builder
+    assert "ARG TOOLCHAIN\nFROM ${TOOLCHAIN}\n" in builder
+    assert toolchain not in builder
+    build_script = (REPO_ROOT / "games/enshrouded/scripts/lib-target.sh").read_text(encoding="utf-8")
+    assert '--build-arg "TOOLCHAIN=${ENSHROUDED_TOOLCHAIN:?resolve the target first}"' in build_script
     zig = record["build"]["deps"]["zig"]
     assert f"ARG ZIG_URL={zig['resolvedCoordinate']}\n" in builder
     assert f"ARG ZIG_SHA256={zig['sha256']}\n" in builder
@@ -975,9 +1187,14 @@ def _catalog(answers: dict[str, Any]) -> Any:
 
 
 def _derived_answers() -> dict[str, Any]:
-    """What the mod answers after names.cpp: items keep their baked name, the rest derive."""
+    """What the mod answers: every name derived from its template code by names.cpp."""
     return {
-        "listItems": [{"code": "Sword_Bronze", "name": "Sword Bronze"}],
+        "listItems": [
+            {"code": "Block_T3_Stone_CityWall_REWARD", "name": "Stone City Wall Reward (Tier 3)"},
+            {"code": "Food_T7_raw_fruit_Artichoke", "name": "Raw Fruit Artichoke (Tier 7)"},
+            {"code": "Weapon_T4_2H_GreatSwordEpic_01", "name": "2H Great Sword Epic (Tier 4)"},
+            {"code": "Z_Prop_NPC_Cat_Totem_DEPRECATED", "name": "NPC Cat Totem"},
+        ],
         "listEntities": [
             {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
             {"code": "Animal_Baby_T1_Goat", "name": "Baby Goat (Tier 1)"},
@@ -994,11 +1211,11 @@ def test_the_catalog_check_passes_on_derived_display_names() -> None:
     result = _catalog(_derived_answers())
 
     assert result.status == "pass", result.detail["problems"]
-    assert result.detail["counts"] == {"listItems": 1, "listEntities": 3, "listLocations": 2}
+    assert result.detail["counts"] == {"listItems": 4, "listEntities": 3, "listLocations": 2}
 
 
 def test_the_catalog_check_fails_on_a_formatted_dev_code() -> None:
-    """`1 Player AG2` is what the old underscore-opening derivation put in front of an operator."""
+    """A name that is the code with its underscores opened is refused, not reported as a name."""
     answers = _derived_answers()
     answers["listEntities"] = [
         {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
@@ -1015,7 +1232,15 @@ def test_the_catalog_check_fails_on_a_formatted_dev_code() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["Cat Black AG2", "Baby T1 Goat", "Placement Helper Pet Cat", "Skeleton_Heavy", "8k Map Label Whitewind"],
+    [
+        "Cat Black AG2",
+        "Baby T1 Goat",
+        "Placement Helper Pet Cat",
+        "Skeleton_Heavy",
+        "8k Map Label deepforest Whitewind",
+        "01 Huntress Camp",
+        "Arrow Bone UNUSED",
+    ],
 )
 def test_every_predicate_the_corpus_test_asserts_is_asserted_on_the_live_answer(name: str) -> None:
     """The C++ test proves the shipped table; this proves the server did not regress past it."""
@@ -1037,3 +1262,66 @@ def test_an_item_name_that_is_still_a_dev_code_is_named() -> None:
     assert result.status == "fail"
     problems = " ".join(result.detail["problems"])
     assert "names are the code itself" in problems
+
+
+def test_an_item_name_that_still_carries_an_underscore_is_refused() -> None:
+    """The same predicate the C++ corpus test applies, applied to the live item answer."""
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Block_T3_Stone_CityWall", "name": "Stone_City_Wall"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    assert "listItems" in " ".join(result.detail["problems"])
+
+
+def test_an_item_name_that_is_the_opened_code_is_refused() -> None:
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Prop_Decoration_T5_Cupboard_Large", "name": "Prop Decoration T5 Cupboard Large"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "dev codes rather than display names" in problems
+
+
+@pytest.mark.parametrize("word", ["UNUSED", "hasbugs", "LVLXX", "TEST"])
+def test_the_item_noise_words_the_plugin_drops_are_refused_in_the_answer(word: str) -> None:
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Ammo_T5_Arrow_Bone", "name": f"Arrow Bone {word}"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail", word
+    assert "listItems" in " ".join(result.detail["problems"])
+
+
+@pytest.mark.parametrize("action", ["listItems", "listEntities", "listLocations"])
+def test_one_name_held_by_two_codes_fails_for_every_action(action: str) -> None:
+    """DistinctNames promises one name per code; a collision means that promise broke."""
+    answers = _derived_answers()
+    answers[action] = [
+        {"code": "Enemy_Scavenger_Melee01_Night_Patrol_Guard", "name": "Scavenger Melee Night Patrol Guard"},
+        {"code": "Enemy_Scavenger_Melee02_Night_Patrol_Guard", "name": "Scavenger Melee Night Patrol Guard"},
+    ]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert f"{action}: 1 names are shared by more than one code" in problems
+    assert "Scavenger Melee Night Patrol Guard <- Enemy_Scavenger_Melee01_Night_Patrol_Guard" in problems
+
+
+def test_two_rows_carrying_the_same_code_may_share_one_name() -> None:
+    """The entity table holds 979 rows for 977 codes; the duplicates are not a collision."""
+    answers = _derived_answers()
+    answers["listEntities"] = [
+        {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+        {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+    ]
+
+    result = _catalog(answers)
+
+    assert result.status == "pass", result.detail["problems"]

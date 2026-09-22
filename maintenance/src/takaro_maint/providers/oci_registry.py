@@ -50,7 +50,7 @@ import re
 import urllib.error
 from dataclasses import replace
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse, urlsplit
 
 from .. import channels, net, observations, readiness
 from ..exit_codes import UpstreamUnavailable, UsageError
@@ -161,10 +161,9 @@ class OciRegistryProvider(Provider):
         """Exchange an anonymous bearer challenge for a token. The token is never printed.
 
         The realm comes from a ``WWW-Authenticate`` header, which is to say from whoever
-        answered the request -- so it is a URL an attacker controls. It used to be followed
-        as given, which is a fetch of ``file:///etc/passwd`` or of a cloud metadata service
-        for the price of one hostile 401, and the rest of the challenge was pasted into the
-        query string unencoded, so a value carrying ``&`` or ``=`` rewrote it.
+        answered the request -- so it is a URL an attacker controls. Only an HTTPS URL to
+        a named public host is followed, keeping local files and cloud metadata services
+        out of reach; challenge values are encoded before entering its query string.
         """
         realm = challenge.get("realm")
         if not realm:
@@ -231,7 +230,15 @@ class OciRegistryProvider(Provider):
             tags += [str(tag) for tag in document["tags"]]
             link = headers.get("Link") if headers is not None else None
             match = _LINK_RE.search(str(link)) if link else None
-            url = urljoin(base + "/", match.group("url")) if match else ""
+            next_url = urljoin(base + "/", match.group("url")) if match else ""
+            if next_url:
+                origin = urlsplit(base)
+                destination = urlsplit(next_url)
+                if destination.scheme != origin.scheme or destination.netloc != origin.netloc:
+                    raise UpstreamUnavailable(
+                        f"{url}: the tag listing's next link leaves {base} for {next_url}", url=url
+                    )
+            url = next_url
         return tags
 
     def _manifest(self, base: str, repository: str, reference: str) -> tuple[dict[str, Any], str, bytes, str]:

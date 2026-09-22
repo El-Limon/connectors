@@ -502,6 +502,8 @@ def health_snapshot(container_name: str) -> dict[str, Any]:
 #: What this game contributes to a verification run; the runner reads nothing else.
 HOOKS = GameHooks(
     ready_line=READY_LINE,
+    # First boot generates the world; the measured pin took 447 seconds.
+    startup_timeout=900.0,
     check_ids=CHECK_IDS,
     unsupported_checks=UNSUPPORTED_CHECKS,
     before_boot=before_boot,

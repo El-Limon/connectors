@@ -1,11 +1,9 @@
 """The typed seam between the verification runner and a game's own ``verify`` module.
 
-The runner used to reach for each of these by name -- ``getattr(self.hooks, "before_boot",
-None)``, ``hasattr(self.hooks, "after_protocol")`` -- so a hook whose name was misspelled,
-whose signature drifted, or that a refactor renamed simply stopped being called, silently
-and with the run still green. ``GameHooks`` makes each one a declared field with a
-declared type, so mypy checks the names and the signatures and a game that ships nothing
-gets the defaults rather than a missing attribute.
+``GameHooks`` makes each hook a declared field with a declared type, so mypy checks names
+and signatures and a game that ships nothing gets the defaults rather than a missing
+attribute. The runner consumes this object directly instead of discovering callbacks by
+attribute-name conventions.
 
 Every ``games/<game>/verify.py`` keeps its module-level constants (the tests import them)
 and ends with one ``HOOKS = GameHooks(...)``.
@@ -28,6 +26,9 @@ class GameHooks:
 
     #: The server log line that says the boot finished.
     ready_line: re.Pattern[str] = base_checks.DONE_LINE
+
+    #: How long this game normally needs to reach its ready line; the CLI may override it.
+    startup_timeout: float | None = None
 
     #: Check ids this game adds to the base ladder.
     check_ids: tuple[str, ...] = ()

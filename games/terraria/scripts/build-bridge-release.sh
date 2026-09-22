@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Kept so a caller that still asks for "the bridge release" gets the whole set.
 #
-# Both roles are built and packaged together now — the plugin and the bridge are one
-# target's artifacts and a release that carries one of them is incomplete — so this is a
-# thin wrapper around build-release.sh rather than a second build path.
+# Both roles are built and packaged together — the plugin and the bridge are one target's
+# artifacts and a release that carries one of them is incomplete — so this is a thin
+# wrapper around build-release.sh rather than a second build path.
 #
 # Usage: build-bridge-release.sh <version> <out-dir> [--target <catalog target id>]
 set -euo pipefail

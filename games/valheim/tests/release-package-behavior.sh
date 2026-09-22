@@ -3,8 +3,8 @@
 #
 # Two roles, two archives, and the rule that matters: neither may carry the other's
 # assemblies, and the client may carry nothing that talks to Takaro. Since the connector
-# became a catalog target the archives are named by the target record, so this also checks
-# the names, the .meta.json sidecar each one carries, and the three different
+# archives are named by the target record, so this also checks the names, the .meta.json
+# sidecar each one carries, and the three different
 # BepInEx-shaped numbers in manifest.json.
 #
 # Usage: release-package-behavior.sh <version> <dist-dir>
@@ -167,7 +167,7 @@ fi
 # interchangeable: `pluginVersion` is what [BepInPlugin] declares (this connector's own
 # numeric core), `bepInExPack.version` is the Thunderstore package the target pins, and
 # `bepInExVersion` is the loader assembly's own version. A manifest that repeats the plugin
-# version as the loader version is the bug this connector shipped before it had a target.
+# version as the loader version is wrong.
 validate_manifest() {
   local manifest="$1"
   local expected_name="$2"

@@ -13,6 +13,7 @@ are about what a maintainer, the rig and CI observe.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -29,6 +30,7 @@ import fake_depotdownloader as fake
 import fake_steamcmd
 from fake_github import FakeGitHub
 from fake_upstream import FakeUpstream
+from fake_verify import CannedSocket, FakeRun
 from takaro_maint.games import adapter_for
 from takaro_maint.games.rust import verify as hooks
 from takaro_maint.install.ledger import read_ledger
@@ -37,7 +39,7 @@ from takaro_maint.steam import vdf
 from takaro_maint.tracker import identity
 
 GAME = "rust"
-TARGET = "carbon-25353106"
+TARGET = "carbon-25454815"
 APP = 258550
 VERSION = "0.0.6-dev.abc1234"
 ARTIFACT = f"takaro-rust-plugin-{TARGET}-{VERSION}.cs"
@@ -45,6 +47,49 @@ MANAGED = "RustDedicated_Data/Managed"
 BUILD_SCRIPT = "games/rust/scripts/build-release.sh"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_every_rust_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = FakeRun(tmp_path)
+    fake = CannedSocket({"sendMessage": {"success": True}, "shutdown": {}}, identify_count=1)
+    loaded = "Loaded plugin TakaroConnector v1.2.3 by Takaro [42ms]"
+    monkeypatch.setattr(hooks, "_deployed_version", lambda run: "1.2.3")
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, loaded))
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+
+    assert asyncio.run(hooks._check_carbon_compile(run, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, fake)).status == "pass"
+
+    async def passed_catalog(*args: Any, **kwargs: Any) -> Any:
+        del kwargs
+        return hooks.checks.CheckResult(str(args[2]), "pass", 0, {"problems": []})
+
+    async def passed_reconnect(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return hooks.checks.CheckResult("reconnect", "pass", 0, {"problems": []})
+
+    monkeypatch.setattr(hooks.checks, "check_catalog", passed_catalog)
+    monkeypatch.setattr(hooks.checks_lifecycle, "check_reconnect", passed_reconnect)
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", wanted=set())
+    failed_run.container = None
+    failed = CannedSocket({"sendMessage": RuntimeError("no action"), "shutdown": RuntimeError("closed")})
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: (1, "error CS1000"))
+
+    assert asyncio.run(hooks._check_carbon_compile(failed_run, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_stop(failed_run, failed)).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == {*hooks.CHECK_IDS, "stop"}
+
+
 FIXTURES = Path(__file__).parent / "fixtures" / "games" / "rust"
 DEPOTS = FIXTURES / "depots"
 CARBON_TARBALL = FIXTURES / "carbon" / "Carbon.Linux.Release.tar.gz"
@@ -95,6 +140,9 @@ def repin(root: Path, manifests: dict[str, str] | None = None) -> dict[str, Any]
     manifests = manifests or PINNED
     record = read_target(root)
     server = record["inputs"]["server"]
+    # The synthetic depot tree models the earlier build that supplied these fixtures.
+    server["buildid"] = 25353106
+    record["revision"] = "25353106"
     server["depots"] = {
         depot: {
             "manifest": manifest,
@@ -204,9 +252,9 @@ def test_targets_resolve_env_for_rust(run: Any) -> None:
     env = payload["env"]
     assert env["RUST_STEAM_APP"] == "258550"
     assert env["RUST_STEAM_BRANCH"] == "public"
-    assert env["RUST_STEAM_BUILDID"] == "25353106"
-    assert env["RUST_STEAM_DEPOTS"] == "258552:3352454092778561960;258554:4408100835840826754"
-    assert env["RUST_ARTIFACT"] == "takaro-rust-plugin-carbon-25353106-{version}.cs"
+    assert env["RUST_STEAM_BUILDID"] == "25454815"
+    assert env["RUST_STEAM_DEPOTS"] == "258552:8780771730265493247;258554:2040047463972636387"
+    assert env["RUST_ARTIFACT"] == "takaro-rust-plugin-carbon-25454815-{version}.cs"
     assert env["RUST_CARBON_ASSET"] == "Carbon.Linux.Release.tar.gz"
     assert env["RUST_CARBON_TAG"] == "production_build"
     assert env["RUST_CARBON_SHA256"] == "bfc3cf3d638d588fab94fd4d05a7e8ab2fae28fbbfb5962ecc8fdbd9bb7bb306"
@@ -220,9 +268,9 @@ def test_targets_resolve_env_for_rust(run: Any) -> None:
     assert not any(key.endswith("_JAVA") for key in env)
 
     assert payload["resolvedUrls"]["server"].startswith(
-        "steam://app/258550/branch/public/build/25353106/depot/258552/manifest/3352454092778561960"
+        "steam://app/258550/branch/public/build/25454815/depot/258552/manifest/8780771730265493247"
     )
-    assert "258554/manifest/4408100835840826754" in payload["resolvedUrls"]["server"]
+    assert "258554/manifest/2040047463972636387" in payload["resolvedUrls"]["server"]
     # The Carbon asset is addressed by the URL that actually serves the bytes: the API's
     # asset-id URL answers with JSON unless the request asks for octet-stream, which
     # `catalog validate --online` (and anything else that re-hashes it) cannot do.
@@ -745,7 +793,17 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_head_as_blocked_upstream(
     run: Any, repo: Path, upstream: Any, steam: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The fixture repo is repinned at the fixture depots; the scan is about the real record.
-    write_target(repo, json.loads((REPO_ROOT / "catalog/rust/targets" / f"{TARGET}.json").read_text()))
+    current = json.loads((REPO_ROOT / "catalog/rust/targets" / f"{TARGET}.json").read_text())
+    write_target(repo, current)
+    server = current["inputs"]["server"]
+    steam.document = fake_steamcmd.move_head(
+        steam.document,
+        "public",
+        server["buildid"],
+        {depot: row["manifest"] for depot, row in server["depots"].items()},
+        timeupdated=1790074315,
+    )
+    steam.serve()
     monkeypatch.setenv("GH_TOKEN", TOKEN)
 
     with FakeGitHub() as tracker:
@@ -764,7 +822,7 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_head_as_blocked_upstream(
     steam.document = fake_steamcmd.move_head(
         steam.document,
         "public",
-        25400000,
+        25500000,
         {"258552": HEADS["258552"], "258554": HEADS["258554"]},
         timeupdated=1790100000,
     )
@@ -782,7 +840,7 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_head_as_blocked_upstream(
         assert "provider=steam" in body.splitlines()[0]
         assert f"component={GAME}" in body.splitlines()[0]
         assert "branch=public" in body.splitlines()[0]
-        assert "| Build id | 25400000 |" in body
+        assert "| Build id | 25500000 |" in body
         # Carbon publishes nothing that says which Rust build it targets, so the framework
         # row cannot be anything but `missing` — and that is the blocked state.
         assert re.search(r"^\| carbon \| missing \|", body, re.MULTILINE), body
@@ -1074,7 +1132,7 @@ def test_a_symlink_resolving_beside_the_install_is_refused(tmp_path: Path) -> No
 
 
 def test_a_hard_link_is_resolved_against_the_archive_root_not_the_entry(tmp_path: Path) -> None:
-    """A hard link's target is archive-relative; resolving it per-directory hid escapes."""
+    """A hard link's target is archive-relative, so it is resolved against the archive root."""
     root = tmp_path / "install"
     root.mkdir()
 
@@ -1175,8 +1233,38 @@ def test_the_entity_check_passes_on_curated_display_names() -> None:
     }
 
 
+def test_the_curated_table_covers_the_recorded_server_corpus() -> None:
+    table = hooks._curated_entity_names()
+    assert len(table) >= 60
+    codes = [
+        code
+        for code in (REPO_ROOT / "games/rust/tests/names/entity-codes.txt").read_text(encoding="utf-8").splitlines()
+        if code
+    ]
+
+    result = _entities([{"code": code, "name": table[code]} for code in codes])
+
+    assert len(codes) == 66
+    assert result.status == "pass", result.detail["problems"]
+
+
+def test_the_entity_check_refuses_a_prefab_outside_the_curated_table() -> None:
+    result = _entities(
+        [
+            {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},
+            {"code": "future_event_npc", "name": "Future Event NPC"},
+        ]
+    )
+
+    assert result.status == "fail"
+    assert any(
+        "1 prefabs have no curated name" in problem and "future_event_npc" in problem
+        for problem in result.detail["problems"]
+    )
+
+
 def test_the_entity_check_fails_on_a_formatted_prefab_code() -> None:
-    """`Scientistnpc Heavy` is what the connector answered before the curated table."""
+    """`Scientistnpc Heavy` is a formatted prefab code, and the check refuses it."""
     result = _entities(
         [
             {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},

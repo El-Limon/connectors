@@ -12,6 +12,7 @@ point and a re-serialised fixture would not have the same one.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -29,6 +30,8 @@ import pytest
 from conftest import REPO_ROOT
 from fake_github import FakeGitHub
 from fake_upstream import FakeUpstream
+from fake_verify import CannedSocket
+from fake_verify import FakeRun as VerifyRun
 from takaro_maint import net, readiness
 from takaro_maint.games import adapter_for
 from takaro_maint.games.terraria import verify as hooks
@@ -64,6 +67,81 @@ INDEX_DIGESTS = {
 }
 PLATFORM_DIGEST = "sha256:29f877e073490b0f12977fa09bab8b910708a6e9e2dd38eabe76ec6d577d2e4d"
 CONFIG_DIGEST = "sha256:0a40c4aa2c47ae237c311a89ab9cc8ce23ccea0ce165fcd8f4d69fa5d24ac448"
+
+
+def test_every_terraria_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    items = [{"code": str(index), "name": f"Item {index}"} for index in range(hooks.CATALOGUE_MINIMUM)]
+    items[9] = {"code": "9", "name": "Wood"}
+    run = VerifyRun(tmp_path)
+    run.resolved = {
+        "containerRef": "image@sha256:" + "a" * 64,
+        "build": {
+            "references": ["/tshock/TShockAPI.dll"],
+            "deps": {"TShockAPI.dll": {"sha256": "b" * 64}},
+        },
+    }
+    fake = CannedSocket(
+        {
+            "listItems": items,
+            "listEntities": [],
+            "sendMessage": {"success": True},
+            "testReachability": {"connectable": True},
+        },
+        identify_count=1,
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "matched"))
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(hooks, "_hash_in_container", lambda *args: "b" * 64)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert asyncio.run(hooks._check_handshake(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_items(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_entities(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_references(run)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, lambda: True)).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = VerifyRun(tmp_path / "failed", wanted=set())
+    failed_run.resolved = run.resolved
+    failed = CannedSocket(
+        {
+            "listItems": RuntimeError("no items"),
+            "listEntities": ["unexpected"],
+            "sendMessage": {"success": False},
+            "testReachability": None,
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(hooks, "_hash_in_container", lambda *args: None)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "cannot chown"),
+    )
+
+    assert asyncio.run(hooks._check_handshake(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_items(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_entities(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_references(failed_run)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, lambda: False)).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == set(hooks.CHECK_IDS)
 
 
 # -- the repository copy ------------------------------------------------------------------
@@ -851,6 +929,31 @@ class ScriptedTransport:
         raise urllib.error.HTTPError(url, 404, "not found", None, None)  # type: ignore[arg-type]
 
 
+def test_oci_registry_never_follows_pagination_to_another_origin() -> None:
+    from takaro_maint.exit_codes import MaintError
+
+    listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
+    transport = ScriptedTransport(
+        {
+            "/tags/list": lambda: Response(
+                listing,
+                {"Link": '<https://elsewhere.example/v2/pryaxis/tshock/tags/list?last=6.1.0>; rel="next"'},
+            )
+        }
+    )
+    net.set_transport(transport)
+    try:
+        with pytest.raises(MaintError) as caught:
+            provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    assert caught.value.code == 4
+    assert "next link leaves https://registry.invalid" in str(caught.value)
+    assert "elsewhere.example" in str(caught.value)
+    assert not [url for url, _ in transport.seen if "elsewhere.example" in url]
+
+
 def test_oci_registry_fails_the_source_when_the_digest_header_disagrees() -> None:
     from takaro_maint.exit_codes import MaintError
 
@@ -931,7 +1034,7 @@ def test_a_hostile_bearer_realm_is_never_followed(realm: str) -> None:
 
 
 def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query() -> None:
-    """The challenge's own values were pasted into the query string unencoded."""
+    """The challenge's own values are encoded into the query string."""
     listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
     challenged = {"done": False}
 
@@ -971,7 +1074,7 @@ def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query() -> None:
 
 
 def test_a_prerelease_is_never_the_channel_head() -> None:
-    """`6.1.0-pre3` sorted after `6.1.0`, so a scan called the prerelease the head."""
+    """A prerelease is never the channel head, whatever the tag order."""
     readiness.reset_registry()
     with FakeUpstream() as upstream:
         serve_registry(upstream, tags=["6.1.0-pre3", "6.1.0"])
@@ -1137,9 +1240,13 @@ def test_dev_servers_terraria_rig_parses_and_resolves() -> None:
     assert bash(". dev-servers/lib/common.sh; ds_target_prefix terraria").strip() == "TERRARIA"
     assert bash(". dev-servers/lib/common.sh; ds_target_dest terraria").strip().endswith("/terraria")
     assert bash(". dev-servers/lib/common.sh; ds_success_pattern_terraria").strip() == "Identified successfully"
-    # The registry row is shared across games: assert it, never rewrite it from here.
     registry = bash(". dev-servers/lib/common.sh; ds_registry")
-    assert "terraria|terraria.yml|-|terraria|1|1|plugin|" in registry
+    assert "terraria|terraria.yml|-|terraria terraria-bridge|1|1|plugin|" in registry
+    assert bash(". dev-servers/lib/common.sh; ds_services terraria").split() == ["terraria", "terraria-bridge"]
+    assert bash(". dev-servers/lib/common.sh; ds_startable_services terraria").split() == [
+        "terraria",
+        "terraria-bridge",
+    ]
 
 
 def test_the_terraria_compose_file_runs_the_bridge_in_the_server_namespace() -> None:
@@ -1535,8 +1642,8 @@ def test_the_identify_line_the_harness_waits_for_is_the_one_the_bridge_writes() 
     """The contract is across two languages, so it has to be bound rather than restated.
 
     `hooks.IDENTIFIED_LINE` is a Python regex; the line it waits for is built by a
-    TypeScript template. Renaming either used to leave the other looking correct, and the
-    check would then wait out its budget on a line that is being written under a new name.
+    TypeScript template. The test binds their literal text so a rename cannot leave the
+    other side looking correct while the check waits out its budget for a different line.
     """
     source = (REPO_ROOT / "games/terraria/bridge/src/takaro/connectionLog.ts").read_text(encoding="utf-8")
 

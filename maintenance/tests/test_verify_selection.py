@@ -1,10 +1,9 @@
-"""What a ``takaro-maint verify`` with no ``--checks`` selects, for every game there is.
+"""What a ``takaro-maint verify`` with no ``--checks`` selects for every game.
 
-The base ladder is written for the Minecraft connector. Three games used to narrow it in
-their own ``before_boot`` -- after the install and the deploy, and only for the games that
-remembered -- so ``verify --game valheim`` spent a timeout failing five checks it could
-never pass. The narrowing is the runner's now, driven by each game's declared
-``unsupported_checks``, and this file holds it to that for all eight games at once.
+The base ladder is written for the Minecraft connector. Each other game declares only
+base checks that cannot apply to it and names the game-specific check standing in. A
+game's own checks always run by default, including checks that truthfully report a known
+limitation.
 """
 
 from __future__ import annotations
@@ -63,8 +62,22 @@ def test_a_game_with_nothing_to_narrow_is_left_alone(tmp_path: Path) -> None:
         run.cleanup()
 
 
+@pytest.mark.parametrize("game", _games())
+def test_exclusions_are_base_checks_never_a_games_own_checks(game: str) -> None:
+    import re
+
+    from takaro_maint.verify.runner import CHECK_IDS, game_hooks
+
+    hooks = game_hooks(game)
+    assert set(hooks.unsupported_checks) <= set(CHECK_IDS)
+    assert set(hooks.unsupported_checks).isdisjoint(hooks.check_ids)
+    forbidden_plan_marker = r"\bF\d\b|follow-" r"up|planning " r"note"
+    for reason in hooks.unsupported_checks.values():
+        assert not re.search(forbidden_plan_marker, reason, re.IGNORECASE)
+
+
 def test_an_explicit_checks_list_is_left_byte_identical(tmp_path: Path) -> None:
-    """Naming a check is asking for it, including one this game is known to fail."""
+    """Naming a check is asking for it even when the game normally substitutes another."""
     from takaro_maint.verify.runner import RunOptions, game_hooks
 
     asked = ["shutdown", "build", "catalog-items"]
@@ -98,6 +111,26 @@ def test_one_targets_default_does_not_narrow_the_next_ones(tmp_path: Path) -> No
         assert second.options.only != first.options.only
     finally:
         second.cleanup()
+
+
+def test_startup_budget_prefers_the_cli_then_the_game_then_the_common_default(tmp_path: Path) -> None:
+    from takaro_maint.verify.runner import RunOptions
+
+    terraria = _run("terraria", tmp_path)
+    minecraft = _run("minecraft", tmp_path)
+    explicit = _run(
+        "terraria",
+        tmp_path,
+        RunOptions(artifacts=tmp_path / "dist", out=tmp_path / "out", run_id="selection", startup_timeout=12.0),
+    )
+    try:
+        assert terraria.startup_timeout == 900.0
+        assert minecraft.startup_timeout == 300.0
+        assert explicit.startup_timeout == 12.0
+    finally:
+        terraria.cleanup()
+        minecraft.cleanup()
+        explicit.cleanup()
 
 
 def test_every_dropped_check_says_why_and_what_stands_in_for_it(tmp_path: Path, capsys: Any) -> None:

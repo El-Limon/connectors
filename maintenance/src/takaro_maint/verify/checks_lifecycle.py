@@ -166,7 +166,7 @@ async def check_restart(run: Any, fake: Any, ws_url: str, ledger_inputs: list[di
         startup = await asyncio.to_thread(
             checks.check_startup,
             container.log_file,
-            run.options.startup_timeout,
+            run.startup_timeout,
             container.alive,
             run.data_dir,
             ledger_inputs,
@@ -246,7 +246,7 @@ async def check_negative_wrong_target(
         container = run.boot(ws_url, suffix="-negative", log_name="server-negative.log")
         run.extra_logs.append(container.log_file)
         observed = await asyncio.to_thread(
-            _watch_for_refusal, container, refusal, run.options.startup_timeout, lambda: fake.identify_count
+            _watch_for_refusal, container, refusal, run.startup_timeout, lambda: fake.identify_count
         )
         refused_by, refusal_line, line_number, exit_code = observed
         during = fake.identify_count - before

@@ -28,7 +28,7 @@ REFERENCES_MARKER = Path(".takaro") / "references.json"
 
 
 def selects(relative: str, selectors: list[str]) -> bool:
-    """Does one of this target's ``build.references`` selectors name this file?
+    """Whether a selector names this file by exact path or case-insensitive regex.
 
     DepotDownloader writes its own bookkeeping (the depot manifest and its checksum) into
     the download directory alongside the files it fetched, so what came out of it is
@@ -36,9 +36,9 @@ def selects(relative: str, selectors: list[str]) -> bool:
     """
     for selector in selectors:
         if selector.startswith("regex:"):
-            if re.search(selector[len("regex:") :], relative):
+            if re.search(selector[len("regex:") :], relative, re.IGNORECASE):
                 return True
-        elif relative == selector or relative.startswith(selector.rstrip("/") + "/"):
+        elif relative.casefold() == selector.casefold():
             return True
     return False
 
@@ -230,6 +230,12 @@ def _pin(args: Any) -> int:
     metadata = getattr(args, "metadata", False)
     if metadata and args.buildid is not None:
         raise UsageError("--metadata reads the build id from Steam; pass one or the other, not both")
+    if args.write and branch != spec.branch and args.depot:
+        # A record pins one branch for all of its depots, and the depots this run would
+        # skip still carry manifests from the old branch.
+        raise UsageError("a record pins one branch; re-pin every depot when changing branch")
+    if args.write and branch != spec.branch and args.buildid is None and not metadata:
+        raise UsageError(f"re-pinning onto branch {branch} needs that head's build id: pass --buildid or --metadata")
 
     observed: dict[str, dict[str, Any]] = {}
     changed: list[str] = []
@@ -265,11 +271,6 @@ def _pin(args: Any) -> int:
     stale = _stale_files(spec, observed, recorded)
     written = None
     if args.write:
-        if branch != spec.branch and args.depot:
-            # A record pins one branch for all of its depots, and the depots this run did
-            # not read keep the manifests of the branch they were pinned to. Writing a new
-            # branch label over them would claim a head none of them was observed on.
-            raise UsageError("a record pins one branch; re-pin every depot when changing branch")
         if stale:
             raise ConflictError(
                 "these declared files changed in the new manifest and no hash was recorded for them: "

@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ... import paths
 from ...install.ledger import artifacts_of, read_ledger
 from ...verify import checks, checks_lifecycle
 from ...verify.hooks import GameHooks
@@ -76,29 +77,64 @@ ITEM_SPOT = ("rifle.ak", "Assault Rifle")
 ENTITY_SPOT = ("scientistnpc_heavy", "Heavy Scientist")
 
 #: A prefab short name that survived into the display name: `Scientistnpc Heavy` is what
-#: capitalising `scientistnpc_heavy` gives, and it is what an operator used to read.
+#: capitalising `scientistnpc_heavy` gives.
 _GLUED_NPC = re.compile(r"[a-z]npc\b", re.I)
 #: `Cargo Turret Lr300`, `Wolf2`: a raw variant number or a mangled abbreviation.
 _RAW_VARIANT = re.compile(r"[A-Za-z]\d+$")
+_CURATED_PAIR = re.compile(r'\{\s*"([^"]+)",\s*"([^"]+)"\s*\}')
+
+
+def _curated_entity_names() -> dict[str, str]:
+    """The connector table between its explicit markers, not a second Python copy."""
+    source = (paths.repo_root() / "games/rust/mod/TakaroConnector.cs").read_text(encoding="utf-8")
+    try:
+        region = source.split("// takaro:names-begin", 1)[1].split("// Prefab words", 1)[0]
+    except IndexError as exc:
+        raise ValueError("the Rust curated-name markers are missing") from exc
+    return dict(_CURATED_PAIR.findall(region))
 
 
 def _prefab_name_problems(entries: list[Any]) -> list[str]:
-    """The two ways a Rust prefab name goes wrong that the shared rules cannot see.
+    """Rust prefab-name failures that the shared catalogue rules cannot see.
 
     The shared check refuses a name equal to its code and a translation key; neither
     catches `Scientistnpc Heavy`. These names are the whole point of the catalogue, so
     they are asserted against the live answer rather than by trusting the curated table
     in `TakaroConnector.cs` to have stayed curated.
     """
+    problems: list[str] = []
+    try:
+        curated = _curated_entity_names()
+    except (OSError, ValueError) as exc:
+        curated = {}
+        problems.append(f"the curated prefab table could not be read: {exc}")
+    if len(curated) < 60:
+        problems.append(f"the curated prefab table has {len(curated)} entries, expected at least 60")
+
+    curated_codes = {code.casefold() for code in curated}
+    missing = sorted(
+        {
+            str(entry.get("code"))
+            for entry in entries
+            if isinstance(entry, dict) and str(entry.get("code") or "").casefold() not in curated_codes
+        }
+    )
+    if missing:
+        problems.append(
+            f"{len(missing)} prefabs have no curated name (a derived name was shipped), e.g. {', '.join(missing[:3])}"
+        )
+
     offenders = [
         f"{entry.get('code')} -> {entry.get('name')}"
         for entry in entries
         if isinstance(entry, dict)
         and (_GLUED_NPC.search(str(entry.get("name", ""))) or _RAW_VARIANT.search(str(entry.get("name", ""))))
     ]
-    if not offenders:
-        return []
-    return [f"{len(offenders)} of {len(entries)} names are formatted prefab codes, e.g. {', '.join(offenders[:3])}"]
+    if offenders:
+        problems.append(
+            f"{len(offenders)} of {len(entries)} names are formatted prefab codes, e.g. {', '.join(offenders[:3])}"
+        )
+    return problems
 
 
 def scan_runtime_identity(adapter: Any, log_file: Path) -> dict[str, Any]:

@@ -5,9 +5,8 @@
 # Sourced by dev-servers/lib/common.sh. It registers the game in the shared registry and
 # defines the steps install.sh, deploy-connector.sh and verify-connectors.sh dispatch to.
 #
-# The layout moved when this game became target-driven: the install is one tree under
-# _data/rust/rust_dedicated (the ledger describes all of it) instead of the three
-# scattered mounts the image-built rig used. An existing rig keeps its saves with
+# The install is one tree under _data/rust/rust_dedicated, described by the ledger.
+# An existing rig keeps its saves with
 #   dev-servers/scripts/install.sh rust --force
 #   mv dev-servers/_data/rust/server/takaro dev-servers/_data/rust/rust_dedicated/server/takaro
 

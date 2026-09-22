@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,35 @@ def test_the_repository_catalog_is_valid(run: Any) -> None:
     assert code == 0, payload
     assert payload["ok"] is True
     assert payload["failures"] == []
+
+
+def test_every_catalog_dev_server_claim_has_a_registered_rig() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    script = """
+        . dev-servers/lib/common.sh
+        for rig in $(ds_game_ids); do
+            printf '%s|%s|%s\\n' "$rig" "$(ds_target_game "$rig")" "$(basename "$(ds_compose_file "$rig")")"
+        done
+    """
+    completed = subprocess.run(["bash", "-c", script], cwd=repo, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    rigs = {
+        rig: {"game": game, "compose": compose}
+        for rig, game, compose in (line.split("|", 2) for line in completed.stdout.splitlines())
+    }
+
+    for game_file in sorted((repo / "catalog").glob("*/game.json")):
+        game = json.loads(game_file.read_text(encoding="utf-8"))
+        dev = game.get("devServers") or {}
+        if compose := dev.get("composeFile"):
+            assert (repo / "dev-servers" / "compose" / compose).is_file(), game_file
+            assert any(row["game"] == game["id"] and row["compose"] == compose for row in rigs.values()), game_file
+
+    for target_file in sorted((repo / "catalog").glob("*/targets/*.json")):
+        target = json.loads(target_file.read_text(encoding="utf-8"))
+        if rig := (target.get("devServers") or {}).get("gameId"):
+            assert rig in rigs, target_file
+            assert rigs[rig]["game"] == target_file.parents[1].name, target_file
 
 
 def test_id_must_match_platform_revision_and_file_name(run: Any, catalog_copy: Path) -> None:
@@ -238,12 +268,44 @@ def test_a_launcher_path_must_be_derivable(run: Any, catalog_copy: Path) -> None
     assert "launcher-path-derivable" in failures(payload)
 
 
+def test_a_separate_verification_claim_must_name_a_real_check(run: Any, catalog_copy: Path) -> None:
+    record = read_target(catalog_copy)
+    record["verification"]["separate"].append("not-a-verification-check")
+    write_target(catalog_copy, record)
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code == 2
+    failure = next(check for check in payload["failures"] if check["id"] == "separate-names-checks")
+    assert "not-a-verification-check" in failure["detail"]
+
+
 def test_online_validation_passes_against_matching_upstream(run: Any, wired: Any) -> None:
+    """Whole-catalog online validation covers exactly the targets ``wired.served`` declares."""
     code, payload, _ = run("catalog", "validate", "--online", repo=wired.root)
 
     assert code == 0, payload
     ids = {check["id"] for check in payload["checks"]}
     assert {"online-manifest", "online-hash"} <= ids
+
+
+def test_the_wired_fixture_serves_exactly_the_targets_it_says(wired: Any) -> None:
+    assert wired.served == ("fabric-26.1.2", "fabric-26.2")
+    assert wired.unserved == {
+        "carbon-25454815": "no repinner for platform 'carbon'",
+        "linux-1.0.15": "no repinner for platform 'linux'",
+        "linux-25356024": "no repinner for platform 'linux'",
+        "linux-3.2.0.b10": "no repinner for platform 'linux'",
+        "linux-42.20.4": "no repinner for platform 'linux'",
+        "neoforge-1.21.11": "no repinner for platform 'neoforge'",
+        "paper-1.21.11": "no repinner for platform 'paper'",
+        "proton-1024233": "no repinner for platform 'proton'",
+        "tshock-v6.1.0": "no repinner for platform 'tshock'",
+    }
+    remaining = sorted(
+        json.loads(path.read_text(encoding="utf-8"))["id"] for path in (wired.root / "catalog").glob("*/targets/*.json")
+    )
+    assert remaining == list(wired.served)
 
 
 def test_online_validation_reports_a_changed_upstream_hash(run: Any, wired: Any) -> None:

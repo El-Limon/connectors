@@ -3,8 +3,9 @@
 //
 // A release is only as exact as the bytes it was built from, and `npm ci` will happily
 // install whatever the lockfile points at. So before anything is installed, every
-// dependency the catalog pins is checked twice: the lockfile must resolve it to exactly
-// the recorded URL, and the tarball at that URL must hash to exactly the recorded sha256.
+// lockfile is pinned whole by digest, then each direct dependency is checked twice: the
+// lockfile must resolve it to exactly the recorded URL, and the tarball at that URL must
+// hash to exactly the recorded sha256.
 // Neither failure falls back to "install it anyway" -- a build that cannot reproduce the
 // recorded inputs is not this target's build.
 //
@@ -16,7 +17,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-const LOCKFILE = 'package-lock.json';
 const DRIFT = 7;
 const MISMATCH = 5;
 
@@ -37,24 +37,40 @@ function pinnedDeps() {
 }
 
 async function main() {
+  const lockfile = process.env.CONAN_EXILES_LOCKFILE_PATH;
+  const expectedLockfile = process.env.CONAN_EXILES_LOCKFILE_SHA256;
+  if (!lockfile || !expectedLockfile) {
+    console.error('CONAN_EXILES_LOCKFILE_PATH and CONAN_EXILES_LOCKFILE_SHA256 are required; resolve the target first');
+    process.exit(DRIFT);
+  }
+  const lockBytes = readFileSync(lockfile);
+  const actualLockfile = createHash('sha256').update(lockBytes).digest('hex');
+  if (actualLockfile !== expectedLockfile) {
+    console.error(
+      `${lockfile} does not match the catalog pin:\n  expected: ${expectedLockfile}\n  actual:   ${actualLockfile}\n` +
+        'a dependency added, removed or moved in the lockfile is a re-pin, not a build',
+    );
+    process.exit(DRIFT);
+  }
+
   const deps = pinnedDeps();
   if (deps.length === 0) {
     console.error('no CONAN_EXILES_DEP_*_URL in the environment; resolve the target first');
     process.exit(DRIFT);
   }
 
-  const lock = JSON.parse(readFileSync(LOCKFILE, 'utf8'));
+  const lock = JSON.parse(lockBytes.toString('utf8'));
   const packages = lock.packages ?? {};
 
   for (const dep of deps) {
     const entry = packages[`node_modules/${dep.name}`];
     if (!entry) {
-      console.error(`${LOCKFILE} holds no node_modules/${dep.name}; the catalog pins it`);
+      console.error(`${lockfile} holds no node_modules/${dep.name}; the catalog pins it`);
       process.exit(DRIFT);
     }
     if (entry.resolved !== dep.url) {
       console.error(
-        `${LOCKFILE} drifted for ${dep.name}:\n  lockfile: ${entry.resolved}\n  catalog:  ${dep.url}`,
+        `${lockfile} drifted for ${dep.name}:\n  lockfile: ${entry.resolved}\n  catalog:  ${dep.url}`,
       );
       process.exit(DRIFT);
     }

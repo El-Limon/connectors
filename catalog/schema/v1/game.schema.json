@@ -5,7 +5,7 @@
   "description": "One game: the sources its targets download from, how its connector is built, and which artifact roles it ships.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "name", "connector", "platforms", "sources", "build", "componentRoles", "legacyAssetAliases", "devServers"],
+  "required": ["schemaVersion", "id", "name", "connector", "platforms", "sources", "build", "componentRoles", "legacyAssetAliases"],
   "properties": {
     "schemaVersion": {"const": 1},
     "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},

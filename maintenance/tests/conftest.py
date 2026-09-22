@@ -102,6 +102,12 @@ def catalog_copy(tmp_path: Path) -> Path:
             destination = root / script
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+        lockfile = target.get("build", {}).get("lockfile", {}).get("path")
+        if lockfile:
+            source = REPO_ROOT / lockfile
+            destination = root / lockfile
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
     mod = root / "games" / "minecraft" / "mod"
     (mod / "gradle").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "games/minecraft/mod/gradle/libs.versions.toml", mod / "gradle")
@@ -200,11 +206,20 @@ def make_jar(
 
 
 class Wired:
-    """A catalog copy whose every download points at an in-process fake upstream."""
+    """A catalog copy whose declared ``served`` targets point at a fake upstream."""
 
-    def __init__(self, root: Path, upstream: Any) -> None:
+    def __init__(
+        self,
+        root: Path,
+        upstream: Any,
+        *,
+        served: tuple[str, ...] = (),
+        unserved: dict[str, str] | None = None,
+    ) -> None:
         self.root = root
         self.upstream = upstream
+        self.served = served
+        self.unserved = unserved or {}
 
     def target(self, target_id: str = "fabric-26.2") -> dict[str, Any]:
         return read_target(self.root, target_id)
@@ -284,12 +299,11 @@ _REPINNERS: dict[str, Any] = {"fabric": _repin_fabric}
 
 @pytest.fixture
 def wired(catalog_copy: Path) -> Any:
-    """Serve tiny stand-ins for the real downloads and re-pin every catalog target to them.
+    """Serve and re-pin targets with a fake upstream, declaring the unsupported boundary.
 
-    ``catalog validate --online`` walks every non-retired target, so the fake upstream has to
-    answer for all of them, not only the default one. A target this fixture cannot serve --
-    an unknown platform, or one whose stand-in fixtures are not in the tree -- is unlinked from
-    the catalog copy instead, so it never makes an unrelated test fail.
+    ``catalog validate --online`` walks every target left in the copy. A target without a
+    repinner is unlinked because a half-pinned target must not be served, and ``unserved``
+    records exactly which coverage was excluded and why.
     """
     from fake_upstream import FakeUpstream
 
@@ -297,17 +311,21 @@ def wired(catalog_copy: Path) -> Any:
     assert target_files, "the copied catalog has no targets"
 
     with FakeUpstream() as upstream:
-        repinned = 0
+        served: list[str] = []
+        unserved: dict[str, str] = {}
         for target_file in target_files:
             record = json.loads(target_file.read_text())
             repinner = _REPINNERS.get(record["platform"])
             if repinner is not None and repinner(record, upstream):
                 write_target(catalog_copy, record, record["id"])
-                repinned += 1
+                served.append(str(record["id"]))
                 continue
-            # No stand-ins for this one: drop it from the copy rather than serve it half-pinned.
+            if repinner is None:
+                unserved[str(record["id"])] = f"no repinner for platform '{record['platform']}'"
+            else:
+                unserved[str(record["id"])] = "the repinner has no fixture for this target"
             target_file.unlink()
 
-        assert repinned, "no target could be re-pinned at the fake upstream"
+        assert served, "no target could be re-pinned at the fake upstream"
         point_at(catalog_copy, upstream.base_url)
-        yield Wired(catalog_copy, upstream)
+        yield Wired(catalog_copy, upstream, served=tuple(sorted(served)), unserved=dict(sorted(unserved.items())))

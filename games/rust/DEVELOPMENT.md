@@ -30,11 +30,11 @@ Everything lives in one file: `mod/TakaroConnector.cs`.
 ## Target and build
 
 This connector is built and verified against one **catalog target**, not against "whatever Steam
-and Carbon serve today". The record is `catalog/rust/targets/carbon-25353106.json`, and it pins:
+and Carbon serve today". The record is `catalog/rust/targets/carbon-25454815.json`, and it pins:
 
 | Half | Pinned by |
 |---|---|
-| The server | Steam app 258550, branch `public`, build id 25353106, os `linux`, and the **manifest id of each of the two depots** (258552 linux binaries, 258554 shared content) — plus a self-recorded sha256 for seven declared files |
+| The server | Steam app 258550, branch `public`, build id 25454815, os `linux`, and the **manifest id of each of the two depots** (258552 linux binaries, 258554 shared content) — plus a self-recorded sha256 for seven declared files |
 | Carbon | The GitHub release asset `Carbon.Linux.Release.tar.gz` by **sha256 and size**. Carbon's `production_build` tag is re-uploaded in place, so the tag is an address, never an identity |
 | The runtime | `mcr.microsoft.com/dotnet/runtime-deps:8.0.31-noble` by index digest |
 | The toolchain | `mcr.microsoft.com/dotnet/sdk:8.0.425-noble` by index digest |
@@ -81,7 +81,7 @@ plugin API is `internal`) and runs `dotnet build -c Release` inside the pinned S
 `build-release.sh` runs both of the above, then stamps the version into the `[Info(...)]` attribute,
 prepends a two-line identity header (target, fingerprint, source revision, Carbon digest, Rust build
 and depot manifests, `Assembly-CSharp.dll` sha256 — no timestamps, so two builds of one commit are
-byte-identical) and writes `takaro-rust-plugin-carbon-25353106-<version>.cs` plus a `.meta.json`
+byte-identical) and writes `takaro-rust-plugin-carbon-25454815-<version>.cs` plus a `.meta.json`
 (which target these bytes belong to, for `artifact validate`) and a `.provenance.json` (the
 Carbon pin, the depot manifests, the `Assembly-CSharp.dll` sha256 and the toolchain digest this
 build used). They are two documents because `takaro-maint build --out DIR` writes its own
@@ -288,7 +288,7 @@ before the game head is reconciled.
   - **release** — delegates to `.github/workflows/connector-release.yml`, which builds every
     candidate/maintained target, checks the artifacts carry the target's identity, builds again and
     requires identical bytes, and publishes the set with a compat record and `SHA256SUMS`.
-- The release ships `takaro-rust-plugin-carbon-25353106-<version>.cs`, a byte-identical
+- The release ships `takaro-rust-plugin-carbon-25454815-<version>.cs`, a byte-identical
   `TakaroConnector.cs` alias (so an existing install path keeps working), `SHA256SUMS` and
   `takaro-rust-<version>.compat.json`. The compat record names the Steam pseudo-URL and the Carbon
   asset URL for each target and claims `verification: {required: "build", executed: null}` —
@@ -299,6 +299,7 @@ before the game head is reconciled.
 
 ## Testing status
 
-The rows the README marks ✅ were proven by `takaro-maint verify` against the exact pinned target —
-Rust build 25353106 on Carbon 2.0.259 — with no client. Everything a client is needed for is still
-⚠️ and unproven; see **Verification coverage** above.
+The rows the README marks ✅ were proven by `takaro-maint verify` on Rust build 25353106 with Carbon
+2.0.259 and no client. The current target, build 25454815, is compile-checked against those same
+Carbon bytes; its runtime re-verification is tracked separately. Everything a client is needed for
+is still ⚠️ and unproven; see **Verification coverage** above.

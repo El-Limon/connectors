@@ -6,7 +6,8 @@ What a Valheim report may claim, and what it may not:
   ``catalog-*``, ``console`` and ``shutdown`` checks look for lines this plugin does not
   write, so they are deliberately not selected; ``handshake``, ``items``, ``entities``,
   ``action``, ``reconnect`` and ``stop`` below are this game's equivalents and say so in
-  their details.
+  their details. ``items`` and ``entities`` run by default and fail until the plugin
+  translates its catalogue names, so a bare verification reports that limitation.
 * **Companion (graphical-client) behaviour is not covered by any of this.** A ``verify``
   run boots a dedicated server in a container; the companion is a client plugin and never
   loads there. Nothing in a report produced here is evidence that companion features work —
@@ -49,14 +50,6 @@ UNSUPPORTED_CHECKS = {
     "catalog-entities": ("spot-checks a Minecraft entity id; `entities` spot-checks a Valheim one"),
     "console": ("the base console check drives a Minecraft command; `action` drives a Valheim one"),
     "shutdown": ("asserts an exit code this server's teardown does not give; `stop` asserts the shutdown"),
-    "items": (
-        "the server plugin returns translation keys, not display names (README, warning row); "
-        "run `--checks items,entities` to see the failure; follow-up F2"
-    ),
-    "entities": (
-        "the server plugin returns translation keys, not display names (README, warning row); "
-        "run `--checks items,entities` to see the failure; follow-up F2"
-    ),
 }
 
 HANDSHAKE_LINE = re.compile(r"Takaro Valheim identified as gameServerId=")

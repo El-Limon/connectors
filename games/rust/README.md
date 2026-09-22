@@ -4,9 +4,10 @@ A server-side-only plugin that connects a Rust dedicated server to Takaro. It is
 **Oxide/uMod** plugin API (`Oxide.Plugins` / `RustPlugin`) and is developed and verified on
 **Carbon**, which runs the same plugins. Players do not install anything.
 
-**Built and verified against Rust public build 25353106 (2026-09-16) with Carbon v2.0.259.** Other
-Rust builds and other Carbon builds are unverified — the plugin will very likely still load, but
-nothing here was checked against them.
+**Built and compile-checked against Rust public build 25454815 (2026-09-22) with Carbon v2.0.259.**
+The protocol/runtime checks were last run on build 25353106 with the same Carbon bytes. Other Rust
+builds and other Carbon builds are unverified — the plugin will very likely still load, but nothing
+here was checked against them.
 
 ## Install
 
@@ -33,7 +34,7 @@ From the latest `rust-vX.Y.Z` release on the releases page
 
 download either name — they are the same bytes:
 
-- **`takaro-rust-plugin-carbon-25353106-<version>.cs`** — the build's own name, which says exactly
+- **`takaro-rust-plugin-carbon-25454815-<version>.cs`** — the build's own name, which says exactly
   which Rust build and which Carbon it was verified against.
 - **`TakaroConnector.cs`** — the same file under the name the framework loads. Direct link pattern:
   `https://github.com/gettakaro/connectors/releases/download/rust-v<version>/TakaroConnector.cs`
@@ -118,9 +119,10 @@ variables are untouched by the upgrade, so the server keeps its identity.
 
 ## What works, what doesn't
 
-✅ means it was proven by an automated run against the exact pinned target (Rust build 25353106,
-Carbon 2.0.259) with **no game client**: the server really booted in its pinned container, Carbon
-really compiled and loaded this plugin, and the protocol harness really asked for each of these.
+✅ means it was proven by an automated run on Rust build 25353106 with Carbon 2.0.259 and **no game
+client**: the server really booted, Carbon compiled and loaded this plugin, and the protocol harness
+asked for each of these. The current build 25454815 is compile-checked against the same Carbon bytes;
+runtime re-verification is tracked separately.
 ⚠️ means the plugin implements it but nothing has confirmed it — everything a real player is
 needed for is in that group. ❌ means it is not implemented or not supported.
 
@@ -132,7 +134,7 @@ needed for is in that group. ❌ means it is not implemented or not supported.
 | Server restart / reconnect | ✅ | Reconnects on its own after the connection drops, with exponential backoff (5 s up to 5 min), and identifies again. |
 | Player list | ✅ | Answers with the connected players. Proven on an empty server only — the shape is verified, a populated list is not. |
 | Item catalogue | ✅ | Every item definition the server knows, with its display name (e.g. `rifle.ak` → "Assault Rifle"). |
-| Entity catalogue | ✅ | Built from the server's prefab manifest, with corpses and ragdolls filtered out, and display names from a curated table for NPCs and animals (e.g. `scientistnpc_heavy` → "Heavy Scientist"), derived from the prefab name otherwise. |
+| Entity catalogue | ✅ | Built from the server's prefab manifest, with corpses and ragdolls filtered out, and display names from a curated table for NPCs and animals (e.g. `scientistnpc_heavy` → "Heavy Scientist"). Every prefab a verified server returns is in that table; a prefab outside it gets a derived name and `takaro-maint verify` reports it. |
 | Run a console command | ✅ | Runs as a server console command and returns the output or the error. The connector logs each command it runs, because Rust's console does not echo them. |
 | Broadcast a message | ✅ | Sent to everyone in the server chat, and logged by the connector. Proven to reach the server; that a player sees it is not, because the automated run has no client. |
 | Shut the server down | ✅ | Runs the server's `quit` command: the world is saved, the plugin is unloaded and the server quits. Rust's own process then sometimes crashes inside Unity's teardown *after* all of that, so its exit code means nothing either way. |

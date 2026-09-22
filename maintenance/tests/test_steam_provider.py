@@ -198,7 +198,7 @@ def test_a_secret_in_the_environment_never_reaches_the_log(
 
 # -- the revision digest -------------------------------------------------------
 def test_a_pathologically_nested_app_info_is_a_failed_source_not_a_traceback(steam: Any) -> None:
-    """A `RecursionError` is not a `VdfError`, so it escaped `app_info` and exited 1."""
+    """A `RecursionError` is not a `VdfError`; `app_info` maps it to a failed source."""
     from takaro_maint.exit_codes import UPSTREAM, MaintError
 
     deep = f'"{APP}"' + "\n{\n" + '"a"\n{\n' * 2000
@@ -421,7 +421,7 @@ def test_metadata_and_an_explicit_buildid_are_a_usage_error(run: Any, steam: Any
 
 
 def test_steam_pin_without_metadata_is_unchanged(run: Any, steam: Any, repo: Path) -> None:
-    """The existing behaviour is untouched: no app_info call, no metadata block."""
+    """No app_info call, no metadata block."""
     code, payload, err = run("steam", "pin", "--game", GAME, "--target", fake_dd.TARGET_ID, repo=repo)
 
     assert code == 0, err

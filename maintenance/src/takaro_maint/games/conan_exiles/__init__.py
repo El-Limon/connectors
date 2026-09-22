@@ -82,6 +82,10 @@ class ConanExilesAdapter(BaseAdapter):
             f"{prefix}_ARTIFACT": str(resolved["artifactFileNames"]["bridge"]),
             f"{prefix}_BRIDGE_DIR": f"{self._install_dir(resolved)}/{BRIDGE_FOLDER}",
         }
+        lockfile = resolved["build"].get("lockfile")
+        if lockfile:
+            env[f"{prefix}_LOCKFILE_PATH"] = str(paths.repo_root() / str(lockfile["path"]))
+            env[f"{prefix}_LOCKFILE_SHA256"] = str(lockfile["sha256"])
         declared_hashes = (
             (f"{prefix}_LAUNCHER_SHA256", LAUNCHER),
             (f"{prefix}_SERVER_BINARY_SHA256", SERVER_BINARY),
@@ -256,8 +260,8 @@ class ConanExilesAdapter(BaseAdapter):
         """The operator runs ``TakaroBridge/TakaroConanExiles``, so the zip is unpacked there."""
         install_dir = dest / paths.safe_relative(component["installDir"], field="components[].installDir")
         folder = install_dir / BRIDGE_FOLDER
-        # Staged, not extracted over the live folder: the bridge used to be deleted first,
-        # so an archive that failed halfway through took the working bridge with it -- and
+        # Staged, not extracted over the live folder: deleting the bridge first would let
+        # an archive that fails halfway take the working bridge with it -- and
         # `TakaroConfig.txt`, which is only restored after a successful extraction.
         stage = install_dir / BRIDGE_STAGE
         shutil.rmtree(stage, ignore_errors=True)

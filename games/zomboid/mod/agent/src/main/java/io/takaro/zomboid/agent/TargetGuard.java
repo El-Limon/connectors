@@ -43,6 +43,12 @@ public final class TargetGuard {
     public record Decision(String result, boolean proceed, List<String> reasons) {
     }
 
+    static final class UnreadableJar extends RuntimeException {
+        UnreadableJar(Path path, Throwable cause) {
+            super("the server jar " + path + " could not be hashed (" + cause + ")", cause);
+        }
+    }
+
     private TargetGuard() {
     }
 
@@ -51,7 +57,13 @@ public final class TargetGuard {
      * reading and the hashing so it can be tested without a JVM that has a game in it.
      */
     public static Decision decide(String policy, String expectedSha, String actualSha,
-            boolean hasTargetInfo, boolean hasGameJar) {
+            boolean hasTargetInfo, boolean hasGameJar, boolean hashFailed) {
+        return decide(policy, expectedSha, actualSha, hasTargetInfo, hasGameJar,
+                hashFailed, hashFailed ? "cause unavailable" : null);
+    }
+
+    private static Decision decide(String policy, String expectedSha, String actualSha,
+            boolean hasTargetInfo, boolean hasGameJar, boolean hashFailed, String hashFailure) {
         String mode = normalisePolicy(policy);
         List<String> reasons = new ArrayList<>();
         if (!hasTargetInfo) {
@@ -66,9 +78,19 @@ public final class TargetGuard {
             reasons.add("the target carries no gameJarSha256 to check against");
             return new Decision("unpinned", true, reasons);
         }
-        if (!hasGameJar || actualSha == null || actualSha.isEmpty()) {
+        if (!hasGameJar) {
             reasons.add("no " + GAME_JAR_NAME + " on this JVM's class path (a launcher probe JVM)");
             return new Decision("no-game-jar", true, reasons);
+        }
+        if (hashFailed || actualSha == null || actualSha.isEmpty()) {
+            reasons.add("the server jar " + GAME_JAR_NAME + " could not be hashed ("
+                    + (hashFailure == null ? "cause unavailable" : hashFailure) + ")");
+            if ("warn".equals(mode)) {
+                reasons.add(POLICY_ENV + "=warn: continuing anyway; the hooks may bind nothing");
+                return new Decision("unreadable", true, reasons);
+            }
+            reasons.add("set " + POLICY_ENV + "=warn to run it anyway");
+            return new Decision("unreadable", false, reasons);
         }
         if (expectedSha.equals(actualSha)) {
             return new Decision("ok", true, reasons);
@@ -105,8 +127,19 @@ public final class TargetGuard {
         String gameVersion = string(constraints, "gameVersion");
 
         Path gameJar = "off".equals(policy) ? null : findGameJar();
-        String actualSha = gameJar == null ? null : sha256(gameJar);
-        Decision decision = decide(policy, expectedSha, actualSha, hasTargetInfo, gameJar != null);
+        String actualSha = null;
+        boolean hashFailed = false;
+        String hashFailure = null;
+        if (gameJar != null) {
+            try {
+                actualSha = sha256(gameJar);
+            } catch (UnreadableJar e) {
+                hashFailed = true;
+                hashFailure = e.getCause() == null ? e.toString() : e.getCause().toString();
+            }
+        }
+        Decision decision = decide(
+                policy, expectedSha, actualSha, hasTargetInfo, gameJar != null, hashFailed, hashFailure);
 
         JsonObject expected = new JsonObject();
         expected.addProperty("gameJarSha256", expectedSha);
@@ -191,8 +224,7 @@ public final class TargetGuard {
             }
             return out.toString();
         } catch (Exception e) {
-            AgentLog.log("target-check: could not hash " + path + " (" + e + ")");
-            return null;
+            throw new UnreadableJar(path, e);
         }
     }
 }

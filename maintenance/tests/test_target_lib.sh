@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # scripts/lib/target.sh: the one resolution every game's scripts use.
 #
-# It was seven byte-identical copies and none of them was executed by any test: what the
-# resolution exports, what it refuses, and whether the temporary env file survives a
-# failure were all unasserted. Each case builds a tree holding the real library and a stub
-# `takaro-maint` whose behaviour the case chooses. Run it from anywhere; it prints PASS per
-# case and ALL PASS.
+# Each case asserts what target resolution exports, what it refuses, and whether a
+# temporary environment file survives a failure. The fixture holds the real library and
+# a stub `takaro-maint` whose behaviour the case chooses.
 # The expressions below are single-quoted on purpose: they are run inside the fixture's
 # own shell, after its copy of the library is sourced, not expanded by this one.
 # shellcheck disable=SC2016

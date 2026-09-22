@@ -216,8 +216,8 @@ class SevenDaysAdapter(BaseAdapter):
         """The server loads ``Mods/Takaro/``, so the zip is unpacked where it lands."""
         install_dir = dest / paths.safe_relative(component["installDir"], field="components[].installDir")
         folder = install_dir / MOD_FOLDER
-        # Staged, not extracted over the live folder: the mod used to be deleted first, so
-        # an archive that failed halfway through took the working install with it.
+        # Staged, not extracted over the live folder: deleting the mod first would let an
+        # archive that fails halfway take the working install with it.
         stage = install_dir / MOD_STAGE
         shutil.rmtree(stage, ignore_errors=True)
         try:

@@ -102,6 +102,5 @@
     "takaro/",
     ".takaro/"
   ],
-  "devServers": {"gameId": "enshrouded"},
-  "notes": "Runtime identity: the Windows server binary under GE-Proton10-30 (recorded from /usr/local/bin/version of the pinned image; verify asserts it). The plugin's hooks are proven on game build 1024233 only. Catalogue names are the server's item/entity codes with spaces: no localisation ships with the dedicated server."
+  "notes": "Runtime identity: the Windows server binary under GE-Proton10-30 (recorded from /usr/local/bin/version of the pinned image; verify asserts it). The plugin's hooks are proven on game build 1024233 only. Catalogue names are derived by the plugin from the item, entity and location template codes (games/enshrouded/mod/src/names.cpp); no localisation ships with the dedicated server, and every distinct code gets a distinct name."
 }

@@ -9,6 +9,7 @@ proven install carries it and watched by nobody because it belongs to another ap
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -22,12 +23,86 @@ import pytest
 
 import fake_depotdownloader as fake
 import fake_steamcmd
+from fake_verify import CannedSocket, FakeContainer, FakeRun
 from takaro_maint.games import adapter_for
 from takaro_maint.games.conan_exiles import verify as hooks
 from takaro_maint.publish.manifest import artifact_row, write_manifest, write_meta
 from takaro_maint.steam import steamcmd
 
 GAME = "conan-exiles"
+
+
+def test_every_conan_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = type("Target", (), {"id": TARGET, "fp16": "0123456789abcdef", "record": {"revision": "1"}})()
+    run = FakeRun(tmp_path, target=target)
+    bridge_log = run.out / "bridge.log"
+    bridge = FakeContainer(bridge_log)
+    run.bridge = bridge
+    fake = CannedSocket(
+        {
+            "testReachability": {"connectable": True},
+            "getPlayers": [],
+            "executeConsoleCommand": {"success": True, "rawResult": "No players"},
+            "sendMessage": {"success": False, "error": "helper absent"},
+        },
+        identify_count=1,
+    )
+    stamp = f"Takaro target: {TARGET} (0123456789abcdef) revision 1 connector 1.0.0"
+    monkeypatch.setattr(hooks, "start_bridge", lambda *args, **kwargs: bridge)
+    monkeypatch.setattr(hooks, "_retain_server_logs", lambda run: None)
+    monkeypatch.setattr(hooks, "_wait_for_rcon_command", lambda *args, **kwargs: ["help", "listplayers"])
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "Identified with Takaro"))
+    monkeypatch.setattr(hooks.checks, "find_line", lambda path, pattern: (1, stamp))
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert asyncio.run(hooks._check_identify(run, fake, bridge, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_reachability(run, fake, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_players(run, fake, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_console(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, bridge.alive))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", target=target, wanted=set())
+    failed = CannedSocket(
+        {
+            "testReachability": None,
+            "getPlayers": {"bad": True},
+            "executeConsoleCommand": None,
+            "sendMessage": {"success": True},
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks, "_wait_for_rcon_command", lambda *args, **kwargs: [])
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+
+    assert asyncio.run(hooks._check_identify(failed_run, failed, bridge, bridge.alive)).status == "fail"
+    assert asyncio.run(hooks._check_reachability(failed_run, failed, bridge.alive)).status == "fail"
+    assert asyncio.run(hooks._check_players(failed_run, failed, bridge.alive)).status == "fail"
+    assert asyncio.run(hooks._check_console(failed_run, failed)).status == "fail"
+    failed_run.bridge = bridge
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, bridge.alive)).status == "fail"
+    failed_run.bridge = None
+    assert asyncio.run(hooks._check_stop(failed_run, [{"path": "missing"}])).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, bridge.alive))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert set(check for check, _ in failed_run.skips) == set(hooks.CHECK_IDS)
+
+
 TARGET = "linux-25356024"
 APP = 443030
 CONTENT_DEPOT = "443032"
@@ -172,6 +247,18 @@ def test_catalog_validate_accepts_the_conan_target(run: Any) -> None:
     assert all(check["status"] == "pass" for check in rows), rows
 
 
+def test_catalog_validate_refuses_a_changed_conan_lockfile(run: Any, catalog_copy: Path) -> None:
+    lockfile = catalog_copy / "games/conan-exiles/bridge/package-lock.json"
+    lockfile.write_bytes(lockfile.read_bytes() + b"\n")
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code == 2
+    failure = next(check for check in payload["failures"] if check["id"] == "lockfile-pinned")
+    assert "expected ea07d7c7" in failure["detail"]
+    assert "actual " in failure["detail"]
+
+
 def test_targets_resolve_env_for_conan_exiles(run: Any) -> None:
     code, payload, _ = run("targets", "resolve", "--game", GAME, "--target", TARGET, "--prefix", "CONAN_EXILES")
 
@@ -191,6 +278,8 @@ def test_targets_resolve_env_for_conan_exiles(run: Any) -> None:
     assert env["CONAN_EXILES_IMAGE"].startswith("node:22.23.2-bookworm-slim@sha256:")
     assert env["CONAN_EXILES_DEP_WS_URL"].endswith("ws-8.21.0.tgz")
     assert len(env["CONAN_EXILES_DEP_WS_SHA256"]) == 64
+    assert env["CONAN_EXILES_LOCKFILE_PATH"].endswith("games/conan-exiles/bridge/package-lock.json")
+    assert env["CONAN_EXILES_LOCKFILE_SHA256"] == "ea07d7c7d65d57765279815990fd77ad74a0bef8c1cea326f05bd103f727c1b8"
     declared = payload["inputs"]["server"]["files"]
     assert env["CONAN_EXILES_LAUNCHER_SHA256"] == declared["ConanSandboxServer.sh"]["sha256"]
     assert env["CONAN_EXILES_SERVER_BINARY_SHA256"] == declared[SHIPPING]["sha256"]
@@ -762,6 +851,15 @@ def test_verify_hooks_know_the_conan_log_lines() -> None:
     assert hooks.RECONNECT_BUDGET >= 60.0
 
 
+def test_catalogue_exclusions_match_the_documented_fresh_save_limit() -> None:
+    readme = (REPO_ROOT / "games/conan-exiles/README.md").read_text(encoding="utf-8")
+    for check_id, readme_phrase in (("catalog-items", "item ids"), ("catalog-entities", "creature/actor classes")):
+        reason = hooks.UNSUPPORTED_CHECKS[check_id]
+        assert re.search(r"save database", reason, re.I)
+        assert "fresh save" in reason
+        assert f"only the {readme_phrase}" in readme
+
+
 def test_before_boot_writes_the_rcon_settings_the_server_reads(tmp_path: Path) -> None:
     class Run:
         data_dir = tmp_path
@@ -988,6 +1086,7 @@ def test_dev_servers_conan_functions_dispatch() -> None:
         assert completed.returncode == 0, f"{script.name}: {completed.stderr}"
 
     assert bash(". dev-servers/lib/common.sh; ds_target_prefix conan-exiles").strip() == "CONAN_EXILES"
+    assert bash(". dev-servers/lib/common.sh; ds_target_game conan-exiles").strip() == "conan-exiles"
     assert bash(". dev-servers/lib/common.sh; ds_target_dest conan-exiles").strip().endswith("/conan-exiles/server")
     for step in ("install", "deploy"):
         found = bash(f'. dev-servers/lib/common.sh; declare -F "{step}_conan_exiles" >/dev/null && echo yes')
@@ -1021,12 +1120,7 @@ def test_the_rig_runs_the_resolved_target_and_never_steamcmd() -> None:
 
 
 def test_the_server_container_gets_the_memory_and_the_user_the_adapter_asks_for(tmp_path: Path) -> None:
-    """``container_options`` was declared and never reached a ``docker run``.
-
-    The runner looked the hook up by name on the adapter and Conan's spelling was never
-    the one it looked for, so the server ran at the generic 3g cap and as root -- which is
-    how a Unreal dedicated server dies on its own saved world.
-    """
+    """The server container runs with the memory cap and the user ``container_options`` asks for."""
     import os
 
     from takaro_maint import paths
@@ -1054,8 +1148,8 @@ def test_the_stamp_line_the_harness_reads_is_the_one_the_bridge_writes() -> None
     """The contract is across two languages, so it has to be bound rather than restated.
 
     `hooks.STAMP_LINE` is a Python regex with named groups; the line it reads is built by
-    a TypeScript template. Renaming a word in either used to leave the other looking
-    correct, and `bridge-identify` would then report an unstamped bridge.
+    a TypeScript template. The test binds their literal text so a rename in either cannot
+    leave the other looking correct while `bridge-identify` reports an unstamped bridge.
     """
     source = (REPO_ROOT / "games/conan-exiles/bridge/src/targetStamp.ts").read_text(encoding="utf-8")
 

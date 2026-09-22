@@ -56,7 +56,15 @@ boat_shopkeeper	Boat Shopkeeper
 stables_shopkeeper	Stables Shopkeeper
 waterwell_shopkeeper	Water Well Shopkeeper
 missionprovider_bandit_a	Bandit Mission Provider A
+missionprovider_bandit_b	Bandit Mission Provider B
+missionprovider_fishing_a	Fishing Mission Provider A
+missionprovider_fishing_b	Fishing Mission Provider B
 missionprovider_floatingcity_a	Floating City Mission Provider A
+missionprovider_generic_a	Generic Mission Provider A
+missionprovider_outpost_a	Outpost Mission Provider A
+missionprovider_outpost_b	Outpost Mission Provider B
+missionprovider_stables_a	Stables Mission Provider A
+missionprovider_stables_b	Stables Mission Provider B
 missionprovider_test	Mission Provider (Test)
 missionprovider_tutorial	Mission Provider (Tutorial)
 apartment_security	Apartment Security

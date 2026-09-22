@@ -6,10 +6,8 @@
 # hard-codes a game build, a framework version, an image digest, a dependency URL or an
 # artifact name.
 #
-# This used to be seven byte-identical copies under `games/<g>/scripts/lib-target.sh`,
-# which meant a fix to the resolution -- the temporary env file that outlived a failure,
-# say -- landed in whichever copy the author happened to be in. Each of those files is now
-# a shim over this one, keeping its `<g>_*` names so no consumer changes.
+# Every game's `games/<g>/scripts/lib-target.sh` is a shim over this file, keeping its
+# `<g>_*` names so no consumer changes.
 
 takaro_repo_root() {
     (cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)

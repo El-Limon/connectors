@@ -92,9 +92,8 @@ esac
 
 
 # ── ds_write_target_env / ds_preflight_target ────────────────────────────────
-# The gate that decides whether the rig may boot a target-driven game at all, and the
-# resolve that writes the environment compose reads. Both call `ds_target`, both `ds_die`
-# on an answer they cannot act on, and neither had a test.
+# The gate decides whether the rig may boot a target-driven game, and the resolve writes
+# the environment compose reads. Both call `ds_target` and stop on an unusable answer.
 
 # A tree whose stub takaro-maint records its argv and answers per subcommand.
 gate_fixture() {

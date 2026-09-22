@@ -3,7 +3,7 @@
 #
 # Source it, do not run it. `terraria_resolve_target [target-id]` exports the TERRARIA_* keys
 # `takaro-maint targets resolve` produces, so no script here hard-codes a game build, a
-# an image digest, a dependency URL or an artifact name.
+# .NET SDK, an image digest, a dependency URL or an artifact name.
 #
 # The resolution itself is `scripts/lib/target.sh`, shared by every game; these are the
 # Terraria names for it, so nothing that sources this file has to change.

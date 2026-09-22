@@ -12,7 +12,7 @@
       "games/valheim/README.md (What works, what doesn't — last live run 2026-09-02 on Valheim 1.0.7, server plugin only)",
       "isolated takaro-maint verify on this exact pin (startup, identify, catalogue, console action, reconnect, stop)"
     ],
-    "notes": "Exact Steam pin of the public head at declaration time (buildid 25390671). The Windows depot 896662 of the same build is manifest 5870415687802853524; it is recorded here for compile-reference recovery only and is never installed. Companion (graphical client) behaviour is NOT covered by takaro-maint verify: a verification run boots a dedicated server, where the companion never loads. The only companion evidence is the recorded client run in COMPANION.md and no target claims it. Runtime CI onboarding is a separate issue."
+    "notes": "Exact Steam pin of the public head at declaration time (buildid 25390671). The Windows depot 896662 of the same build is manifest 5870415687802853524; it is recorded here for compile-reference recovery only and is never installed. Companion (graphical client) behaviour is NOT covered by takaro-maint verify: a verification run boots a dedicated server, where the companion never loads. The companion-client proof is recorded separately in COMPANION.md and is not a takaro-maint verification check. The only companion evidence is the recorded client run in COMPANION.md and no target claims it. Runtime CI onboarding is a separate issue."
   },
   "inputs": {
     "server": {
@@ -135,8 +135,7 @@
     "separate": [
       "startup",
       "action",
-      "reconnect",
-      "companion-client"
+      "reconnect"
     ]
   },
   "preserve": [

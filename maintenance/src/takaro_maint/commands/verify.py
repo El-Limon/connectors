@@ -32,7 +32,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--checks", default=None, help="comma-separated subset of the check ids (base ids plus the game's own)"
     )
     parser.add_argument("--parallel", type=int, default=1, help="targets to verify at once (only 1 today)")
-    parser.add_argument("--startup-timeout", type=float, default=300.0)
+    parser.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=None,
+        help="seconds allowed for startup (defaults to the game's budget, otherwise 300)",
+    )
     parser.add_argument("--takaro", default="local", choices=["local", "hosted"])
     parser.add_argument("--run-id", default="local", help="label and container-name suffix for this run")
     parser.add_argument(

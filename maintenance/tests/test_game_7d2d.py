@@ -6,6 +6,7 @@ build script, so the assertions are about what a maintainer, the rig and CI obse
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -17,6 +18,8 @@ from typing import Any
 import pytest
 
 import fake_depotdownloader as fake
+from fake_verify import CannedSocket, FakeRun
+from takaro_maint.commands.steam import selects
 from takaro_maint.games import adapter_for
 from takaro_maint.games.seven_days import verify as hooks
 from takaro_maint.publish.manifest import artifact_row, write_manifest, write_meta
@@ -26,6 +29,53 @@ GAME = "7d2d"
 VERSION = "0.1.6-dev.abc1234"
 ZIP_NAME = f"takaro-7d2d-mod-{TARGET}-{VERSION}.zip"
 MANAGED = "7DaysToDieServer_Data/Managed"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_every_7d2d_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = FakeRun(tmp_path)
+    fake = CannedSocket(
+        {"sendMessage": {"success": True}, "testReachability": {"connectable": True}, "shutdown": {}}, identify_count=1
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "line"))
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: (1, "Loaded Mod: Takaro 1.2.3"))
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert asyncio.run(hooks._check_handshake(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, fake, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", wanted=set())
+    failed_run.container = None
+    failed = CannedSocket(
+        {"sendMessage": RuntimeError("no action"), "testReachability": None, "shutdown": RuntimeError("closed")},
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+
+    assert asyncio.run(hooks._check_handshake(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_stop(failed_run, failed, [{"path": "missing"}])).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == {"handshake", "action", "reconnect", "stop"}
 
 
 @pytest.fixture
@@ -71,6 +121,15 @@ def test_targets_resolve_env_for_7d2d(run: Any) -> None:
     assert env["SEVEND2D_REFERENCES_DIR"].endswith(payload["fp16"])
     assert not any(key.endswith("_JAVA") for key in env)
     assert payload["resolvedUrls"]["server"].startswith("steam://app/294420/branch/public/")
+
+
+def test_builder_uses_the_resolved_toolchain() -> None:
+    dockerfile = (REPO_ROOT / "games/7d2d/Dockerfile.builder").read_text(encoding="utf-8")
+    compose = (REPO_ROOT / "games/7d2d/docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "ARG TOOLCHAIN\nFROM ${TOOLCHAIN}\n" in dockerfile
+    assert "mono:6.12.0.182-slim@sha256:" not in dockerfile
+    assert compose.count('TOOLCHAIN: "${SEVEND2D_TOOLCHAIN:?run scripts/setup-environment.sh first}"') == 2
 
 
 # -- steam pin ---------------------------------------------------------------------------
@@ -253,6 +312,34 @@ def test_steam_pin_write_records_the_branch_it_read(
     assert after["depots"][fake.DEPOT]["manifest"] == EXPERIMENTAL_MANIFEST
 
 
+def test_steam_pin_refuses_to_write_a_new_branch_without_its_build_id(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {fake.DEPOT: EXPERIMENTAL_MANIFEST}}}),
+    )
+    before = fake.read_target(repo)
+
+    code, payload, _ = run(
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--branch",
+        "latest_experimental",
+        "--write",
+        repo=repo,
+    )
+
+    assert code == 2, payload
+    assert "needs that head's build id" in payload["error"]
+    assert "--buildid or --metadata" in payload["error"]
+    assert fake.read_target(repo) == before
+
+
 def test_steam_pin_refuses_a_depot_subset_on_a_different_branch(
     run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -299,6 +386,34 @@ def test_steam_pin_reports_an_unavailable_manifest_as_upstream(
 
 def references(run: Any, repo: Path, dest: Path, *extra: str) -> tuple[int, Any, str]:
     return run("steam", "references", "--game", GAME, "--target", TARGET, "--dest", str(dest), *extra, repo=repo)
+
+
+@pytest.mark.parametrize(
+    ("relative", "selectors", "expected"),
+    [
+        ("Managed/Assembly-CSharp.dll", ["managed/assembly-csharp.DLL"], True),
+        ("Managed/Assembly-CSharp.dll", [r"regex:^managed/.*\.DLL$"], True),
+        ("Managed/Assembly-CSharp.dll", ["Managed"], False),
+        ("Managed/Assembly-CSharp.dll", ["Managed/Other.dll"], False),
+    ],
+)
+def test_reference_selectors_match_depotdownloaders_file_list_rules(
+    relative: str, selectors: list[str], expected: bool
+) -> None:
+    assert selects(relative, selectors) is expected
+
+
+def test_a_plain_reference_selector_naming_a_directory_matches_nothing(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    record = fake.read_target(repo)
+    record["build"]["references"] = [MANAGED]
+    fake.write_target(repo, record)
+
+    code, payload, _ = references(run, repo, tmp_path / "references")
+
+    assert code == 5, payload
+    assert "served no file matching" in payload["error"]
 
 
 def test_steam_references_downloads_only_the_subset_and_records_it(
@@ -643,12 +758,11 @@ def test_compat_record_carries_the_steam_pin(run: Any, repo: Path, tmp_path: Pat
 
 # -- the dev-servers split ---------------------------------------------------------------
 
-DS_ROOT = Path(__file__).resolve().parents[2] / "dev-servers"
+DS_ROOT = REPO_ROOT / "dev-servers"
 REGISTRY_FIXTURE = Path(__file__).parent / "fixtures" / "games" / "7d2d" / "dev-servers-registry.expected"
 
-# The one deliberate behaviour change in this PR: 7D2D's deployed artifact now depends on
-# its catalog target, so the target record is part of its source fingerprint. Everything
-# else in the registry has to come out of the split byte for byte.
+# 7D2D's deployed artifact depends on its catalog target, so the target record is part of
+# its source fingerprint. Everything else in the registry comes out of the split byte for byte.
 SEVEND2D_SOURCES = "games/7d2d/mod/src games/7d2d/mod/Takaro.csproj games/7d2d/mod/ModInfo.xml games/7d2d/version.txt"
 
 

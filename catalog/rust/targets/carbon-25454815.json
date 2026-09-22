@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "id": "carbon-25353106",
+  "id": "carbon-25454815",
   "game": "rust",
   "platform": "carbon",
-  "revision": "25353106",
+  "revision": "25454815",
   "default": true,
   "support": {
     "status": "candidate",
     "since": "2026-09-21",
     "evidence": [
-      "games/rust/README.md (What works, what doesn't \u2014 protocol harness on Carbon 2.0.259 / build 25353106, no client)"
+      "games/rust/README.md (What works, what doesn't — compile proof on Carbon 2.0.259 / build 25454815; protocol harness last run on build 25353106, no client)"
     ],
-    "notes": "Rust Dedicated Server public build 25353106 (2026-09-16) with Carbon production build v2.0.259 (protocol 2026.09.03.0, commit 21063e8, GitHub release asset id 547241271). Compile/load, identify, reachability, catalogues, console, broadcast, reconnect and shutdown are proven by takaro-maint verify with no client; player hooks and gameplay are not. Carbon's production_build tag is re-uploaded in place, so what pins these bytes is the recorded sha256/size, not the tag. Carbon publishes no machine-readable Rust-build compatibility, so a new Rust head is filed blocked-upstream until a target pinning a compatible Carbon lands. Runtime CI is #167; gameplay evidence #174."
+    "notes": "Rust Dedicated Server public build 25454815 (2026-09-22) with Carbon production build v2.0.259 (protocol 2026.09.03.0, commit 21063e8, GitHub release asset id 547241271). The current plugin compiles against this exact pair; load, identify, reachability, catalogues, console, broadcast, reconnect and shutdown were last proven by takaro-maint verify on build 25353106 with the same Carbon bytes and no client. Player hooks and gameplay are not proven. Carbon's production_build tag is re-uploaded in place, so what pins these bytes is the recorded sha256/size, not the tag. Carbon publishes no machine-readable Rust-build compatibility, so a new Rust head is filed blocked-upstream until a target pinning a compatible Carbon lands. Runtime CI is #167; gameplay evidence #174."
   },
   "inputs": {
     "server": {
@@ -20,18 +20,18 @@
       "hashOrigin": "self-recorded",
       "app": 258550,
       "branch": "public",
-      "buildid": 25353106,
+      "buildid": 25454815,
       "os": "linux",
       "arch": "64",
       "depots": {
         "258552": {
-          "manifest": "3352454092778561960",
-          "size": 813056402,
+          "manifest": "8780771730265493247",
+          "size": 813056674,
           "files": 720
         },
         "258554": {
-          "manifest": "4408100835840826754",
-          "size": 5064059850,
+          "manifest": "2040047463972636387",
+          "size": 5064067434,
           "files": 1278
         }
       },
@@ -45,19 +45,19 @@
           "size": 4952
         },
         "RustDedicated_Data/Managed/Assembly-CSharp.dll": {
-          "sha256": "22a20500e30ebebd9c648bcac199cd7bc5e37af524b0b64cf9a4c74eb857d01b",
+          "sha256": "e0e4e66229b2b792ea072ea8088fab143f8c46f37156cf314a88df29fa0b6a92",
           "size": 9754960
         },
         "RustDedicated_Data/Managed/Facepunch.Network.dll": {
-          "sha256": "568aa2009cd2798ca0f3278833bcc251e49f29dc0ee5942fc81ec48237d32302",
+          "sha256": "27dfe82b462f4cda263a0258fc44814847543baf410524db308607646c93fea5",
           "size": 122192
         },
         "RustDedicated_Data/Managed/Rust.Data.dll": {
-          "sha256": "e0843a657114b3229c6b9161d68bb03f5259ac81c66707be1a7bb23505ea04b8",
+          "sha256": "af17f865213afb4e08de5d3b1810469d6a48fdfb383719ccde1b2093bbfe11f1",
           "size": 2023248
         },
         "RustDedicated_Data/Managed/Rust.Global.dll": {
-          "sha256": "7da81515e138d6b702e59e3cecbc3296f62dcb51f7e645a0853a8b37c4b598e7",
+          "sha256": "c545e713e37a5fa9b834ceb6e4f1b91b9cb8cf87fd9a7ce161ac93d038ef762a",
           "size": 127824
         },
         "steam_appid.txt": {
@@ -120,7 +120,7 @@
   "components": [
     {
       "role": "plugin",
-      "artifact": "takaro-rust-plugin-carbon-25353106-{version}.cs",
+      "artifact": "takaro-rust-plugin-carbon-25454815-{version}.cs",
       "installDir": "takaro"
     }
   ],

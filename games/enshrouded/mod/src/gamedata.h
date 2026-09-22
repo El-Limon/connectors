@@ -8,7 +8,8 @@ struct ItemDef {
     uint16_t maxStack;   // ItemInfo.maxStackSize
     uint8_t pide;        // HasPIDE flag (unique item entity; count must be 1)
     const char* code;    // ItemInfo.debugName (stable identifier)
-    const char* name;    // code with '_' -> ' ' (localized names are not shipped with the server)
+    const char* name;    // what the generator bakes: code with '_' -> ' '; the catalogue answer
+                         // comes from names.cpp, because no localisation ships with the server
     const char* category;
     const char* rarity;
 };

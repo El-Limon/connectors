@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Compiles the connector's entity-name region on its own and runs it against the vectors
-# and the prefab list a real server returned.
+# Compiles the connector's entity-name and frame-summary regions on their own, then runs
+# them against the vectors, the prefab list a real server returned and secret-bearing frames.
 #
-# The region between `// takaro:names-begin` and `// takaro:names-end` in
-# mod/TakaroConnector.cs has no Rust, Carbon or Unity dependency, so it compiles as a
+# The marked regions in mod/TakaroConnector.cs have no Rust, Carbon or Unity dependency,
+# so they compile as a
 # plain console project inside the catalog target's pinned .NET SDK image -- which means
 # the names Takaro shows are asserted by running the shipped code, not by grepping it.
 #
@@ -27,19 +27,28 @@ mkdir -p "${WORK}" "_data/nuget"
 {
     echo 'using System;'
     echo 'using System.Collections.Generic;'
+    echo 'using System.Text;'
+    echo 'using Newtonsoft.Json.Linq;'
     echo
     echo 'internal static class Names'
     echo '{'
     sed -n '/\/\/ takaro:names-begin/,/\/\/ takaro:names-end/p' mod/TakaroConnector.cs
+    sed -n '/\/\/ takaro:frames-begin/,/\/\/ takaro:frames-end/p' mod/TakaroConnector.cs
     echo '    public static string EntityDisplayName(string shortName)'
     echo '    {'
     echo '        return EntityNames.EntityDisplayName(shortName);'
     echo '    }'
+    echo '    public static string SummarizeFrame(string message)'
+    echo '    {'
+    echo '        return FrameSummary(message);'
+    echo '    }'
     echo '}'
 } > "${WORK}/Names.cs"
 grep -q 'takaro:names-begin' "${WORK}/Names.cs" || { echo "error: the name region markers are gone from mod/TakaroConnector.cs" >&2; exit 5; }
+grep -q 'takaro:frames-begin' "${WORK}/Names.cs" || { echo "error: the frame region markers are gone from mod/TakaroConnector.cs" >&2; exit 5; }
 
 cp tests/names/Program.cs "${WORK}/Program.cs"
+cp tests/names/NewtonsoftStub.cs "${WORK}/NewtonsoftStub.cs"
 cp tests/names/names.tsv tests/names/entity-codes.txt "${WORK}/"
 
 cat > "${WORK}/Names.Tests.csproj" <<'CSPROJ'
@@ -55,6 +64,7 @@ cat > "${WORK}/Names.Tests.csproj" <<'CSPROJ'
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Names.cs" />
+    <Compile Include="NewtonsoftStub.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>
 </Project>

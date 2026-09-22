@@ -37,6 +37,5 @@
   "legacyAssetAliases": {
     "takaro-enshrouded-plugin.zip": "proton-1024233/server-plugin",
     "takaro-enshrouded-sidecar.zip": "proton-1024233/sidecar"
-  },
-  "devServers": {"composeFile": "enshrouded.yml"}
+  }
 }
