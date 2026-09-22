@@ -29,6 +29,9 @@ class GameHooks:
     #: The server log line that says the boot finished.
     ready_line: re.Pattern[str] = base_checks.DONE_LINE
 
+    #: How long this game normally needs to reach its ready line; the CLI may override it.
+    startup_timeout: float | None = None
+
     #: Check ids this game adds to the base ladder.
     check_ids: tuple[str, ...] = ()
 

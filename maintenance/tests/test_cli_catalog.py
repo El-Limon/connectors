@@ -268,6 +268,18 @@ def test_a_launcher_path_must_be_derivable(run: Any, catalog_copy: Path) -> None
     assert "launcher-path-derivable" in failures(payload)
 
 
+def test_a_separate_verification_claim_must_name_a_real_check(run: Any, catalog_copy: Path) -> None:
+    record = read_target(catalog_copy)
+    record["verification"]["separate"].append("not-a-verification-check")
+    write_target(catalog_copy, record)
+
+    code, payload, _ = run("catalog", "validate", repo=catalog_copy)
+
+    assert code == 2
+    failure = next(check for check in payload["failures"] if check["id"] == "separate-names-checks")
+    assert "not-a-verification-check" in failure["detail"]
+
+
 def test_online_validation_passes_against_matching_upstream(run: Any, wired: Any) -> None:
     code, payload, _ = run("catalog", "validate", "--online", repo=wired.root)
 

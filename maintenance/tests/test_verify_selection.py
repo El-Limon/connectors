@@ -112,6 +112,26 @@ def test_one_targets_default_does_not_narrow_the_next_ones(tmp_path: Path) -> No
         second.cleanup()
 
 
+def test_startup_budget_prefers_the_cli_then_the_game_then_the_common_default(tmp_path: Path) -> None:
+    from takaro_maint.verify.runner import RunOptions
+
+    terraria = _run("terraria", tmp_path)
+    minecraft = _run("minecraft", tmp_path)
+    explicit = _run(
+        "terraria",
+        tmp_path,
+        RunOptions(artifacts=tmp_path / "dist", out=tmp_path / "out", run_id="selection", startup_timeout=12.0),
+    )
+    try:
+        assert terraria.startup_timeout == 900.0
+        assert minecraft.startup_timeout == 300.0
+        assert explicit.startup_timeout == 12.0
+    finally:
+        terraria.cleanup()
+        minecraft.cleanup()
+        explicit.cleanup()
+
+
 def test_every_dropped_check_says_why_and_what_stands_in_for_it(tmp_path: Path, capsys: Any) -> None:
     from takaro_maint.verify.runner import game_hooks
 

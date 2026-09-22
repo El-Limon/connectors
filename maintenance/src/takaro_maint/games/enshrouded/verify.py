@@ -911,7 +911,7 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
                     checks.wait_for_line,
                     run.out / "server-degraded.log",
                     READY_LINE,
-                    run.options.startup_timeout,
+                    run.startup_timeout,
                     container.alive,
                 )
             )

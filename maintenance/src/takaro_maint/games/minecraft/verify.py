@@ -201,7 +201,7 @@ async def run_hosted(
                 await asyncio.to_thread(
                     checks.check_startup,
                     run.server_log,
-                    run.options.startup_timeout,
+                    run.startup_timeout,
                     alive,
                     run.data_dir,
                     ledger_inputs,

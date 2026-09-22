@@ -215,7 +215,7 @@ class RunOptions:
     out: Path
     run_id: str
     labels: list[str] = field(default_factory=list)
-    startup_timeout: float = 300.0
+    startup_timeout: float | None = None
     only: list[str] | None = None
     keep_on_failure: bool = False
     negative: bool = False
@@ -302,6 +302,13 @@ class TargetRun:
     def ready_line(self) -> re.Pattern[str]:
         """The log line that says this game's server finished booting."""
         return self.hooks.ready_line
+
+    @property
+    def startup_timeout(self) -> float:
+        """The explicit CLI budget, then the game's own budget, then the common default."""
+        if self.options.startup_timeout is not None:
+            return self.options.startup_timeout
+        return self.hooks.startup_timeout or 300.0
 
     def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
         takaro_env = self.takaro_env(ws_url, extra_env)
@@ -430,6 +437,17 @@ class TargetRun:
         """Use a game's declared reason when its default selection drops a check."""
         return self.hooks.unsupported_checks.get(check_id, "not selected by --checks")
 
+    def _skip_after_startup_failure(self) -> None:
+        """Record the unattempted ladder without turning one failed boot into many failures."""
+        reason = "startup did not complete; see the startup check"
+        recorded = {result.id for result in self.results}
+        for check_id in (*CHECK_IDS[2:], *self.hooks.check_ids):
+            if check_id not in recorded:
+                self.skip(check_id, reason)
+                recorded.add(check_id)
+        if self.options.negative and "negative-wrong-target" not in recorded:
+            self.skip("negative-wrong-target", reason)
+
     async def run(self) -> dict[str, Any]:
         started_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         try:
@@ -473,7 +491,7 @@ class TargetRun:
                     await asyncio.to_thread(
                         base_checks.check_startup,
                         self.server_log,
-                        self.options.startup_timeout,
+                        self.startup_timeout,
                         alive,
                         self.data_dir,
                         ledger_inputs,
@@ -483,69 +501,75 @@ class TargetRun:
             else:
                 self.skip("startup", self.not_selected_reason("startup"))
 
-            identity = await asyncio.to_thread(self._scan_runtime_identity)
-            runtime = {
-                "gameVersion": identity.get("gameVersion"),
-                "loader": identity.get("loader"),
-                "loaderVersion": identity.get("loaderVersion"),
-                "java": self.target.record["runtime"]["java"],
-            }
-
-            if self.wanted("connector-load"):
-                self.record(
-                    await asyncio.to_thread(base_checks.check_connector_load, self.server_log, self.target, 120, alive)
-                )
+            startup_failed = any(result.id == "startup" and result.status == "fail" for result in self.results)
+            if startup_failed:
+                self._skip_after_startup_failure()
             else:
-                self.skip("connector-load", self.not_selected_reason("connector-load"))
+                identity = await asyncio.to_thread(self._scan_runtime_identity)
+                runtime = {
+                    "gameVersion": identity.get("gameVersion"),
+                    "loader": identity.get("loader"),
+                    "loaderVersion": identity.get("loaderVersion"),
+                    "java": self.target.record["runtime"]["java"],
+                }
 
-            if self.wanted("identify"):
-                self.record(await base_checks.check_identify(fake, self.server_log, 180, alive))
-            else:
-                self.skip("identify", self.not_selected_reason("identify"))
-
-            for check_id, coroutine in (
-                ("heartbeat", lambda: base_checks.check_heartbeat(fake)),
-                ("players", lambda: base_checks.check_players(fake)),
-                (
-                    "catalog-items",
-                    lambda: base_checks.check_catalog(
-                        fake, "listItems", "catalog-items", ("minecraft:diamond_sword", "Diamond Sword")
-                    ),
-                ),
-                (
-                    "catalog-entities",
-                    lambda: base_checks.check_catalog(
-                        fake, "listEntities", "catalog-entities", ("minecraft:zombie", "Zombie")
-                    ),
-                ),
-                (
-                    "console",
-                    lambda: base_checks.check_console(
-                        fake, self.server_log, f"takaro-verify-{self.options.run_id}", alive
-                    ),
-                ),
-            ):
-                if self.wanted(check_id):
-                    self.record(await coroutine())
+                if self.wanted("connector-load"):
+                    self.record(
+                        await asyncio.to_thread(
+                            base_checks.check_connector_load, self.server_log, self.target, 120, alive
+                        )
+                    )
                 else:
-                    self.skip(check_id, self.not_selected_reason(check_id))
+                    self.skip("connector-load", self.not_selected_reason("connector-load"))
 
-            if self.hooks.after_protocol is not None:
-                await self.hooks.after_protocol(self, fake, alive)
-
-            if self.wanted("shutdown"):
-                self.record(await base_checks.check_shutdown(fake, container.wait_for_exit))
-            else:
-                self.skip("shutdown", self.not_selected_reason("shutdown"))
-
-            if self.hooks.after_shutdown is not None:
-                await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)
-
-            if self.options.negative:
-                if self.hooks.negative is not None:
-                    await self.hooks.negative(self, fake, ws_url, manifest)
+                if self.wanted("identify"):
+                    self.record(await base_checks.check_identify(fake, self.server_log, 180, alive))
                 else:
-                    self.skip("negative-wrong-target", f"game '{self.target.game}' ships no negative check")
+                    self.skip("identify", self.not_selected_reason("identify"))
+
+                for check_id, coroutine in (
+                    ("heartbeat", lambda: base_checks.check_heartbeat(fake)),
+                    ("players", lambda: base_checks.check_players(fake)),
+                    (
+                        "catalog-items",
+                        lambda: base_checks.check_catalog(
+                            fake, "listItems", "catalog-items", ("minecraft:diamond_sword", "Diamond Sword")
+                        ),
+                    ),
+                    (
+                        "catalog-entities",
+                        lambda: base_checks.check_catalog(
+                            fake, "listEntities", "catalog-entities", ("minecraft:zombie", "Zombie")
+                        ),
+                    ),
+                    (
+                        "console",
+                        lambda: base_checks.check_console(
+                            fake, self.server_log, f"takaro-verify-{self.options.run_id}", alive
+                        ),
+                    ),
+                ):
+                    if self.wanted(check_id):
+                        self.record(await coroutine())
+                    else:
+                        self.skip(check_id, self.not_selected_reason(check_id))
+
+                if self.hooks.after_protocol is not None:
+                    await self.hooks.after_protocol(self, fake, alive)
+
+                if self.wanted("shutdown"):
+                    self.record(await base_checks.check_shutdown(fake, container.wait_for_exit))
+                else:
+                    self.skip("shutdown", self.not_selected_reason("shutdown"))
+
+                if self.hooks.after_shutdown is not None:
+                    await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)
+
+                if self.options.negative:
+                    if self.hooks.negative is not None:
+                        await self.hooks.negative(self, fake, ws_url, manifest)
+                    else:
+                        self.skip("negative-wrong-target", f"game '{self.target.game}' ships no negative check")
         finally:
             await fake.stop()
             self.cleanup()

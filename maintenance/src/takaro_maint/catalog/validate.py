@@ -433,6 +433,21 @@ def _check_launcher_path(result: ValidationResult, target: Target) -> None:
     )
 
 
+def _check_separate_names(result: ValidationResult, target: Target) -> None:
+    """Every separately claimed proof names a check the verifier can actually run."""
+    from ..verify.runner import check_ids
+
+    file = _relative(target.path)
+    declared = target.record.get("verification", {}).get("separate", [])
+    unknown = sorted(set(declared) - set(check_ids(target.game)))
+    result.add(
+        "separate-names-checks",
+        not unknown,
+        f"unknown verification.separate entries: {unknown}" if unknown else "every separate entry names a check",
+        file,
+    )
+
+
 def _guarded(result: ValidationResult, check_id: str, file: str, run: Any) -> None:
     """A malformed record must fail its check, not crash the validator."""
     try:
@@ -463,6 +478,7 @@ def validate_catalog(catalog: Catalog, *, online: bool = False, cache: Path | No
         ("deps-consistent", _check_deps_consistent),
         ("maven-path-derivable", _check_maven_path),
         ("launcher-path-derivable", _check_launcher_path),
+        ("separate-names-checks", _check_separate_names),
     )
     for target in catalog.all_targets():
         file = _relative(target.path)
