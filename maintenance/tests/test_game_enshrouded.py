@@ -12,6 +12,7 @@ signature self-check and the sidecar's socket -- are covered here by their *clas
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -632,6 +633,117 @@ def test_a_health_document_that_is_not_shaped_like_one_fails_rather_than_raises(
     empty = hooks.classify_health({"status": "ok", "gameBuild": "1024233", "capabilities": {}}, "1024233")
     assert empty["ok"] is False
     assert any("no capabilities" in problem for problem in empty["problems"])
+
+
+def test_action_requires_an_explicit_success_answer(tmp_path: Path) -> None:
+    """Transport success alone is not enough: the action's answer must say it worked."""
+
+    class Run:
+        class Options:
+            run_id = "answer"
+
+        options = Options()
+
+    class Fake:
+        def __init__(self, answer: Any) -> None:
+            self.answer = answer
+
+        async def request(self, action: str, params: Any) -> Any:
+            assert action == "sendMessage"
+            assert params == {"message": "takaro-verify-answer-action"}
+            return self.answer
+
+    passed = asyncio.run(hooks._check_action(Run(), Fake({"success": True})))
+    assert passed.status == "pass"
+
+    for answer in ({"success": False}, {"result": "ok"}, None):
+        failed = asyncio.run(hooks._check_action(Run(), Fake(answer)))
+        assert failed.status == "fail"
+        assert repr(answer) in " ".join(failed.detail["problems"])
+
+
+def _degraded_resolved() -> dict[str, Any]:
+    record = _record()
+    return {
+        **record,
+        "fp16": "0123456789abcdef",
+        "toolchainRef": ids.container_ref(record["build"]["toolchain"]),
+    }
+
+
+def test_degraded_plugin_build_uses_the_resolved_builder_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The negative build uses the target's pinned toolchain and carries its corrupt signature."""
+    repo = tmp_path / "repo"
+    mod = repo / "games" / "enshrouded" / "mod"
+    mod.mkdir(parents=True)
+    out = tmp_path / "out"
+    out.mkdir()
+    calls = tmp_path / "docker-calls.txt"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$DOCKER_CALLS"\n'
+        "if [[ $1 == run ]]; then\n"
+        '  mkdir -p "$TEST_REPO/games/enshrouded/mod/build-debug"\n'
+        '  printf dll > "$TEST_REPO/games/enshrouded/mod/build-debug/dbghelp.dll"\n'
+        "fi\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    monkeypatch.setenv("TAKARO_MAINT_DOCKER", str(docker))
+    monkeypatch.setenv("DOCKER_CALLS", str(calls))
+    monkeypatch.setenv("TEST_REPO", str(repo))
+
+    built = hooks._build_degraded(mod, "", "addComponent", out, _degraded_resolved())
+
+    assert built.read_bytes() == b"dll"
+    argv = calls.read_text(encoding="utf-8")
+    image = "takaro-enshrouded-builder:0123456789abcdef"
+    assert f"TOOLCHAIN={_degraded_resolved()['toolchainRef']}" in argv
+    assert f"-t {image}" in argv
+    assert f"DEBUG_CORRUPT_SIG=addComponent -v {repo}:/repo" in argv
+    assert f"{image} bash -euo pipefail -c ./mod/build.sh" in argv
+
+
+def test_degraded_plugin_builder_failure_is_recorded_not_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a host Zig, a builder failure is a failed check with its build log."""
+    docker = tmp_path / "docker-fails"
+    docker.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    docker.chmod(0o755)
+    monkeypatch.setenv("TAKARO_MAINT_DOCKER", str(docker))
+    monkeypatch.delenv("TAKARO_MAINT_ZIG", raising=False)
+
+    class Target:
+        record = _record()
+
+    class Run:
+        target = Target()
+        resolved = _degraded_resolved()
+        data_dir = tmp_path / "data"
+        out = tmp_path / "out"
+
+        def __init__(self) -> None:
+            self.results: list[Any] = []
+            self.out.mkdir()
+
+        def wanted(self, check: str) -> bool:
+            return check == "negative-degraded-hooks"
+
+        def record(self, result: Any) -> None:
+            self.results.append(result)
+
+        def skip(self, check: str, reason: str) -> None:
+            raise AssertionError(f"{check} was skipped: {reason}")
+
+    run = Run()
+    asyncio.run(hooks.negative(run, object(), "ws://unused", {}))
+
+    assert len(run.results) == 1
+    assert run.results[0].status == "fail"
+    assert "plugin-degraded-build.log" in " ".join(run.results[0].detail["problems"])
+    assert (run.out / "plugin-degraded-build.log").is_file()
 
 
 def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Path) -> None:

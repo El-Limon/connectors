@@ -646,6 +646,8 @@ async def _check_action(run: Any, fake: Any) -> checks.CheckResult:
             result = await fake.request("sendMessage", {"message": marker})
         except Exception as exc:  # noqa: BLE001 - reported as a check failure
             problems.append(f"sendMessage failed: {exc}")
+        if not isinstance(result, dict) or result.get("success") is not True:
+            problems.append(f"sendMessage returned {result!r}, expected success true")
     return checks.CheckResult(
         "action",
         "pass" if not problems else "fail",
@@ -881,9 +883,6 @@ async def negative(run: Any, fake: Any, ws_url: str, manifest: dict[str, Any]) -
         run.skip("negative-degraded-hooks", "not selected by --checks")
         return
     zig = os.environ.get("TAKARO_MAINT_ZIG") or ""
-    if not zig or not Path(zig).is_file():
-        run.skip("negative-degraded-hooks", "no zig on this host (set TAKARO_MAINT_ZIG)")
-        return
     run.record(await _check_negative(run, fake, ws_url, zig))
 
 
@@ -901,7 +900,7 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
         reachable: Any = None
         ready = False
         try:
-            built = await asyncio.to_thread(_build_degraded, mod, zig, corrupted, run.out)
+            built = await asyncio.to_thread(_build_degraded, mod, zig, corrupted, run.out, run.resolved)
             dll.replace(kept)
             dll.write_bytes(built.read_bytes())
             os.chmod(dll, 0o644)
@@ -975,22 +974,89 @@ async def _check_negative(run: Any, fake: Any, ws_url: str, zig: str) -> checks.
     )
 
 
-def _build_degraded(mod: Path, zig: str, signature: str, out: Path) -> Path:
+def _build_degraded(mod: Path, zig: str, signature: str, out: Path, resolved: dict[str, Any]) -> Path:
     """The same plugin, built with one signature deliberately corrupted."""
-    completed = subprocess.run(
-        ["bash", str(mod / "build.sh")],
-        cwd=str(mod),
-        capture_output=True,
-        text=True,
-        env={**os.environ, "ZIG": zig, "DEBUG_CORRUPT_SIG": signature},
-        check=False,
-    )
-    (out / "plugin-degraded-build.log").write_text(completed.stdout + completed.stderr, encoding="utf-8")
-    if completed.returncode != 0:
-        raise RuntimeError(f"mod/build.sh (DEBUG_CORRUPT_SIG={signature}) exited {completed.returncode}")
+    log = out / "plugin-degraded-build.log"
+    commands: list[tuple[list[str], dict[str, str] | None, Path]]
+    if zig and Path(zig).is_file():
+        commands = [
+            (
+                ["bash", str(mod / "build.sh")],
+                {**os.environ, "ZIG": zig, "DEBUG_CORRUPT_SIG": signature},
+                mod,
+            )
+        ]
+    else:
+        project = mod.parent
+        repo = project.parents[1]
+        zig_dep = resolved["build"]["deps"]["zig"]
+        image = f"takaro-enshrouded-builder:{resolved['fp16']}"
+        commands = [
+            (
+                [
+                    *docker_command(),
+                    "build",
+                    "-q",
+                    "-f",
+                    str(project / "Dockerfile.builder"),
+                    "--build-arg",
+                    f"TOOLCHAIN={resolved['toolchainRef']}",
+                    "--build-arg",
+                    f"ZIG_URL={zig_dep['resolvedCoordinate']}",
+                    "--build-arg",
+                    f"ZIG_SHA256={zig_dep['sha256']}",
+                    "-t",
+                    image,
+                    str(project),
+                ],
+                None,
+                project,
+            ),
+            (
+                [
+                    *docker_command(),
+                    "run",
+                    "--rm",
+                    "--user",
+                    f"{os.getuid()}:{os.getgid()}",
+                    "-e",
+                    "HOME=/tmp",
+                    "-e",
+                    "ZIG=/opt/zig/zig",
+                    "-e",
+                    f"DEBUG_CORRUPT_SIG={signature}",
+                    "-v",
+                    f"{repo}:/repo",
+                    "-w",
+                    "/repo/games/enshrouded",
+                    image,
+                    "bash",
+                    "-euo",
+                    "pipefail",
+                    "-c",
+                    "./mod/build.sh",
+                ],
+                None,
+                project,
+            ),
+        ]
+    transcripts: list[str] = []
+    for argv, env, cwd in commands:
+        completed = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        transcripts.append(f"$ {' '.join(argv)}\n{completed.stdout}{completed.stderr}")
+        log.write_text("\n".join(transcripts), encoding="utf-8")
+        if completed.returncode != 0:
+            raise RuntimeError(f"degraded plugin build exited {completed.returncode}; see {log.name}")
     built = mod / "build-debug" / PLUGIN_DLL
     if not built.is_file():
-        raise RuntimeError(f"{built} was not produced")
+        raise RuntimeError(f"{built} was not produced; see {log.name}")
     return built
 
 
