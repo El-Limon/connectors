@@ -210,6 +210,22 @@ def _copy_tree(source: Path, destination: Path) -> None:
         shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
 
 
+def _refuse_symlinked_path(root: Path, entry: Path, relative: str) -> None:
+    """Refuse a preserved entry reached through a symlink, or one that is a symlink."""
+    current = entry
+    while True:
+        if current.is_symlink():
+            raise IntegrityError(
+                f"preserved entry {relative!r} is a symlink; refusing to carry it into the new install"
+                if current == entry
+                else f"preserved entry {relative!r} is reached through the symlink "
+                f"{current.relative_to(root)}; refusing to carry it into the new install"
+            )
+        if current == root or current.parent == current:
+            return
+        current = current.parent
+
+
 def _copy_preserved(dest: Path, staging: Path, preserve: list[str]) -> list[str]:
     """Carry the entries a target preserves from the existing install into the new one."""
     kept: list[str] = []
@@ -220,6 +236,11 @@ def _copy_preserved(dest: Path, staging: Path, preserve: list[str]) -> list[str]
         source = _safe_join(dest, relative, field="preserve[]")
         if not source.exists():
             continue
+        # A preserved entry is carried by *copying*, so a symlink anywhere on the way to
+        # it -- or the entry itself -- would make the copy read whatever it points at and
+        # write those bytes into the new install as a real file. The operator's own
+        # `~/.ssh/id_ed25519` is not this game's server data, however the link got there.
+        _refuse_symlinked_path(dest, source, relative)
         target = _safe_join(staging, relative, field="preserve[]")
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.is_dir():
@@ -332,6 +353,9 @@ def install_exact(
     # The install that was in service, once it has been moved aside: whatever fails after
     # that point has to put it back.
     retired: Path | None = None
+    # Did the staged tree reach `dest`? On a fresh install there is nothing to retire, so
+    # a failure after the swap has to be undone by this flag rather than by `retired`.
+    went_live = False
     try:
         staging.mkdir(parents=True, exist_ok=True)
         for depot in sorted(spec.depots):
@@ -380,13 +404,14 @@ def install_exact(
             previous_path = None  # type: ignore[assignment]
             dest.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staging, dest)
+        went_live = True
         # The install is finished only once the directory can say what it is, so the ledger
         # is written inside the same protected window as the swap: a ledger that cannot be
         # written puts the install that was in service back rather than leaving the new tree
         # live under the old identity.
         ledger = _write_ledger(target, dest, spec, previous_data)
     except BaseException:
-        _restore_retired(dest, staging, retired)
+        _restore_retired(dest, staging, retired, went_live=went_live)
         shutil.rmtree(staging, ignore_errors=True)
         after = tree_hash(dest)
         if after == before:
@@ -407,14 +432,29 @@ def install_exact(
     }
 
 
-def _restore_retired(dest: Path, staging: Path, retired: Path | None) -> None:
+def _restore_retired(dest: Path, staging: Path, retired: Path | None, *, went_live: bool) -> None:
     """Put the install that was moved aside back into service after a failed swap.
 
     Called on every failure path, including the one where ``dest`` was never touched: with
     nothing retired there is nothing to undo. When the new tree did go live, it is moved
     back to the staging name first, so the caller's cleanup removes it.
+
+    On a *fresh* install there is nothing to retire, so a failure after the swap -- the
+    ledger write is inside the same window -- would otherwise leave the new tree live with
+    no ledger: a directory full of game files that cannot say which target it holds, which
+    every later run would read as an unknown install rather than as the failure it is.
     """
-    if retired is None or not retired.is_dir():
+    if retired is None:
+        if went_live and dest.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+            try:
+                os.replace(dest, staging)
+            except OSError as exc:
+                output.warn(f"could not remove the unfinished install at {dest} ({exc})")
+                return
+            output.warn(f"removed the unfinished install at {dest}")
+        return
+    if not retired.is_dir():
         return
     if dest.exists():
         shutil.rmtree(staging, ignore_errors=True)

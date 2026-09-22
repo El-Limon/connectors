@@ -434,3 +434,84 @@ def test_a_short_credential_is_still_kept_out_of_the_logs(
     log_text = (paths.cache_dir() / "steam" / "logs" / f"7d2d-{TARGET}.log").read_text()
     assert "hunt2" not in log_text
     assert "hunt2" not in stderr + json.dumps(payload)
+
+
+def test_a_preserved_entry_that_is_a_symlink_is_refused(run: Any, repo: Path, dd_log: Path, tmp_path: Path) -> None:
+    """A link where a preserved file used to be would copy the host file it points at.
+
+    `preserve` carries entries by copying, so whatever a link resolves to is read and
+    written into the new install as a real file. The operator's own secrets are not this
+    game's server data, however the link came to be there.
+    """
+    secret = tmp_path / "host-secret"
+    secret.write_text("the operator's private key", encoding="utf-8")
+
+    dest = tmp_path / "ServerFiles"
+    assert install(run, repo, dest)[0] == 0
+    config = dest / "sdtdserver.xml"
+    config.unlink(missing_ok=True)
+    config.symlink_to(secret)
+    before = tree_state(dest)
+
+    record = fake.read_target(repo)
+    record["inputs"]["server"]["buildid"] = record["inputs"]["server"]["buildid"] + 1
+    fake.write_target(repo, record)
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code == 5, payload
+    assert "symlink" in json.dumps(payload)
+    # The host file's bytes are nowhere under the tree, and the install is as it was.
+    for path in dest.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            assert b"the operator's private key" not in path.read_bytes(), path
+    assert tree_state(dest) == before
+
+
+def test_a_preserved_entry_reached_through_a_symlinked_directory_is_refused(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "Config.xml").write_text("the operator's private key", encoding="utf-8")
+
+    dest = tmp_path / "ServerFiles"
+    assert install(run, repo, dest)[0] == 0
+    (dest / "Takaro").mkdir(exist_ok=True)
+    shutil.rmtree(dest / "Takaro")
+    (dest / "Takaro").symlink_to(outside, target_is_directory=True)
+
+    record = fake.read_target(repo)
+    record["inputs"]["server"]["buildid"] = record["inputs"]["server"]["buildid"] + 1
+    fake.write_target(repo, record)
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code == 5, payload
+    assert "symlink" in json.dumps(payload)
+
+
+def test_a_fresh_install_that_cannot_write_its_ledger_leaves_nothing_behind(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no previous install there is nothing to restore, so the tree has to go.
+
+    The ledger write is inside the swap's protected window. On an upgrade a failure there
+    puts the retired install back; on a *fresh* install it used to leave the new tree live
+    with no ledger -- a directory full of game files that cannot say which target it holds,
+    which every later run reads as an unknown install rather than as the failure it is.
+    """
+    from takaro_maint.steam import install as steam_install
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(steam_install, "write_ledger", refuse)
+
+    dest = tmp_path / "ServerFiles"
+    code, payload, err = install(run, repo, dest)
+
+    assert code != 0, payload
+    assert "No space left on device" in f"{err}{json.dumps(payload)}"
+    assert not dest.exists(), sorted(p.name for p in dest.iterdir())
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("ServerFiles")) == []
