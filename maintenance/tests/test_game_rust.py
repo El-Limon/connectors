@@ -13,11 +13,13 @@ are about what a maintainer, the rig and CI observe.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -1011,3 +1013,120 @@ def test_a_failed_carbon_repair_leaves_the_install_and_its_ledger_intact(
     assert install(run, repo, dest)[0] == 0
     assert list(dest.parent.glob(f"{dest.name}.stale-ledger")) == []
     assert run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=repo)[0] == 0
+
+
+# ------------------------------------------------------------------- archive containment
+
+
+def _carbon_like_tar(path: Path, entries: list[tarfile.TarInfo], payloads: dict[str, bytes]) -> None:
+    """A gzip tarball shaped like the Carbon asset, carrying the given entries verbatim."""
+    with tarfile.open(path, "w:gz") as tar:
+        for info in entries:
+            if info.isreg():
+                data = payloads.get(info.name, b"")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            else:
+                tar.addfile(info)
+
+
+def _link(name: str, linkname: str, *, hard: bool) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.LNKTYPE if hard else tarfile.SYMTYPE
+    info.linkname = linkname
+    return info
+
+
+def _regular(name: str, data: bytes = b"x") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.REGTYPE
+    info.size = len(data)
+    return info
+
+
+def _members(tmp_path: Path, entries: list[tarfile.TarInfo], root: Path) -> list[tarfile.TarInfo]:
+    from takaro_maint.games.rust import _safe_members
+
+    archive = tmp_path / "carbon-under-test.tar.gz"
+    _carbon_like_tar(archive, entries, {})
+    with tarfile.open(archive, "r:gz") as tar:
+        return _safe_members(tar, root)
+
+
+def test_a_symlink_resolving_beside_the_install_is_refused(tmp_path: Path) -> None:
+    """`<root>-evil` is not inside `<root>`, however much of a string prefix it is.
+
+    The containment test this replaces compared resolved paths as strings, so a link
+    pointing at a sibling directory whose name merely starts with the install's name was
+    accepted -- and the extraction then wrote the operator's own files through it.
+    """
+    root = tmp_path / "install"
+    root.mkdir()
+    (tmp_path / "install-evil").mkdir()
+    (tmp_path / "install-evil" / "pwned.txt").write_text("host bytes", encoding="utf-8")
+
+    with pytest.raises(Exception) as caught:
+        _members(tmp_path, [_link("carbon/link", "../../install-evil/pwned.txt", hard=False)], root)
+
+    assert "outside the install directory" in str(caught.value)
+    assert (tmp_path / "install-evil" / "pwned.txt").read_text(encoding="utf-8") == "host bytes"
+    assert list(root.rglob("*")) == []
+
+
+def test_a_hard_link_is_resolved_against_the_archive_root_not_the_entry(tmp_path: Path) -> None:
+    """A hard link's target is archive-relative; resolving it per-directory hid escapes."""
+    root = tmp_path / "install"
+    root.mkdir()
+
+    with pytest.raises(Exception) as caught:
+        _members(tmp_path, [_link("carbon/managed/link", "../outside", hard=True)], root)
+
+    assert "outside the install directory" in str(caught.value)
+
+
+def test_a_link_inside_the_install_is_accepted(tmp_path: Path) -> None:
+    root = tmp_path / "install"
+    root.mkdir()
+
+    entries = [
+        _regular("carbon/managed/Carbon.dll"),
+        _link("carbon/managed/alias.dll", "Carbon.dll", hard=False),
+        _link("carbon/hard.dll", "carbon/managed/Carbon.dll", hard=True),
+    ]
+
+    assert [member.name for member in _members(tmp_path, entries, root)] == [
+        "carbon/managed/Carbon.dll",
+        "carbon/managed/alias.dll",
+        "carbon/hard.dll",
+    ]
+
+
+def test_an_escaping_link_in_the_carbon_asset_fails_the_install(
+    run: Any, repo: Path, dd_log: Path, upstream: Any, tmp_path: Path
+) -> None:
+    """End to end: a hostile asset exits 5 and writes nothing outside the install."""
+    outside = tmp_path / "rust_dedicated-evil"
+    outside.mkdir()
+    (outside / "pwned.txt").write_text("host bytes", encoding="utf-8")
+
+    hostile = tmp_path / "hostile-carbon.tar.gz"
+    _carbon_like_tar(
+        hostile,
+        [_regular("carbon/managed/Carbon.dll"), _link("carbon/escape", "../../rust_dedicated-evil", hard=False)],
+        {},
+    )
+    upstream.add_file(ASSET_PATH, hostile)
+    record = read_target(repo)
+    record["inputs"]["carbon"]["sha256"] = fake.sha256_of(hostile)
+    record["inputs"]["carbon"]["size"] = hostile.stat().st_size
+    write_target(repo, record)
+
+    dest = tmp_path / "rust_dedicated"
+    code, payload, _ = install(run, repo, dest)
+
+    assert code == 5, payload
+    assert "outside the install directory" in json.dumps(payload)
+    assert sorted(p.name for p in outside.iterdir()) == ["pwned.txt"]
+    assert (outside / "pwned.txt").read_text(encoding="utf-8") == "host bytes"
+    assert not dest.exists()
+    assert staging_siblings(dest) == []
