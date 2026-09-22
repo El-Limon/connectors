@@ -220,8 +220,8 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_one(
     issue = PROVIDER.presentation(head, "Enshrouded")
     assert issue is not None
     assert issue["title"] == "Enshrouded public: build 23999999 needs a target"
-    # `watch.readinessNote` was config nothing read: an Enshrouded build moving under the
-    # pinned code signatures is exactly the case the generic sentence gets wrong.
+    # `watch.readinessNote` is what the issue carries for a build moving under the pinned
+    # code signatures; the generic sentence would be wrong here.
     note = json.loads((repo / "catalog" / GAME / "game.json").read_text())["sources"]["steam"]["watch"]["readinessNote"]
     assert head.facts["readinessNote"] == note
     assert issue["readinessLines"] == [note]
@@ -656,7 +656,7 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
 
     # A bare `verify --game enshrouded` runs this target's own checks and nothing else: the
     # base protocol ladder watches the game container for a connector that is in the sidecar.
-    # The runner narrows the selection now, so what these hooks owe is the declaration.
+    # The runner narrows the selection; these hooks owe the declaration.
     declared = game_hooks("enshrouded")
     assert set(declared.unsupported_checks) == {
         "connector-load",
@@ -975,9 +975,14 @@ def _catalog(answers: dict[str, Any]) -> Any:
 
 
 def _derived_answers() -> dict[str, Any]:
-    """What the mod answers after names.cpp: items keep their baked name, the rest derive."""
+    """What the mod answers: every name derived from its template code by names.cpp."""
     return {
-        "listItems": [{"code": "Sword_Bronze", "name": "Sword Bronze"}],
+        "listItems": [
+            {"code": "Block_T3_Stone_CityWall_REWARD", "name": "Stone City Wall Reward (Tier 3)"},
+            {"code": "Food_T7_raw_fruit_Artichoke", "name": "Raw Fruit Artichoke (Tier 7)"},
+            {"code": "Weapon_T4_2H_GreatSwordEpic_01", "name": "2H Great Sword Epic (Tier 4)"},
+            {"code": "Z_Prop_NPC_Cat_Totem_DEPRECATED", "name": "NPC Cat Totem"},
+        ],
         "listEntities": [
             {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
             {"code": "Animal_Baby_T1_Goat", "name": "Baby Goat (Tier 1)"},
@@ -994,11 +999,11 @@ def test_the_catalog_check_passes_on_derived_display_names() -> None:
     result = _catalog(_derived_answers())
 
     assert result.status == "pass", result.detail["problems"]
-    assert result.detail["counts"] == {"listItems": 1, "listEntities": 3, "listLocations": 2}
+    assert result.detail["counts"] == {"listItems": 4, "listEntities": 3, "listLocations": 2}
 
 
 def test_the_catalog_check_fails_on_a_formatted_dev_code() -> None:
-    """`1 Player AG2` is what the old underscore-opening derivation put in front of an operator."""
+    """A name that is the code with its underscores opened is refused, not reported as a name."""
     answers = _derived_answers()
     answers["listEntities"] = [
         {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
@@ -1015,7 +1020,15 @@ def test_the_catalog_check_fails_on_a_formatted_dev_code() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["Cat Black AG2", "Baby T1 Goat", "Placement Helper Pet Cat", "Skeleton_Heavy", "8k Map Label Whitewind"],
+    [
+        "Cat Black AG2",
+        "Baby T1 Goat",
+        "Placement Helper Pet Cat",
+        "Skeleton_Heavy",
+        "8k Map Label deepforest Whitewind",
+        "01 Huntress Camp",
+        "Arrow Bone UNUSED",
+    ],
 )
 def test_every_predicate_the_corpus_test_asserts_is_asserted_on_the_live_answer(name: str) -> None:
     """The C++ test proves the shipped table; this proves the server did not regress past it."""
@@ -1037,3 +1050,66 @@ def test_an_item_name_that_is_still_a_dev_code_is_named() -> None:
     assert result.status == "fail"
     problems = " ".join(result.detail["problems"])
     assert "names are the code itself" in problems
+
+
+def test_an_item_name_that_still_carries_an_underscore_is_refused() -> None:
+    """The same predicate the C++ corpus test applies, applied to the live item answer."""
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Block_T3_Stone_CityWall", "name": "Stone_City_Wall"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    assert "listItems" in " ".join(result.detail["problems"])
+
+
+def test_an_item_name_that_is_the_opened_code_is_refused() -> None:
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Prop_Decoration_T5_Cupboard_Large", "name": "Prop Decoration T5 Cupboard Large"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "dev codes rather than display names" in problems
+
+
+@pytest.mark.parametrize("word", ["UNUSED", "hasbugs", "LVLXX", "TEST"])
+def test_the_item_noise_words_the_plugin_drops_are_refused_in_the_answer(word: str) -> None:
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Ammo_T5_Arrow_Bone", "name": f"Arrow Bone {word}"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail", word
+    assert "listItems" in " ".join(result.detail["problems"])
+
+
+@pytest.mark.parametrize("action", ["listItems", "listEntities", "listLocations"])
+def test_one_name_held_by_two_codes_fails_for_every_action(action: str) -> None:
+    """DistinctNames promises one name per code; a collision means that promise broke."""
+    answers = _derived_answers()
+    answers[action] = [
+        {"code": "Enemy_Scavenger_Melee01_Night_Patrol_Guard", "name": "Scavenger Melee Night Patrol Guard"},
+        {"code": "Enemy_Scavenger_Melee02_Night_Patrol_Guard", "name": "Scavenger Melee Night Patrol Guard"},
+    ]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert f"{action}: 1 names are shared by more than one code" in problems
+    assert "Scavenger Melee Night Patrol Guard <- Enemy_Scavenger_Melee01_Night_Patrol_Guard" in problems
+
+
+def test_two_rows_carrying_the_same_code_may_share_one_name() -> None:
+    """The entity table holds 979 rows for 977 codes; the duplicates are not a collision."""
+    answers = _derived_answers()
+    answers["listEntities"] = [
+        {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+        {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+    ]
+
+    result = _catalog(answers)
+
+    assert result.status == "pass", result.detail["problems"]

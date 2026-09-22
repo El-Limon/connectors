@@ -1136,9 +1136,14 @@ const std::string& ItemsJson() {
     static SrwLock l;
     Guard g(l);
     if (s.empty()) {
+        std::vector<const char*> codes;
+        codes.reserve(kItemCount);
+        for (size_t i = 0; i < kItemCount; i++) codes.push_back(kItems[i].code);
+        std::vector<std::string> names;
+        DistinctNames(NameKind::Item, codes.data(), codes.size(), names);
         s = "[";
         for (size_t i = 0; i < kItemCount; i++)
-            s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(kItems[i].code) + ",\"name\":" + JsonStr(kItems[i].name) +
+            s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(kItems[i].code) + ",\"name\":" + JsonStr(names[i]) +
                  ",\"description\":" + JsonStr(std::string(kItems[i].category) + ", " + kItems[i].rarity) +
                  ",\"itemId\":" + std::to_string(kItems[i].itemId) + ",\"maxStackSize\":" + std::to_string(kItems[i].maxStack) + "}";
         s += "]";
@@ -1151,10 +1156,15 @@ const std::string& EntitiesJson() {
     static SrwLock l;
     Guard g(l);
     if (s.empty()) {
+        std::vector<const char*> codes;
+        codes.reserve(kEntityCount);
+        for (size_t i = 0; i < kEntityCount; i++) codes.push_back(kEntities[i].code);
+        std::vector<std::string> names;
+        DistinctNames(NameKind::Entity, codes.data(), codes.size(), names);
         s = "[";
         for (size_t i = 0; i < kEntityCount; i++)
             s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(kEntities[i].code) + ",\"name\":" +
-                 JsonStr(DisplayName(kEntities[i].code, NameKind::Entity)) + ",\"type\":" + JsonStr(kEntities[i].type) + ",\"description\":" +
+                 JsonStr(names[i]) + ",\"type\":" + JsonStr(kEntities[i].type) + ",\"description\":" +
                  JsonStr(std::string("faction ") + kEntities[i].faction + ", family " + kEntities[i].family) + "}";
         s += "]";
     }
@@ -1166,12 +1176,17 @@ const std::string& LocationsJson() {
     static SrwLock l;
     Guard g(l);
     if (s.empty()) {
+        std::vector<const char*> codes;
+        codes.reserve(kLocationCount);
+        for (size_t i = 0; i < kLocationCount; i++) codes.push_back(kLocations[i].code);
+        std::vector<std::string> names;
+        DistinctNames(NameKind::Location, codes.data(), codes.size(), names);
         s = "[";
         char b[160];
         for (size_t i = 0; i < kLocationCount; i++) {
             auto& x = kLocations[i];
             snprintf(b, sizeof b, "\"position\":{\"x\":%.2f,\"y\":%.2f,\"z\":%.2f}", x.x, x.y, x.z);
-            s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(x.code) + ",\"name\":" + JsonStr(DisplayName(x.code, NameKind::Location)) +
+            s += std::string(i ? "," : "") + "{\"code\":" + JsonStr(x.code) + ",\"name\":" + JsonStr(names[i]) +
                  ",\"kind\":" +
                  JsonStr(x.kind) + (x.spawnType[0] ? ",\"spawnType\":" + JsonStr(x.spawnType) : std::string()) + "," + b + "}";
         }

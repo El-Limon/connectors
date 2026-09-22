@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Host-side tests with a tiny windows.h shim. Needs docker.
 #   state_test: log-line correlator (state.cpp)
-#   names_test: entity/location display names (names.cpp), vectors plus the whole gamedata table
+#   names_test: item/entity/location display names (names.cpp), vectors plus the whole gamedata table
 #   moderation_test: canKickBan admin-protection bypass helpers; set ENSHROUDED_EXE=<path to enshrouded_server.exe>
 #                    to also check the anchors against the pinned binary.
 set -euo pipefail

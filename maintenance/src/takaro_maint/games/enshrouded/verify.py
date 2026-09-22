@@ -495,24 +495,58 @@ async def _check_players(run: Any, fake: Any) -> checks.CheckResult:
 #: A dev token that has no business in a name an operator reads. The same set the mod's
 #: own corpus test asserts over ``kEntities``/``kLocations`` (``mod/tests/names_test.cpp``),
 #: applied here to what the running server actually answered.
-_DEV_TOKENS = frozenset({"ag2", "deprecated", "placement", "noui", "healthbar"})
+_DEV_TOKENS = frozenset(
+    {
+        "ag2",
+        "deprecated",
+        "depricated",
+        "placement",
+        "noui",
+        "healthbar",
+        "unused",
+        "hasbugs",
+        "test",
+        "lvlxx",
+    }
+)
 _BARE_TIER = re.compile(r"^[Tt]\d$")
 
 
 def _looks_like_a_dev_name(name: str, code: str) -> bool:
     """A template code handed back rather than a name, by the mod's own rules.
 
-    Entity and location names are derived from the codes, because the dedicated server
-    ships no localisation to read them from. That derivation is only worth anything if its
-    output is actually readable, so every predicate the C++ corpus test asserts over the
-    shipped table is asserted here over the live answer too -- otherwise a mod that
+    Item, entity and location names are all derived from the codes, because the dedicated
+    server ships no localisation to read them from. That derivation is only worth anything
+    if its output is actually readable, so every predicate the C++ corpus test asserts over
+    the shipped table is asserted here over the live answer too -- otherwise a mod that
     regressed to opening underscores would still pass this check.
     """
-    if not name or name[0] == " " or name[0].isdigit() or "_" in name:
+    if not name or name[0] == " " or "_" in name:
+        return True
+    words = name.split()
+    if words and words[0].isdigit():
+        return True
+    if any(word[:1].islower() for word in words):
         return True
     if name == code.replace("_", " "):
         return True
-    return any(word.lower() in _DEV_TOKENS or _BARE_TIER.match(word) for word in name.split())
+    return any(word.lower() in _DEV_TOKENS or _BARE_TIER.match(word) for word in words)
+
+
+def _shared_names(entries: list[Any]) -> list[tuple[str, list[str]]]:
+    """Names that two different codes both answer with, worst first.
+
+    The plugin derives one name per code and re-derives the colliding ones at a more
+    detailed level until they separate, so a collision in the live answer means the
+    derivation lost that guarantee and an operator can no longer tell two templates apart.
+    """
+    by_name: dict[str, list[str]] = {}
+    for entry in entries:
+        name, code = str(entry["name"]), str(entry["code"])
+        codes = by_name.setdefault(name, [])
+        if code not in codes:
+            codes.append(code)
+    return sorted(((n, c) for n, c in by_name.items() if len(c) > 1), key=lambda pair: (-len(pair[1]), pair[0]))
 
 
 async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
@@ -546,22 +580,16 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
                     f"{action}: {len(same)} of {len(entries)} names are the code itself, "
                     f"e.g. {', '.join(str(e['code']) for e in same[:3])}"
                 )
-            if action == "listItems":
-                # Items keep the name gen_gamedata.py baked into ItemDef::name, which is the
-                # code with its underscores opened. Deriving 3,609 item names is follow-up F1.
-                underscored = [e for e in entries if "_" in str(e["name"])]
-                if underscored:
-                    problems.append(
-                        f"{action}: {len(underscored)} of {len(entries)} names are still dev codes, "
-                        f"e.g. {', '.join(str(e['name']) for e in underscored[:3])}"
-                    )
-                continue
             offenders = [e for e in entries if _looks_like_a_dev_name(str(e["name"]), str(e["code"]))]
             if offenders:
                 problems.append(
                     f"{action}: {len(offenders)} of {len(entries)} names are dev codes rather than "
                     f"display names, e.g. " + ", ".join(f"{e['code']} -> {e['name']}" for e in offenders[:3])
                 )
+            shared = _shared_names(entries)
+            if shared:
+                examples = "; ".join(f"{name} <- {', '.join(codes)}" for name, codes in shared[:3])
+                problems.append(f"{action}: {len(shared)} names are shared by more than one code, e.g. {examples}")
     return checks.CheckResult(
         "sidecar-catalog",
         "pass" if not problems else "fail",
@@ -570,8 +598,9 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
             "counts": counts,
             "firstNames": samples,
             "note": (
-                "Enshrouded's `catalog-items`/`catalog-entities`; entity and location names are "
-                "derived from the template codes because the dedicated server ships no localisation"
+                "Enshrouded's `catalog-items`/`catalog-entities`; item, entity and location names "
+                "are derived from the template codes because the dedicated server ships no "
+                "localisation, and every distinct code gets a distinct name"
             ),
             "problems": problems,
         },
