@@ -197,6 +197,20 @@ def test_a_secret_in_the_environment_never_reaches_the_log(
 
 
 # -- the revision digest -------------------------------------------------------
+def test_a_pathologically_nested_app_info_is_a_failed_source_not_a_traceback(steam: Any) -> None:
+    """A `RecursionError` is not a `VdfError`, so it escaped `app_info` and exited 1."""
+    from takaro_maint.exit_codes import UPSTREAM, MaintError
+
+    deep = f'"{APP}"' + "\n{\n" + '"a"\n{\n' * 2000
+    (steam.root / f"{APP}.vdf").write_text(deep, encoding="utf-8")
+
+    with pytest.raises(MaintError) as caught:
+        steamcmd.app_info(APP, log=steam.tool_log)
+
+    assert caught.value.code == UPSTREAM
+    assert "nesting deeper than" in caught.value.message
+
+
 def test_the_manifest_digest_binds_the_whole_depot_set() -> None:
     one = steamcmd.manifest_digest({"294422": "1633674551820196085"})
     two = steamcmd.manifest_digest({"294422": "1633674551820196085", "294421": "1646211645575803407"})

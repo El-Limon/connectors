@@ -142,3 +142,22 @@ def test_dump_escapes_what_parse_unescapes() -> None:
     document = {"weird": {'a "key"': "tab\there\nand a \\ backslash"}}
 
     assert vdf.parse(vdf.dump(document)) == document
+
+
+# -- T-V6 a hostile document ---------------------------------------------------
+def test_nesting_deeper_than_the_limit_is_a_parse_error_not_a_recursion_error() -> None:
+    """A `RecursionError` escapes the parser: a traceback and exit 1, not a failed source."""
+    with pytest.raises(vdf.VdfError) as caught:
+        vdf.parse('"a"\n{\n' * 2000)
+
+    assert f"nesting deeper than {vdf.MAX_DEPTH} levels" in str(caught.value)
+
+
+def test_a_document_inside_the_limit_still_parses() -> None:
+    depth = 60
+    document = vdf.parse('"a"\n{\n' * depth + '"k" "v"\n' + "}\n" * depth)
+
+    inner = document
+    for _ in range(depth):
+        inner = inner["a"]  # type: ignore[assignment,index]
+    assert inner == {"k": "v"}

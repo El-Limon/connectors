@@ -86,6 +86,51 @@ def test_steam_pin_reports_the_head_and_flags_a_changed_manifest(run: Any, repo:
     assert "-manifest-only" in fake.argv_log(dd_log)[0]
 
 
+def test_a_stale_listing_left_in_the_output_directory_is_never_this_run_s_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dd_log: Path
+) -> None:
+    """A listing that was already there is a leftover, and reporting it re-pins the old build."""
+    from takaro_maint.exit_codes import UpstreamUnavailable
+    from takaro_maint.steam import depotdownloader as dd
+
+    for name, value in fake.environment(tmp_path, dd_log, FAKE_DD_ROOT=str(fake.DEPOTS)).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("FAKE_DD_NO_LISTING", "1")
+
+    out = tmp_path / "out"
+    stale = out / "depots" / fake.DEPOT / fake.PINNED_MANIFEST
+    stale.mkdir(parents=True)
+    (stale / f"manifest_{fake.DEPOT}_{fake.PINNED_MANIFEST}.txt").write_text("stale\n", encoding="utf-8")
+
+    with pytest.raises(UpstreamUnavailable) as caught:
+        dd.manifest_only(
+            fake.APP,
+            fake.DEPOT,
+            "public",
+            manifest=None,
+            os_="linux",
+            arch="amd64",
+            out=out,
+            cache=tmp_path / "cache",
+            log=tmp_path / "dd.log",
+        )
+
+    assert fake.DEPOT in caught.value.message
+
+
+def test_steam_pin_fails_rather_than_re_pinning_what_it_could_not_read(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = fake.read_target(repo)
+    monkeypatch.setenv("FAKE_DD_NO_LISTING", "1")
+
+    code, payload, _ = run("steam", "pin", "--game", GAME, "--target", TARGET, "--write", repo=repo)
+
+    assert code == 4, payload
+    assert fake.DEPOT in payload["error"]
+    assert fake.read_target(repo) == before, "a failed read leaves the record exactly as it was"
+
+
 def test_steam_pin_refuses_to_write_hashes_it_has_not_recorded(run: Any, repo: Path, dd_log: Path) -> None:
     code, payload, _ = run("steam", "pin", "--game", GAME, "--target", TARGET, "--write", repo=repo)
 
