@@ -11,7 +11,7 @@ from typing import Any
 from .. import net, output, paths
 from ..exit_codes import OK, ConflictError
 from ..games import adapter_for
-from ..install.ledger import read_ledger, write_ledger
+from ..install.ledger import artifacts_of, read_ledger, write_ledger
 from ..publish import read_manifest
 from . import add_selection_arguments, select_one
 
@@ -46,6 +46,7 @@ def _deploy(args: Any) -> int:
 
     deployed: list[dict[str, Any]] = []
     removed: list[str] = []
+    rows_by_role = {row["role"]: row for row in artifacts_of(ledger.data)}
     for component in target.record["components"]:
         role = component["role"]
         rows = [r for r in manifest["artifacts"] if r["role"] == role and r["target"] == target.id]
@@ -99,14 +100,25 @@ def _deploy(args: Any) -> int:
         deployed.append({"role": role, "path": relative, "sha256": row["sha256"]})
         output.info(f"deployed {relative} ({row['sha256'][:16]}…)")
 
+        # Every role this directory holds stays attested. A two-role game deploys twice,
+        # and a ledger that only ever remembered the last one left the other unguarded --
+        # `ledger check` could not tell a tampered first artifact from a good one. The
+        # ledger is rewritten after each role rather than once at the end, so a run that
+        # dies between roles still attests the ones that landed.
+        rows_by_role.update(
+            {
+                role: {
+                    "role": role,
+                    "path": relative,
+                    "sha256": row["sha256"],
+                    "connectorVersion": manifest["version"],
+                    "sourceRevision": manifest["sourceRevision"],
+                }
+            }
+        )
         data = dict(ledger.data)
-        data["artifact"] = {
-            "role": role,
-            "path": relative,
-            "sha256": row["sha256"],
-            "connectorVersion": manifest["version"],
-            "sourceRevision": manifest["sourceRevision"],
-        }
+        data["artifacts"] = [rows_by_role[key] for key in sorted(rows_by_role)]
+        data.pop("artifact", None)
         write_ledger(dest, data)
         ledger = read_ledger(dest)
         assert ledger is not None

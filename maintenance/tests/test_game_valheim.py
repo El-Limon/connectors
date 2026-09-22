@@ -699,7 +699,9 @@ def test_deploy_unpacks_the_plugin_and_parks_the_companion(run: Any, repo: Path,
     assert parked.is_file()
     assert not (dest / "takaro-companion" / "TakaroValheimCompanion").exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["role"] == "server-plugin"
+    by_role = {row["role"]: row["path"] for row in ledger["artifacts"]}
+    assert by_role["server-plugin"].endswith(PLUGIN_ZIP)
+    assert by_role["client-companion"].endswith(COMPANION_ZIP)
 
 
 def test_a_plugin_zip_with_a_second_top_level_folder_is_refused(

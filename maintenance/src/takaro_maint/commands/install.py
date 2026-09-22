@@ -14,7 +14,7 @@ from ..catalog.loader import resolve
 from ..exit_codes import OK, ConflictError, UsageError
 from ..games import adapter_for
 from ..install import plan_inputs
-from ..install.ledger import Ledger, check_ledger, read_ledger, write_ledger
+from ..install.ledger import Ledger, artifacts_of, check_ledger, read_ledger, write_ledger
 from ..install.staging import StagedInstall, is_protected
 from . import add_selection_arguments, select_one
 
@@ -59,9 +59,8 @@ def _superseded_paths(existing: Ledger | None, plans: list[Any], preserve: list[
         path = str(entry["path"])
         if path not in keep and not is_protected(path, preserve):
             stale.add(path)
-    artifact = existing.data.get("artifact")
-    if artifact and existing.fingerprint != fingerprint:
-        stale.add(str(artifact["path"]))
+    if existing.fingerprint != fingerprint:
+        stale.update(str(artifact["path"]) for artifact in artifacts_of(existing.data))
     return sorted(stale)
 
 
@@ -221,8 +220,10 @@ def _install(args: Any) -> int:
         },
         "world": {"revision": world_revision, "createdBy": target.id},
     }
-    if existing is not None and existing.data.get("artifact") and existing.fingerprint == target.fingerprint:
-        ledger["artifact"] = existing.data["artifact"]
+    if existing is not None and existing.fingerprint == target.fingerprint:
+        carried = artifacts_of(existing.data)
+        if carried:
+            ledger["artifacts"] = carried
     write_ledger(dest, ledger)
 
     output.emit(

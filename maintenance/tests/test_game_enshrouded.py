@@ -534,8 +534,9 @@ def test_deploy_places_the_dll_and_the_sidecar_folder_and_refuses_escapes(
     # The unpack stages beside the live folder and swaps; no staging is left behind.
     assert not [p.name for p in unpacked.parent.iterdir() if p.name.startswith(".")]
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    # The known core gap: `deploy` records only the last role it placed.
-    assert ledger["artifact"]["role"] == "sidecar"
+    by_role = {row["role"]: row["path"] for row in ledger["artifacts"]}
+    assert by_role["server-plugin"].endswith(PLUGIN_ZIP)
+    assert by_role["sidecar"].endswith(SIDECAR_ZIP)
 
     for broken in ({"escape": True}, {"no_dll": True}):
         shutil.rmtree(dest / "takaro" / "plugin")

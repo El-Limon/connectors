@@ -425,7 +425,75 @@ def test_deploy_unpacks_the_plugin_dll_and_the_bridge_folder_and_keeps_the_opera
     assert (dest / "bridge" / "TakaroTerrariaBridge" / "dist" / "index.js").read_text() == "bridge"
     assert config.read_bytes() == config_before
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"].endswith(BRIDGE_ZIP) or ledger["artifact"]["path"].endswith(PLUGIN_ZIP)
+    # Both roles are attested, each with the path it actually landed at.
+    by_role = {row["role"]: row["path"] for row in ledger["artifacts"]}
+    assert by_role["plugin"].endswith(PLUGIN_ZIP)
+    assert by_role["bridge"].endswith(BRIDGE_ZIP)
+
+
+def test_ledger_check_guards_every_deployed_role(run: Any, pinned: Any, tmp_path: Path) -> None:
+    """Both roles, not just the last one deployed, are what `ledger check` answers for.
+
+    A two-role game deploys twice, so a ledger that remembered only the final role left
+    the first artifact unattested: tampering with it, or deleting it, read as a clean
+    install.
+    """
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    bridge_zip(directory)
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+
+    def check() -> tuple[int, Any]:
+        code, payload, _ = run(
+            "ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=pinned.root
+        )
+        return code, payload
+
+    assert check()[0] == 0
+
+    ledger_file = dest / ".takaro" / "installed-target.json"
+    clean = ledger_file.read_bytes()
+    rows = {row["role"]: dest / row["path"] for row in json.loads(clean)["artifacts"]}
+    assert set(rows) == {"plugin", "bridge"}
+
+    for role, path in rows.items():
+        kept = path.read_bytes()
+        path.write_bytes(kept + b"tampered")
+        code, payload = check()
+        assert code == 7, (role, payload)
+        assert role in json.dumps(payload), (role, payload)
+        path.unlink()
+        code, payload = check()
+        assert code == 7, (role, payload)
+        assert role in json.dumps(payload) and "missing artifact" in json.dumps(payload), (role, payload)
+        path.write_bytes(kept)
+        assert check()[0] == 0, role
+
+
+def test_a_legacy_single_artifact_ledger_still_checks_and_is_upgraded(run: Any, pinned: Any, tmp_path: Path) -> None:
+    """Ledgers already on rigs carry one `artifact` object; they keep working."""
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    bridge_zip(directory)
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+
+    ledger_file = dest / ".takaro" / "installed-target.json"
+    data = json.loads(ledger_file.read_text(encoding="utf-8"))
+    legacy = [row for row in data.pop("artifacts") if row["role"] == "bridge"][0]
+    data["artifact"] = legacy
+    ledger_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    code, payload, _ = run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=pinned.root)
+    assert code == 0, payload
+
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+    upgraded = json.loads(ledger_file.read_text(encoding="utf-8"))
+    assert "artifact" not in upgraded
+    assert sorted(row["role"] for row in upgraded["artifacts"]) == ["bridge", "plugin"]
 
 
 @pytest.mark.parametrize("role", ["plugin", "bridge"])

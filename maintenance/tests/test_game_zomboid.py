@@ -522,7 +522,7 @@ def test_deploy_places_the_agent_and_a_stable_copy_and_removes_older_jars(
     assert not (dest / "Takaro" / "takaro-zomboid-agent-linux-42.20.4-0.9.0.jar").exists()
     assert not (dest / "Takaro" / "TakaroConnector-0.9.0.jar").exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"] == f"Takaro/{JAR_NAME}"
+    assert ledger["artifacts"][0]["path"] == f"Takaro/{JAR_NAME}"
 
 
 def test_deploy_into_a_directory_holding_another_fingerprint_is_refused(

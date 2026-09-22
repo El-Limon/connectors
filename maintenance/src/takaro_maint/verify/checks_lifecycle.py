@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import net, redact
-from ..install.ledger import ledger_path
+from ..install.ledger import artifacts_of, ledger_path
 from . import checks
 
 CHECK_IDS = ("reconnect", "restart", "negative-wrong-target", "hosted-registration")
@@ -234,7 +234,8 @@ async def check_negative_wrong_target(
 
     with checks._Timer() as timer:
         ledger = json.loads(ledger_path(run.data_dir).read_text(encoding="utf-8"))
-        deployed = run.data_dir / ledger["artifact"]["path"]
+        # The role under test is the one whose artifact the sibling manifest row names.
+        deployed = run.data_dir / artifacts_of(ledger)[0]["path"]
         aside = run.data_dir / ".takaro" / "negative-aside"
         aside.mkdir(parents=True, exist_ok=True)
         shutil.move(str(deployed), str(aside / deployed.name))

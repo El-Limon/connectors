@@ -298,7 +298,7 @@ def test_deploy_unpacks_the_mod_folder_and_removes_older_zips(
     assert VERSION in (dest / "Mods" / "Takaro" / "ModInfo.xml").read_text()
     assert not (dest / "Mods" / "takaro-7d2d-mod-linux-3.2.0.b10-0.1.5.zip").exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"] == f"Mods/{ZIP_NAME}"
+    assert ledger["artifacts"][0]["path"] == f"Mods/{ZIP_NAME}"
 
 
 def test_a_zip_that_escapes_the_mod_folder_is_refused(run: Any, repo: Path, dd_log: Path, tmp_path: Path) -> None:

@@ -606,7 +606,7 @@ def test_deploy_unpacks_the_bridge_folder_and_removes_older_zips(
     assert json.loads((unpacked / "takaro-target.json").read_text())["target"] == TARGET
     assert not stale.exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"] == f"{INSTALL_DIR}/{ZIP_NAME}"
+    assert ledger["artifacts"][0]["path"] == f"{INSTALL_DIR}/{ZIP_NAME}"
 
 
 def test_deploy_keeps_the_operators_config_and_drops_the_previous_release(

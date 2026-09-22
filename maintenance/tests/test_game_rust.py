@@ -569,7 +569,7 @@ def test_deploy_installs_the_plugin_as_takaroconnector_cs_and_removes_stale_vers
     assert not stale.exists()
     ledger = read_ledger(dest)
     assert ledger is not None
-    assert ledger.data["artifact"]["path"] == f"takaro/{ARTIFACT}"
+    assert ledger.data["artifacts"][0]["path"] == f"takaro/{ARTIFACT}"
     assert run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=repo)[0] == 0
 
     # A build for a target this directory does not hold is refused, and writes nothing.

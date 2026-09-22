@@ -27,8 +27,10 @@ from pathlib import Path
 from typing import Any
 
 from ... import output
-from ...install.ledger import read_ledger
+from ...install.ledger import artifacts_of, read_ledger
 from ...verify import checks, checks_lifecycle
+
+PLUGIN_ROLE = "plugin"
 
 CHECK_IDS = ("carbon-compile", "items", "entities", "action", "reconnect", "stop")
 
@@ -101,8 +103,9 @@ def _deployed_version(run: Any) -> str | None:
     ledger = read_ledger(run.data_dir)
     if ledger is None:
         return None
-    artifact = ledger.data.get("artifact") or {}
-    version = artifact.get("connectorVersion")
+    # Rust has one component role; its row is the plugin's.
+    rows = [row for row in artifacts_of(ledger.data) if row.get("role") == PLUGIN_ROLE]
+    version = rows[0].get("connectorVersion") if rows else None
     return plugin_version(str(version)) if version else None
 
 

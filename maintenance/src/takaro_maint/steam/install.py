@@ -21,7 +21,7 @@ from typing import Any
 
 from .. import __version__, net, output
 from ..exit_codes import ConflictError, IntegrityError, UsageError
-from ..install.ledger import read_ledger, write_ledger
+from ..install.ledger import artifacts_of, read_ledger, write_ledger
 from . import depotdownloader as dd
 
 COMPLETE_MARKER = Path(".takaro") / "complete.json"
@@ -264,8 +264,10 @@ def _write_ledger(target: Any, dest: Path, spec: SteamInput, previous: dict[str,
         },
         "world": {"revision": target.revision, "createdBy": target.id},
     }
-    if previous and previous.get("artifact") and previous.get("fingerprint") == target.fingerprint:
-        ledger["artifact"] = previous["artifact"]
+    if previous and previous.get("fingerprint") == target.fingerprint:
+        carried = artifacts_of(previous)
+        if carried:
+            ledger["artifacts"] = carried
     write_ledger(dest, ledger)
     return ledger
 
