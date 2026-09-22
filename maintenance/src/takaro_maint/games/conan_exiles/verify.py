@@ -50,8 +50,16 @@ UNSUPPORTED_CHECKS = {
     "identify": ("the bridge identifies from its own process; `bridge-identify` asserts that frame"),
     "heartbeat": ("the bridge answers Takaro, not the game server; `bridge-reachability` asserts it"),
     "players": ("the player list comes from the bridge's RCON poll; `bridge-players` asserts it"),
-    "catalog-items": ("spot-checks a Minecraft item id; Conan Exiles ships no item catalogue over this protocol"),
-    "catalog-entities": ("spot-checks a Minecraft entity id; Conan Exiles ships no entity catalogue here"),
+    "catalog-items": (
+        "spot-checks a Minecraft item id; the bridge lists only the item templates already in the save database "
+        "(README, warning row), and a verification server's fresh save holds none — the display names are asserted "
+        "in the bridge suite"
+    ),
+    "catalog-entities": (
+        "spot-checks a Minecraft entity id; the bridge lists only the actor classes already in the save database "
+        "(README, warning row), and a verification server's fresh save holds none — the display names are asserted "
+        "in the bridge suite"
+    ),
     "console": ("the base console check drives a Minecraft command; `bridge-console` drives an RCON one"),
 }
 

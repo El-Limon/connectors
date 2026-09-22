@@ -776,6 +776,15 @@ def test_verify_hooks_know_the_conan_log_lines() -> None:
     assert hooks.RECONNECT_BUDGET >= 60.0
 
 
+def test_catalogue_exclusions_match_the_documented_fresh_save_limit() -> None:
+    readme = (REPO_ROOT / "games/conan-exiles/README.md").read_text(encoding="utf-8")
+    for check_id, readme_phrase in (("catalog-items", "item ids"), ("catalog-entities", "creature/actor classes")):
+        reason = hooks.UNSUPPORTED_CHECKS[check_id]
+        assert re.search(r"save database", reason, re.I)
+        assert "fresh save" in reason
+        assert f"only the {readme_phrase}" in readme
+
+
 def test_before_boot_writes_the_rcon_settings_the_server_reads(tmp_path: Path) -> None:
     class Run:
         data_dir = tmp_path
@@ -1036,12 +1045,7 @@ def test_the_rig_runs_the_resolved_target_and_never_steamcmd() -> None:
 
 
 def test_the_server_container_gets_the_memory_and_the_user_the_adapter_asks_for(tmp_path: Path) -> None:
-    """``container_options`` was declared and never reached a ``docker run``.
-
-    The runner looked the hook up by name on the adapter and Conan's spelling was never
-    the one it looked for, so the server ran at the generic 3g cap and as root -- which is
-    how a Unreal dedicated server dies on its own saved world.
-    """
+    """The server container runs with the memory cap and the user ``container_options`` asks for."""
     import os
 
     from takaro_maint import paths
