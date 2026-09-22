@@ -17,6 +17,14 @@ dev-version connector:
 maint *args:
     ./maintenance/bin/takaro-maint {{args}}
 
+# Build the pinned maintenance tool container (uv + managed Python 3.12 + steamcmd + DepotDownloader)
+maint-container-build tag='takaro-maint:local':
+    docker build --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" -t {{tag}} -f maintenance/Dockerfile maintenance
+
+# Run takaro-maint inside the tool container against this checkout; credentials pass through from the environment by name only
+maint-container *args:
+    docker run --rm -v "$PWD:/repo" -e GH_TOKEN -e TAKARO_MAINT_REPO -e TAKARO_MAINT_GITHUB_API_URL $(env | grep -oE '^TAKARO_MAINT_STEAM_BRANCH_PASSWORD__[A-Za-z0-9_]+' | sed 's/^/-e /') takaro-maint:local {{args}}
+
 # Build the Rust connector release artifact locally into <out-dir>
 build-release-rust version out-dir='dist':
     ./games/rust/scripts/build-release.sh {{version}} {{out-dir}}

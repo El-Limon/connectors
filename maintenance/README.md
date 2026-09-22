@@ -44,6 +44,7 @@ frozen, managed Python 3.12 environment. Docker is needed for `verify` and for
 | `artifact validate --game G --target ID FILE…` | Does this file carry that target's identity? |
 | `deploy --game G [--target ID] --dest DIR --from build-manifest.json` | Put the built artifact into an installed game directory and record it in the ledger. |
 | `verify --game G [--target ID] --artifacts DIR --out DIR` | Boot the target in a container against a local fake Takaro and run the checks; writes a verification report. |
+| `dashboard show [--game G] [--format json\|table] [--out FILE]` | Read the maintenance dashboard: last success, per-source outcome and heads, filed work, and a derived health. |
 | `docs render --game G [--write]` | Regenerate the target table in `games/<g>/README.md`. |
 | `release assemble --connector C --version V --channel stable\|rolling\|pr --tag TAG --dist DIR --out DIR [--reports DIR]` | Turn the per-target builds and verification reports into one complete release directory: artifacts, legacy aliases, reports, `SHA256SUMS` and the compatibility record. |
 | `release publish --connector C --channel … --tag TAG --assembled DIR` | Upload that directory, read it back from GitHub, and finalise the release. Never clobbers: identical bytes are skipped, conflicting bytes stop the run. |
@@ -117,3 +118,8 @@ fakes for upstream, GitHub and docker. Dependencies are pinned by `uv.lock` and 
 - [Adding a game](docs/adding-a-game.md) — the provider contract: what a new connector adds to the catalog and what it never touches.
 - [Releases](docs/release.md) — the release channels, the asset names, the compatibility record and how a release is recovered.
 - [Lifecycle](docs/lifecycle.md) — how `reconcile` and `run` move a maintenance issue from detection to a verified, published release.
+- [Operations](docs/operations.md) — running the one-shot maintenance command on a host, in the tool container and from CI; credentials, dashboard health, the schedule gate.
+- [Private integration](docs/integration.md) — the contract a private deployment follows: resolve, exact install, artifact validation, deployment and verification, with no floating pins of its own.
+- [Recovery](docs/recovery.md) — the operator runbook: what a red run, a degraded dashboard or a half-published release means and the one command that fixes each.
+- [Support policy](docs/support-policy.md) — candidate, maintained and retired; what the repository retains and what only upstream holds; when and how a target is retired.
+- [Source to release](docs/example-source-to-release.md) — one upstream release followed from observation to a closed issue, with every command on the way.
