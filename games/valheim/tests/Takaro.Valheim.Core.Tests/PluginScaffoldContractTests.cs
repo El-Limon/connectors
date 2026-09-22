@@ -549,35 +549,59 @@ public sealed class PluginScaffoldContractTests
         StringAssert.Contains(release, "rm -f");
         StringAssert.Contains(release, "Jotunn.dll");
 
-        StringAssert.Contains(setup, "VALHEIM_STEAM_PLATFORMS");
         StringAssert.Contains(setup, "VALHEIM_REFERENCE_CACHE_DIR");
         StringAssert.Contains(setup, ".takaro-valheim-reference-cache");
         StringAssert.Contains(setup, "refusing to mutate");
-        StringAssert.Contains(setup, "linux windows");
-        StringAssert.Contains(setup, "MAX_ATTEMPTS");
         StringAssert.Contains(setup, "valheim_server_Data/Managed");
-        StringAssert.Contains(setup, "appcache");
         StringAssert.Contains(setup, "--retry 5");
         StringAssert.Contains(setup, "--retry-delay 2");
         StringAssert.Contains(setup, "--retry-all-errors");
         StringAssert.Contains(setup, "command -v file");
         StringAssert.Contains(setup, "requires the 'file' command");
         StringAssert.Contains(setup, "Mono/.Net\\ assembly");
+
+        // Both inputs come from the target and from nowhere else: the references from the
+        // pinned depot manifest, the pack from its exact version URL. There is no platform
+        // loop, no SteamCMD and no Thunderstore 'latest' -- a pinned build Steam no longer
+        // serves is a re-pin, not a retry somewhere else.
+        StringAssert.Contains(setup, "steam references");
+        StringAssert.Contains(setup, "not falling back");
+        StringAssert.Contains(setup, "VALHEIM_BEPINEX_SHA256");
+        StringAssert.Contains(setup, "VALHEIM_BEPINEX_PACK_VERSION");
+        foreach (var gone in new[]
+        {
+            "VALHEIM_STEAM_PLATFORMS",
+            "app_update",
+            "STEAMCMD",
+            "latest.download_url",
+        })
+        {
+            Assert.IsFalse(setup.Contains(gone, StringComparison.OrdinalIgnoreCase), gone);
+        }
     }
 
     [TestMethod]
-    public void WorkflowCachesTheOwnedReferenceDirectoryIncludingItsMarker()
+    public void ReleaseCachingIsKeyedOnTheTargetFingerprintNotOnAFixedDirectory()
     {
-        var workflow = File.ReadAllText(Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "../../../../../../../.github/workflows/valheim.yml")));
+        var workflow = ReadRepositoryFile(".github/workflows/valheim.yml");
+        var shared = ReadRepositoryFile(".github/workflows/connector-release.yml");
 
-        StringAssert.Contains(workflow, "valheim/_data/server\n");
-        Assert.IsFalse(
-            workflow.Contains("valheim/_data/server/valheim_server_Data/Managed", StringComparison.Ordinal),
-            "Caching only Managed would drop the ownership marker and make a corrupt restored cache unrepairable.");
-        StringAssert.Contains(workflow, "valheim-build-deps-v2-owned-reference-cache");
+        // Inputs live under their target's fingerprint, so a re-pin can never be served
+        // another build's assemblies from cache. A cache keyed on a fixed directory would
+        // share one entry across every server build.
+        foreach (var gone in new[] { "_data/server", "valheim-build-deps" })
+        {
+            Assert.IsFalse(workflow.Contains(gone, StringComparison.Ordinal), gone);
+        }
+
+        StringAssert.Contains(shared, "steps.target.outputs.fp16");
     }
+
+    private static string ReadRepositoryFile(string relativePath) =>
+        File.ReadAllText(Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../../../../",
+            relativePath)));
 
     private static string ReadPluginSource(string fileName)
     {

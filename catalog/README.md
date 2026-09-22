@@ -64,6 +64,13 @@ name a file outside the directory the command was pointed at.
 `hashOrigin` records where a hash came from: `upstream` when the publisher serves a checksum we
 verified against, `self-recorded` when they do not.
 
+A kind whose acquisition is not one HTTP GET declares no `path` and carries no hash of its own.
+It pins a set of files instead — a `files` object of relative path to `{sha256, size}`, every one
+of which `no-null-hash` requires — and its provider supplies the identifier that names the set,
+which is what reports and compatibility records record in place of a download URL. The kinds
+listed above all take the plain-download shape; a new one is added by dropping its schema into
+`schema/v1/inputs/`, never by editing `target.schema.json`.
+
 ### Trust on first use
 
 FabricMC publishes no checksum for its launcher or its Maven jars. Those hashes are recorded by
@@ -78,6 +85,21 @@ maintenance/bin/takaro-maint catalog record-hash \
 Both downloads' URLs, sizes and hashes go to stderr; the pull request that adds a self-recorded
 hash quotes them. After that the hash is the contract: `catalog validate --online` re-downloads
 the file and fails on any change, which is exactly what catching a silent re-publish looks like.
+
+## Build systems
+
+A target's `build` block names its `system`, and that name is the schema file under
+`schema/v1/build-systems/` the record is validated against — the same dispatch the input kinds use, so a
+new build system is a new file there and never an edit to `target.schema.json`.
+
+| System | Builds with | Names |
+|---|---|---|
+| `gradle` | this repository's Gradle build, one target project per target | `gradleProject`, the Java releases, the plugin versions |
+| `script` | a shell script tracked here, inside the pinned container toolchain | `script`, and the `references` it compiles against |
+
+Whatever the block names in this repository has to exist: `gradle-project-exists` for a Gradle
+project, `build-script-exists` for a script. `runtime.java` is `null` for a game that ships its
+own runtime rather than running on a JRE.
 
 ## Fingerprint
 

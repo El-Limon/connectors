@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -96,10 +97,15 @@ def check_startup(
     alive: Any,
     data_dir: Path,
     ledger_inputs: list[dict[str, Any]],
+    ready_line: re.Pattern[str] = DONE_LINE,
 ) -> CheckResult:
-    """The server finished booting, and it did not replace the bytes we pinned."""
+    """The server finished booting, and it did not replace the bytes we pinned.
+
+    ``ready_line`` is the line that says this game's server is up; the default is the one
+    a vanilla Minecraft server writes.
+    """
     with _Timer() as timer:
-        found = wait_for_line(log_file, DONE_LINE, timeout, alive)
+        found = wait_for_line(log_file, ready_line, timeout, alive)
         intact: list[str] = []
         replaced: list[str] = []
         for entry in ledger_inputs:
@@ -264,13 +270,27 @@ def _catalogue_problems(entries: Any, spot: tuple[str, str]) -> tuple[list[str],
     return problems, detail
 
 
-async def check_catalog(fake: Any, action: str, check_id: str, spot: tuple[str, str]) -> CheckResult:
+async def check_catalog(
+    fake: Any,
+    action: str,
+    check_id: str,
+    spot: tuple[str, str],
+    extra: Callable[[list[Any]], list[str]] | None = None,
+) -> CheckResult:
+    """The shared catalogue check. ``extra`` adds one game's own rules over the same answer.
+
+    A game whose codes go wrong in a way the shared rules cannot see -- a prefab short name
+    that survived capitalisation, say -- passes a predicate rather than re-requesting the
+    catalogue and re-implementing the rest of this.
+    """
     with _Timer() as timer:
         try:
             entries = await fake.request(action, {}, timeout=120)
         except Exception as exc:  # noqa: BLE001 - reported as a check failure
             return CheckResult(check_id, "fail", 0, {"problems": [f"{action} failed: {exc}"]})
         problems, detail = _catalogue_problems(entries, spot)
+        if extra is not None and isinstance(entries, list):
+            problems = problems + extra(entries)
     detail["problems"] = problems
     return CheckResult(check_id, "pass" if not problems else "fail", timer.elapsed_ms, detail)
 

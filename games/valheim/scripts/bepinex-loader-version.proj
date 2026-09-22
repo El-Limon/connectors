@@ -1,0 +1,20 @@
+<!--
+  Prints the assembly version of the BepInEx loader in a prepared pack, and nothing else.
+
+  The pack version Thunderstore publishes (5.4.2350) and the loader's own assembly version
+  (5.4.23.x, the number the server logs on boot) are different facts about different files.
+  The packaged manifest.json states both, so setup-environment.sh reads this one off the
+  DLL rather than guessing it from the other.
+
+  Usage: dotnet msbuild bepinex-loader-version.proj -nologo -verbosity:minimal \
+           -p:BepInExReferencePath=<pack>/BepInEx/core
+-->
+<Project DefaultTargets="PrintLoaderVersion" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="PrintLoaderVersion">
+    <Error Condition="'$(BepInExReferencePath)' == ''" Text="pass -p:BepInExReferencePath=&lt;pack&gt;/BepInEx/core" />
+    <GetAssemblyIdentity AssemblyFiles="$(BepInExReferencePath)/BepInEx.dll">
+      <Output TaskParameter="Assemblies" ItemName="LoaderAssembly" />
+    </GetAssemblyIdentity>
+    <Message Importance="high" Text="%(LoaderAssembly.Version)" />
+  </Target>
+</Project>

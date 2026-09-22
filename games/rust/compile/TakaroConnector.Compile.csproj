@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The compile-check, not a release build: the release artifact is the .cs source
+       Carbon compiles at load. What this proves is that the source still compiles against
+       the exact game and Carbon assemblies the catalog target pins. The produced DLL is
+       thrown away.
+
+       references.props is generated per target by scripts/compile-check.sh; it holds one
+       <Reference> per pinned assembly, so nothing about a build id is written down here. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <!-- Rust's Managed folder ships several assemblies that define the same types. -->
+    <NoWarn>CS1685</NoWarn>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Rust's plugin API is full of internal members; Carbon publicizes them at load. -->
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.2" PrivateAssets="all" />
+    <Compile Include="TakaroConnector.cs" />
+  </ItemGroup>
+
+  <Import Project="references.props" Condition="Exists('references.props')" />
+</Project>

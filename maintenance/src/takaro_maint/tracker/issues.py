@@ -19,16 +19,19 @@ OWNED_BEGIN = "<!-- takaro-maint:owned:begin -->"
 OWNED_END = "<!-- takaro-maint:owned:end -->"
 STATE_RE = re.compile(r"<!-- takaro-maint:state=([a-z-]+) -->")
 
+#: The prose above the owned block of a filed issue, for a provider that says nothing of its
+#: own. It names no game and no upstream mechanism; a provider with better words for its own
+#: releases returns them as ``intro`` from :meth:`Provider.presentation`.
 INTRO = (
-    "Mojang published a new stable Minecraft release. Everything between the owned markers is "
-    "rewritten by `takaro-maint scan`; edit anything else freely \u2014 but leave the first line "
-    "where it is, because that marker is how this issue is recognised."
+    "`takaro-maint scan` saw a new release on a branch this catalog watches. Everything between the "
+    "owned markers is rewritten by `takaro-maint scan`; edit anything else freely \u2014 but leave the "
+    "first line where it is, because that marker is how this issue is recognised."
 )
 
 PREVIEW_INTRO = (
-    "Mojang published a new preview (snapshot channel). Everything between the owned markers is "
-    "rewritten by `takaro-maint scan`; edit anything else freely \u2014 but leave the first line "
-    "where it is, because that marker is how this issue is recognised."
+    "`takaro-maint scan` saw a new preview on a branch this catalog watches. Everything between the "
+    "owned markers is rewritten by `takaro-maint scan`; edit anything else freely \u2014 but leave the "
+    "first line where it is, because that marker is how this issue is recognised."
 )
 
 READINESS_SENTENCE = (
@@ -97,12 +100,71 @@ def find(client: GitHub, marker: dict[str, str], cache: LookupCache) -> dict[str
     return _index(client, cache).get(wanted)
 
 
+def _presentation(observation: Observation, game_name: str) -> dict[str, Any]:
+    """What the observation's own provider says its issue should read like.
+
+    Looked up by provider id at render time, so this module knows nothing about any
+    upstream: a provider with no opinion, or one this build does not carry at all, gets
+    the generic rendering below. Adding a game therefore never edits this file.
+    """
+    from ..providers import providers
+
+    hook = getattr(providers().get(observation.provider), "presentation", None)
+    view = hook(observation, game_name) if hook is not None else None
+    return view if isinstance(view, dict) else {}
+
+
+def _lines(view: dict[str, Any], key: str, fallback: list[str]) -> list[str]:
+    """One presentation key as rendered lines, or the generic rendering."""
+    supplied = view.get(key)
+    return [str(line) for line in supplied] if supplied else fallback
+
+
+def observation_rows(observation: Observation, extra: list[str] | None = None) -> list[str]:
+    """The Observation table's body: what every observation answers, plus the provider's own.
+
+    ``extra`` is spliced between the facts every observation carries and the closing
+    "Observed" row, which is where an upstream's own rows read naturally.
+    """
+    return [
+        f"| Provider / component / branch | {observation.provider} / {observation.component} / {observation.branch} |",
+        f"| Revision | `{observation.rev}` |",
+        f"| Released | {observation.facts.get('releaseTime', DASH)} |",
+        *(extra or []),
+        f"| Observed | {observation.observed_at} by takaro-maint scan |",
+    ]
+
+
+def next_steps(observation: Observation, *, pin: str | None = None) -> list[str]:
+    """The numbered steps that turn one observation into a verified target.
+
+    ``pin`` is the parenthetical naming the upstream digests the new record has to pin.
+    An upstream that publishes none (or pins by some other identity) leaves it out.
+    """
+    component = observation.component
+    rev = observation.rev
+    note = f" ({pin})" if pin else ""
+    return [
+        f"1. `maintenance/bin/takaro-maint targets list --game {component}`",
+        f"2. Add `catalog/{component}/targets/<platform>-{rev}.json` following `catalog/README.md` "
+        f'\u2192 "Adding a target"{note}.',
+        "3. `maintenance/bin/takaro-maint catalog validate --online`",
+        f"4. `maintenance/bin/takaro-maint build --game {component} --target <platform>-{rev} "
+        "--version <version> --out dist`",
+        f"5. `maintenance/bin/takaro-maint verify --game {component} --target <platform>-{rev} "
+        "--artifacts dist --out reports`",
+    ]
+
+
 def title_for(observation: Observation, game_name: str) -> str:
     """The title of the issue one observation files, by kind and then by branch."""
     if observation.kind == "branch-review":
         from .. import readiness
 
         return readiness.review_title(observation, game_name)
+    title = _presentation(observation, game_name).get("title")
+    if title:
+        return str(title)
     if observation.branch == "release":
         return f"{game_name} {observation.rev}: new stable release needs a target"
     return f"{game_name} {observation.rev}: new {observation.branch} preview"
@@ -127,29 +189,24 @@ def render_owned_block(
     *,
     state: str = "detected",
     readiness: list[str] | None = None,
+    presentation: dict[str, Any] | None = None,
 ) -> str:
-    """The generated section of a support issue. ``readiness`` is the hook for #154."""
-    facts = observation.facts
+    """The generated section of a support issue.
+
+    ``readiness`` is the framework table, when a framework was observed this run.
+    ``presentation`` is what the observation's provider says its issue reads like, already
+    looked up by the caller; leaving it out looks it up here. Everything the provider does
+    not answer for is rendered generically, out of the observation alone.
+    """
     rev = observation.rev
-    manifest_list = facts.get("manifestList") or {}
-    manifest = facts.get("manifest") or {}
-    server = facts.get("server") or {}
-    component = observation.component
+    view = _presentation(observation, targets.name) if presentation is None else presentation
     lines = [
         OWNED_BEGIN,
         "## Observation",
         "",
         "| Field | Value |",
         "| --- | --- |",
-        f"| Provider / component / branch | {observation.provider} / {component} / {observation.branch} |",
-        f"| Revision | `{rev}` |",
-        f"| Released | {facts.get('releaseTime', DASH)} |",
-        f"| Version list | {manifest_list.get('url', DASH)} |",
-        f"| Version manifest | {manifest.get('url', DASH)} (sha1 `{manifest.get('sha1', DASH)}`) |",
-        f"| Server jar | {server.get('url', DASH)} (sha1 `{server.get('sha1', DASH)}`, "
-        f"{server.get('size', DASH)} bytes) |",
-        f"| Java | {facts.get('javaMajor', DASH)} |",
-        f"| Observed | {observation.observed_at} by takaro-maint scan |",
+        *_lines(view, "observationRows", observation_rows(observation)),
         "",
         "## Affected targets",
         "",
@@ -159,21 +216,13 @@ def render_owned_block(
         "",
         "## Readiness",
         "",
-        *(readiness if readiness else [READINESS_SENTENCE]),
+        *(readiness if readiness else _lines(view, "readinessLines", [READINESS_SENTENCE])),
         "",
         f"<!-- takaro-maint:state={state} -->",
         "",
         "## Next steps (reproducible)",
         "",
-        f"1. `maintenance/bin/takaro-maint targets list --game {component}`",
-        f"2. Add `catalog/{component}/targets/<platform>-{rev}.json` following `catalog/README.md` "
-        f'→ "Adding a target" (pin manifest sha1 `{manifest.get("sha1", DASH)}`, '
-        f"server sha1 `{server.get('sha1', DASH)}` size `{server.get('size', DASH)}`).",
-        "3. `maintenance/bin/takaro-maint catalog validate --online`",
-        f"4. `maintenance/bin/takaro-maint build --game {component} --target <platform>-{rev} "
-        "--version <version> --out dist`",
-        f"5. `maintenance/bin/takaro-maint verify --game {component} --target <platform>-{rev} "
-        "--artifacts dist --out reports`",
+        *_lines(view, "nextSteps", next_steps(observation)),
         "",
         "## Expected evidence",
         "",
@@ -243,11 +292,14 @@ def reconcile(
 
     rows = readiness.rows_from_registry(observation.rev, targets.platforms, branch=observation.branch)
     lines = readiness.render_rows(rows, targets.platforms) if rows is not None else None
+    # Once per reconciled observation: both renderings below are of the same observation,
+    # and a provider must not be asked to describe it twice.
+    view = _presentation(observation, targets.name)
 
     if existing is None:
         state = readiness.state_for(rows, branch=observation.branch, current=None) if rows is not None else "detected"
-        block = render_owned_block(observation, targets, state=state, readiness=lines)
-        intro = INTRO if observation.branch == "release" else PREVIEW_INTRO
+        block = render_owned_block(observation, targets, state=state, readiness=lines, presentation=view)
+        intro = str(view.get("intro") or (INTRO if observation.branch == "release" else PREVIEW_INTRO))
         created_number: int | None = None
         if publish:
             created = client.issue_create(
@@ -280,7 +332,7 @@ def reconcile(
         rows = readiness.merge(readiness.parse_rows(old_body), rows)
         lines = readiness.render_rows(rows, targets.platforms)
         current = readiness.state_for(rows, branch=observation.branch, current=current)
-    block = render_owned_block(observation, targets, state=current, readiness=lines)
+    block = render_owned_block(observation, targets, state=current, readiness=lines, presentation=view)
     new_body = render_body(marker, block, old_body)
     changed = new_body != old_body
     if changed and publish:

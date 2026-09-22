@@ -10,7 +10,8 @@ from typing import Any
 
 from .. import net, output, paths
 from ..exit_codes import OK, ConflictError
-from ..install.ledger import read_ledger, write_ledger
+from ..games import adapter_for
+from ..install.ledger import artifacts_of, read_ledger, write_ledger
 from ..publish import read_manifest
 from . import add_selection_arguments, select_one
 
@@ -45,6 +46,7 @@ def _deploy(args: Any) -> int:
 
     deployed: list[dict[str, Any]] = []
     removed: list[str] = []
+    rows_by_role = {row["role"]: row for row in artifacts_of(ledger.data)}
     for component in target.record["components"]:
         role = component["role"]
         rows = [r for r in manifest["artifacts"] if r["role"] == role and r["target"] == target.id]
@@ -78,6 +80,8 @@ def _deploy(args: Any) -> int:
         # permissions, a kill) must leave the previously deployed connector in place rather than
         # a directory with no connector at all and a ledger that still describes the old one.
         staged = install_dir / (row["file"] + ".tmp")
+        artifact = install_dir / row["file"]
+        previous = install_dir / (row["file"] + ".previous")
         try:
             shutil.copy2(source, staged)
             with staged.open("rb") as handle:
@@ -85,7 +89,24 @@ def _deploy(args: Any) -> int:
         except BaseException:
             staged.unlink(missing_ok=True)
             raise
-        os.replace(staged, install_dir / row["file"])
+        if previous.exists() or previous.is_symlink():
+            staged.unlink(missing_ok=True)
+            raise ConflictError(f"refusing to overwrite deploy recovery file {previous}")
+        retired = artifact.exists() or artifact.is_symlink()
+        if retired:
+            os.replace(artifact, previous)
+        try:
+            os.replace(staged, artifact)
+            # A game whose artifact is not loaded as it lands -- an archive the server expects
+            # unpacked, say -- unpacks it here, once the file itself is in place.
+            adapter_for(target.game).after_deploy(dest, component, artifact)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            artifact.unlink(missing_ok=True)
+            if retired:
+                os.replace(previous, artifact)
+            raise
+        previous.unlink(missing_ok=True)
         for existing in superseded:
             existing.unlink()
             removed.append(f"{component['installDir']}/{existing.name}")
@@ -93,14 +114,25 @@ def _deploy(args: Any) -> int:
         deployed.append({"role": role, "path": relative, "sha256": row["sha256"]})
         output.info(f"deployed {relative} ({row['sha256'][:16]}…)")
 
+        # Every role this directory holds stays attested. A two-role game deploys twice,
+        # and a ledger that only remembered the last one would leave the other unguarded --
+        # `ledger check` could not tell a tampered first artifact from a good one. The
+        # ledger is rewritten after each role rather than once at the end, so a run that
+        # dies between roles still attests the ones that landed.
+        rows_by_role.update(
+            {
+                role: {
+                    "role": role,
+                    "path": relative,
+                    "sha256": row["sha256"],
+                    "connectorVersion": manifest["version"],
+                    "sourceRevision": manifest["sourceRevision"],
+                }
+            }
+        )
         data = dict(ledger.data)
-        data["artifact"] = {
-            "role": role,
-            "path": relative,
-            "sha256": row["sha256"],
-            "connectorVersion": manifest["version"],
-            "sourceRevision": manifest["sourceRevision"],
-        }
+        data["artifacts"] = [rows_by_role[key] for key in sorted(rows_by_role)]
+        data.pop("artifact", None)
         write_ledger(dest, data)
         ledger = read_ledger(dest)
         assert ledger is not None

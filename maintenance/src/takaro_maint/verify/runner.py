@@ -11,6 +11,7 @@ import contextlib
 import datetime as dt
 import importlib
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -19,9 +20,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from .. import output, paths, redact
@@ -32,6 +32,7 @@ from ..install.ledger import read_ledger
 from ..publish import read_manifest
 from . import checks as base_checks
 from .fake_takaro import FakeTakaro
+from .hooks import GameHooks
 from .report import build_report, write_report
 
 CHECK_IDS = (
@@ -48,21 +49,47 @@ CHECK_IDS = (
 )
 
 
-def game_hooks(game: str) -> ModuleType | None:
-    """``takaro_maint.games.<game>.verify``, when the game ships verification hooks.
+def game_hooks(game: str) -> GameHooks:
+    """What this game contributes to a run, as one declared object.
 
-    A game without one verifies with the base checks alone; nothing here is a hard dependency.
+    The hooks module is looked up next to the adapter rather than at a path spelled out
+    here, so a game whose package is not named after its catalog id is found too. A game
+    without one verifies with the base checks alone, which is what the empty ``GameHooks``
+    means; a module that ships hooks but never assembles them into ``HOOKS`` is a mistake,
+    not a game with no hooks, so it is refused rather than quietly ignored.
     """
     try:
-        return importlib.import_module(f"takaro_maint.games.{game}.verify")
+        adapter = adapter_for(game)
+    except UsageError:
+        return GameHooks()
+    try:
+        module = importlib.import_module(f"{type(adapter).__module__}.verify")
     except ModuleNotFoundError:
-        return None
+        return GameHooks()
+    hooks = getattr(module, "HOOKS", None)
+    if not isinstance(hooks, GameHooks):
+        raise UsageError(f"{module.__name__} ships verification hooks but no HOOKS = GameHooks(...)")
+    unsupported = set(hooks.unsupported_checks)
+    own_exclusions = unsupported & set(hooks.check_ids)
+    if own_exclusions:
+        names = ", ".join(sorted(own_exclusions))
+        raise UsageError(f"{game} excludes its own verification check(s): {names}")
+    unknown = unsupported - set(CHECK_IDS)
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise UsageError(f"{game} excludes check(s) outside the base verification ladder: {names}")
+    conditional = set(hooks.negative_check_ids) | set(hooks.hosted_check_ids)
+    undeclared = conditional - set(hooks.check_ids)
+    if undeclared:
+        names = ", ".join(sorted(undeclared))
+        raise UsageError(f"{game} marks undeclared verification check(s) as conditional: {names}")
+    return hooks
 
 
 def check_ids(game: str | None = None) -> tuple[str, ...]:
     """The base check ids, plus the ones the game's own hooks add."""
-    hooks = game_hooks(game) if game else None
-    return (*CHECK_IDS, *getattr(hooks, "CHECK_IDS", ()))
+    hooks = game_hooks(game) if game else GameHooks()
+    return (*CHECK_IDS, *hooks.check_ids)
 
 
 def docker_command() -> list[str]:
@@ -193,7 +220,7 @@ class RunOptions:
     out: Path
     run_id: str
     labels: list[str] = field(default_factory=list)
-    startup_timeout: float = 300.0
+    startup_timeout: float | None = None
     only: list[str] | None = None
     keep_on_failure: bool = False
     negative: bool = False
@@ -210,6 +237,7 @@ class TargetRun:
         self.resolved = resolve(catalog, target)
         self.adapter = adapter_for(target.game)
         self.hooks = game_hooks(target.game)
+        self._checks_explicit = options.only is not None
         self.out = options.out / target.id
         self.out.mkdir(parents=True, exist_ok=True)
         self.server_log = self.out / "server.log"
@@ -264,13 +292,32 @@ class TargetRun:
         )
         return read_manifest(manifest_path)
 
-    def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
-        takaro_env = {
+    def takaro_env(self, ws_url: str, extra_env: dict[str, str] | None = None) -> dict[str, str]:
+        """What this run tells the connector about the Takaro it should talk to."""
+        return {
             "TAKARO_WS_URL": ws_url,
             "TAKARO_IDENTITY_TOKEN": f"takaro-verify-{self.options.run_id}",
             "TAKARO_REGISTRATION_TOKEN": self.registration_token,
             **(extra_env or {}),
         }
+
+    def container_mounts(self) -> list[str]:
+        """The ``-v`` arguments this game's server needs; one data dir bound at /data by default."""
+        return [str(mount) for mount in self.adapter.container_mounts(self.resolved, self.data_dir)]
+
+    def ready_line(self) -> re.Pattern[str]:
+        """The log line that says this game's server finished booting."""
+        return self.hooks.ready_line
+
+    @property
+    def startup_timeout(self) -> float:
+        """The explicit CLI budget, then the game's own budget, then the common default."""
+        if self.options.startup_timeout is not None:
+            return self.options.startup_timeout
+        return self.hooks.startup_timeout or 300.0
+
+    def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
+        takaro_env = self.takaro_env(ws_url, extra_env)
         environment = {
             "UID": str(os.getuid()),
             "GID": str(os.getgid()),
@@ -297,9 +344,20 @@ class TargetRun:
         for label in self.options.labels:
             argv += ["--label", label]
         argv += ["--add-host", "host.docker.internal:host-gateway", "--memory", "3g"]
+        # A game that needs more than the run's own defaults appends them here -- docker
+        # takes the last value of a repeated option, so these win over what is above.
+        argv += [str(option) for option in self.adapter.container_options(self.resolved, self.data_dir)]
         for key, value in sorted(environment.items()):
             argv += ["-e", f"{key}={value}"]
-        argv += ["-v", f"{self.data_dir}:/data", self.resolved["containerRef"]]
+        for mount in self.container_mounts():
+            argv += ["-v", mount]
+        argv += [self.resolved["containerRef"]]
+        # Some servers take settings the image exposes no environment variable for -- a world
+        # name on the command line, say -- so a game may append its own arguments after the
+        # image reference. Games that need none ship no hook and get the image's own Cmd.
+        command = self.adapter.container_command(self.resolved, self.data_dir)
+        if command is not None:
+            argv += [str(part) for part in command]
         self.container_name = name
         return argv
 
@@ -328,15 +386,92 @@ class TargetRun:
         # port-binding inspection would otherwise find an empty list and leak it.
         self.containers.append(container)
         self.container = container
+        # Anything the server has to find on disk before it starts -- a config file the
+        # game reads instead of the environment, say -- is written here.
+        if self.hooks.before_boot is not None:
+            self.hooks.before_boot(self, self.takaro_env(ws_url, extra_env))
         container.start()
         bindings = container.inspect_port_bindings()
         with self.docker_log.open("a", encoding="utf-8") as handle:
             handle.write(f"HostConfig.PortBindings={bindings}\n")
+        # Anything that can only exist once the container does -- a sidecar joining its network
+        # namespace, say -- is started here, while `before_boot` still runs against the disk.
+        if self.hooks.after_boot is not None:
+            self.hooks.after_boot(self, container, self.takaro_env(ws_url, extra_env))
         return container
 
     # -- checks ---------------------------------------------------------------
+    def _select_default_checks(self) -> None:
+        """A run that named no ``--checks`` skips what this game cannot pass.
+
+        The base ladder is written for the Minecraft connector, and most of it looks for
+        things the other seven games do not have -- a load line only that connector
+        writes, Minecraft item and entity spot values, an exit code a Unity teardown does
+        not give. Left in, `takaro-maint verify --game <g>` would spend a timeout failing
+        on each. Each game declares which base checks cannot apply to it and what stands
+        in for them, and the exclusion happens here, once, for every game. A check the
+        game implements but fails is run and reported.
+
+        An explicit ``--checks`` is left exactly as written: naming a check is asking for
+        it. ``replace`` rather than a field assignment, because one ``RunOptions`` is
+        shared by every target of the command and one target's default must not narrow
+        the next one's.
+        """
+        if self.options.only is not None:
+            return
+        unsupported = self.hooks.unsupported_checks
+        if not unsupported:
+            return
+        self.options = replace(
+            self.options,
+            only=[
+                check
+                for check in check_ids(self.target.game)
+                if check not in unsupported and self._wanted_by_mode(check)
+            ],
+        )
+        for check, reason in sorted(unsupported.items()):
+            output.info(f"not running {check}: {reason}")
+
+    def _wanted_by_mode(self, check_id: str) -> bool:
+        """Whether a bare run's mode selects an opt-in check."""
+        if check_id in self.hooks.negative_check_ids:
+            return self.options.negative
+        if check_id in self.hooks.hosted_check_ids:
+            return self.options.takaro == "hosted"
+        return True
+
     def wanted(self, check_id: str) -> bool:
-        return self.options.only is None or check_id in self.options.only
+        if self.options.only is not None:
+            return check_id in self.options.only
+        return self._wanted_by_mode(check_id)
+
+    def selected_check_ids(self) -> tuple[str, ...]:
+        """Checks this invocation promised to run, including a generic negative request."""
+        selected = [check for check in check_ids(self.target.game) if self.wanted(check)]
+        if (
+            self.options.negative
+            and not self._checks_explicit
+            and not self.hooks.negative_check_ids
+            and "negative-wrong-target" not in selected
+        ):
+            selected.append("negative-wrong-target")
+        return tuple(selected)
+
+    def _record_missing_selected_checks(self) -> None:
+        """Turn a hook that forgot a selected check into evidence, never a false pass."""
+        recorded = {result.id for result in self.results}
+        for check_id in self.selected_check_ids():
+            if check_id not in recorded:
+                self.record(
+                    base_checks.CheckResult(
+                        check_id,
+                        "fail",
+                        0,
+                        {"problems": [f"selected check '{check_id}' produced no result"]},
+                    )
+                )
+                recorded.add(check_id)
 
     def record(self, result: base_checks.CheckResult) -> None:
         self.results.append(result)
@@ -344,6 +479,21 @@ class TargetRun:
 
     def skip(self, check_id: str, reason: str) -> None:
         self.record(base_checks.CheckResult(check_id, "skip", 0, {"reason": reason}))
+
+    def not_selected_reason(self, check_id: str) -> str:
+        """Use a game's declared reason when its default selection drops a check."""
+        return self.hooks.unsupported_checks.get(check_id, "not selected by --checks")
+
+    def _skip_after_startup_failure(self) -> None:
+        """Record the unattempted ladder without turning one failed boot into many failures."""
+        reason = "startup did not complete; see the startup check"
+        recorded = {result.id for result in self.results}
+        for check_id in (*CHECK_IDS[2:], *self.hooks.check_ids):
+            if check_id not in recorded:
+                self.skip(check_id, reason)
+                recorded.add(check_id)
+        if self.options.negative and "negative-wrong-target" not in recorded:
+            self.skip("negative-wrong-target", reason)
 
     async def run(self) -> dict[str, Any]:
         started_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
@@ -355,13 +505,14 @@ class TargetRun:
             self.cleanup()
 
     async def _run(self, started_at: str) -> dict[str, Any]:
+        self._select_default_checks()
         manifest = self.install_and_deploy()
         ledger = read_ledger(self.data_dir)
         assert ledger is not None
         ledger_inputs = ledger.data["inputs"]
 
         if self.options.takaro == "hosted":
-            if self.hooks is None or not hasattr(self.hooks, "run_hosted"):
+            if self.hooks.run_hosted is None:
                 raise UsageError(f"game '{self.target.game}' ships no hosted verification")
             hosted: dict[str, Any] = await self.hooks.run_hosted(self, manifest, ledger_inputs, started_at)
             return hosted
@@ -369,7 +520,7 @@ class TargetRun:
         if self.wanted("build"):
             self.record(base_checks.check_build(self.options.artifacts, manifest, self.target))
         else:
-            self.skip("build", "not selected by --checks")
+            self.skip("build", self.not_selected_reason("build"))
 
         fake = FakeTakaro(host=bridge_gateway(), log_path=self.fake_log)
         port = await fake.start()
@@ -387,80 +538,89 @@ class TargetRun:
                     await asyncio.to_thread(
                         base_checks.check_startup,
                         self.server_log,
-                        self.options.startup_timeout,
+                        self.startup_timeout,
                         alive,
                         self.data_dir,
                         ledger_inputs,
+                        self.ready_line(),
                     )
                 )
             else:
-                self.skip("startup", "not selected by --checks")
+                self.skip("startup", self.not_selected_reason("startup"))
 
-            identity = await asyncio.to_thread(self._scan_runtime_identity)
-            runtime = {
-                "gameVersion": identity.get("gameVersion"),
-                "loader": identity.get("loader"),
-                "loaderVersion": identity.get("loaderVersion"),
-                "java": self.target.record["runtime"]["java"],
-            }
-
-            if self.wanted("connector-load"):
-                self.record(
-                    await asyncio.to_thread(base_checks.check_connector_load, self.server_log, self.target, 120, alive)
-                )
+            startup_failed = any(result.id == "startup" and result.status == "fail" for result in self.results)
+            if startup_failed:
+                self._skip_after_startup_failure()
             else:
-                self.skip("connector-load", "not selected by --checks")
+                identity = await asyncio.to_thread(self._scan_runtime_identity)
+                runtime = {
+                    "gameVersion": identity.get("gameVersion"),
+                    "loader": identity.get("loader"),
+                    "loaderVersion": identity.get("loaderVersion"),
+                    "java": self.target.record["runtime"]["java"],
+                }
 
-            if self.wanted("identify"):
-                self.record(await base_checks.check_identify(fake, self.server_log, 180, alive))
-            else:
-                self.skip("identify", "not selected by --checks")
-
-            for check_id, coroutine in (
-                ("heartbeat", lambda: base_checks.check_heartbeat(fake)),
-                ("players", lambda: base_checks.check_players(fake)),
-                (
-                    "catalog-items",
-                    lambda: base_checks.check_catalog(
-                        fake, "listItems", "catalog-items", ("minecraft:diamond_sword", "Diamond Sword")
-                    ),
-                ),
-                (
-                    "catalog-entities",
-                    lambda: base_checks.check_catalog(
-                        fake, "listEntities", "catalog-entities", ("minecraft:zombie", "Zombie")
-                    ),
-                ),
-                (
-                    "console",
-                    lambda: base_checks.check_console(
-                        fake, self.server_log, f"takaro-verify-{self.options.run_id}", alive
-                    ),
-                ),
-            ):
-                if self.wanted(check_id):
-                    self.record(await coroutine())
+                if self.wanted("connector-load"):
+                    self.record(
+                        await asyncio.to_thread(
+                            base_checks.check_connector_load, self.server_log, self.target, 120, alive
+                        )
+                    )
                 else:
-                    self.skip(check_id, "not selected by --checks")
+                    self.skip("connector-load", self.not_selected_reason("connector-load"))
 
-            if self.hooks is not None and hasattr(self.hooks, "after_protocol"):
-                await self.hooks.after_protocol(self, fake, alive)
-
-            if self.wanted("shutdown"):
-                self.record(await base_checks.check_shutdown(fake, container.wait_for_exit))
-            else:
-                self.skip("shutdown", "not selected by --checks")
-
-            if self.hooks is not None and hasattr(self.hooks, "after_shutdown"):
-                await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)
-
-            if self.options.negative:
-                if self.hooks is not None and hasattr(self.hooks, "negative"):
-                    await self.hooks.negative(self, fake, ws_url, manifest)
+                if self.wanted("identify"):
+                    self.record(await base_checks.check_identify(fake, self.server_log, 180, alive))
                 else:
-                    self.skip("negative-wrong-target", f"game '{self.target.game}' ships no negative check")
+                    self.skip("identify", self.not_selected_reason("identify"))
+
+                for check_id, coroutine in (
+                    ("heartbeat", lambda: base_checks.check_heartbeat(fake)),
+                    ("players", lambda: base_checks.check_players(fake)),
+                    (
+                        "catalog-items",
+                        lambda: base_checks.check_catalog(
+                            fake, "listItems", "catalog-items", ("minecraft:diamond_sword", "Diamond Sword")
+                        ),
+                    ),
+                    (
+                        "catalog-entities",
+                        lambda: base_checks.check_catalog(
+                            fake, "listEntities", "catalog-entities", ("minecraft:zombie", "Zombie")
+                        ),
+                    ),
+                    (
+                        "console",
+                        lambda: base_checks.check_console(
+                            fake, self.server_log, f"takaro-verify-{self.options.run_id}", alive
+                        ),
+                    ),
+                ):
+                    if self.wanted(check_id):
+                        self.record(await coroutine())
+                    else:
+                        self.skip(check_id, self.not_selected_reason(check_id))
+
+                if self.hooks.after_protocol is not None:
+                    await self.hooks.after_protocol(self, fake, alive)
+
+                if self.wanted("shutdown"):
+                    self.record(await base_checks.check_shutdown(fake, container.wait_for_exit))
+                else:
+                    self.skip("shutdown", self.not_selected_reason("shutdown"))
+
+                if self.hooks.after_shutdown is not None:
+                    await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)
+
+                negative_selected = any(self.wanted(check_id) for check_id in self.hooks.negative_check_ids)
+                if self.options.negative or negative_selected:
+                    if self.hooks.negative is not None:
+                        await self.hooks.negative(self, fake, ws_url, manifest)
+                    else:
+                        self.skip("negative-wrong-target", f"game '{self.target.game}' ships no negative check")
         finally:
             await fake.stop()
+            self._record_missing_selected_checks()
             self.cleanup()
 
         report = build_report(
@@ -479,9 +639,8 @@ class TargetRun:
         return report
 
     def _scan_runtime_identity(self) -> dict[str, Any]:
-        scan = getattr(self.hooks, "scan_runtime_identity", None)
-        if scan is not None:
-            return dict(scan(self.adapter, self.server_log) or {})
+        if self.hooks.scan_runtime_identity is not None:
+            return dict(self.hooks.scan_runtime_identity(self.adapter, self.server_log) or {})
         found = base_checks.find_line(self.server_log, "with Fabric Loader")
         if not found:
             return {}

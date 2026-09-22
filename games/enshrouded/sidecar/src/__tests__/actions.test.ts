@@ -163,9 +163,9 @@ describe('all 17 Takaro actions', () => {
   });
 
   it('sendMessage: global, opts.recipient, senderNameOverride', async () => {
-    await ok('sendMessage', { message: 'hello all' });
+    expect(await ok('sendMessage', { message: 'hello all' })).toEqual({ success: true });
     expect(mock.lastRequest('POST', '/message')?.body).toEqual({ text: 'hello all' });
-    await ok('sendMessage', { message: 'Welcome', opts: { recipient: { gameId: LIMON }, senderNameOverride: 'Takaro' } });
+    expect(await ok('sendMessage', { message: 'Welcome', opts: { recipient: { gameId: LIMON }, senderNameOverride: 'Takaro' } })).toEqual({ success: true });
     expect(mock.lastRequest('POST', '/message')?.body).toEqual({ text: 'Takaro: Welcome', recipientGameId: '76561198000005875' });
     expect((await call('sendMessage', {})).error).toMatch(/'message'/);
   });

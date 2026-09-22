@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "id": "proton-1024233",
+  "game": "enshrouded",
+  "platform": "proton",
+  "revision": "1024233",
+  "default": true,
+  "support": {
+    "status": "candidate",
+    "since": "2026-09-14",
+    "evidence": [
+      "games/enshrouded/README.md (What works, what doesn't - verified 2026-09-13/14 on game build 1024233 / Steam build 23178631 / plugin 0.4.2)"
+    ],
+    "notes": "Exact Steam pin of the build the 2026-09-13/14 hard test proved. The native plugin resolves game code by signature and is proven ONLY on this build: on any other build the affected capabilities self-check as degraded and takaro-maint verify fails plugin-health; that is the hook-compatibility claim, not a process-alive check. Wine/Proton runtime CI is a separate follow-up (#173); gameplay evidence #174."
+  },
+  "inputs": {
+    "server": {
+      "kind": "steam-depots",
+      "source": "steam",
+      "hashOrigin": "self-recorded",
+      "app": 2278520,
+      "branch": "public",
+      "buildid": 23178631,
+      "os": "windows",
+      "arch": "64",
+      "depots": {
+        "1004": {"manifest": "7604377918839582995", "size": 67863136, "files": 8},
+        "2278521": {"manifest": "2174935030716737236", "size": 8756751690, "files": 39}
+      },
+      "files": {
+        "enshrouded_server.exe": {"sha256": "001c1b40ed091d8c1aee583adde3800d7c858ae2c7f4dff54fca2938b2be1637", "size": 22557696},
+        "enshrouded_server.kfc": {"sha256": "bbcfce8901a66d6add2526feb172a346e226fe2c4d90f27ab0830a07bc54cd69", "size": 4415488},
+        "steam_api64.dll": {"sha256": "dcfaa13aa419a0641917205957dbe15aa472e7cf09a28cf8d3cf429598e67799", "size": 301928}
+      },
+      "credentials": null
+    }
+  },
+  "runtime": {
+    "java": null,
+    "container": {
+      "kind": "container-image",
+      "image": "mornedhels/enshrouded-server",
+      "tag": "1.7.2-proton",
+      "digest": "sha256:85978a10f88a85ab0a0aa92e9821d30424895d38bf81fe543532451219c42d0d",
+      "env": {
+        "WINEDLLOVERRIDES": "dbghelp=n,b",
+        "SERVER_ENABLE_TEXT_CHAT": "true",
+        "SERVER_SLOT_COUNT": "4",
+        "TZ": "Etc/UTC",
+        "TAKARO_PINNED_PROTON": "GE-Proton10-30"
+      }
+    }
+  },
+  "build": {
+    "system": "script",
+    "script": "games/enshrouded/scripts/build-release.sh",
+    "toolchain": {
+      "kind": "container-image",
+      "image": "node",
+      "tag": "22-bookworm-slim",
+      "digest": "sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9"
+    },
+    "deps": {
+      "zig": {
+        "coordinate": "ziglang:zig-linux-x86_64:0.13.0",
+        "sha256": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
+        "resolvedCoordinate": "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz"
+      },
+      "sidecar-runtime": {
+        "coordinate": "docker:node:22-alpine",
+        "sha256": "b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85",
+        "resolvedCoordinate": "node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85"
+      }
+    }
+  },
+  "components": [
+    {"role": "server-plugin", "artifact": "takaro-enshrouded-plugin-proton-1024233-{version}.zip", "installDir": "takaro/plugin"},
+    {"role": "sidecar", "artifact": "takaro-enshrouded-sidecar-proton-1024233-{version}.zip", "installDir": "takaro/sidecar"}
+  ],
+  "verification": {
+    "required": "contract",
+    "separate": [
+      "startup",
+      "plugin-health",
+      "sidecar-identify",
+      "sidecar-players",
+      "sidecar-catalog",
+      "sidecar-console",
+      "action",
+      "reconnect",
+      "event",
+      "stop",
+      "negative-degraded-hooks"
+    ]
+  },
+  "preserve": [
+    "enshrouded_server.json",
+    "savegame/",
+    "logs/",
+    "backups/",
+    "steamapps/compatdata/",
+    "takaro/",
+    ".takaro/"
+  ],
+  "notes": "Runtime identity: the Windows server binary under GE-Proton10-30 (recorded from /usr/local/bin/version of the pinned image; verify asserts it). The plugin's hooks are proven on game build 1024233 only. Catalogue names are derived by the plugin from the item, entity and location template codes (games/enshrouded/mod/src/names.cpp); no localisation ships with the dedicated server, and every distinct code gets a distinct name."
+}

@@ -1,4 +1,5 @@
-FROM mono:6.12.0.182-slim@sha256:eb9a8d42dc58090cdb0d39b36422d9560f33e9d2cce22f4c888da263cee46c45
+ARG TOOLCHAIN
+FROM ${TOOLCHAIN}
 
 WORKDIR /app
 
@@ -12,7 +13,7 @@ RUN sed -i 's|http://deb.debian.org|http://archive.debian.org|g; \
       > /etc/apt/apt.conf.d/99-archive-valid
 
 RUN apt-get update && \
-  apt-get install -y nuget curl unzip git && \
+  apt-get install -y nuget curl unzip zip git && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 

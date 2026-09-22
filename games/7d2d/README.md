@@ -1,7 +1,11 @@
 # Takaro 7D2D Connector
 
 A server-side-only mod (version **0.1.4**) that connects a 7 Days to Die dedicated server to
-Takaro. Tested against a **V 3.2.0 b10** dedicated server; players do not install anything.
+Takaro. Players do not install anything.
+
+It is built against one exact server build: **V 3.2.0 b10** (Steam app 294420, branch `public`,
+build 24994542). That is the build every result in the table below was proven on. The mod may
+load on another build, but nothing here says it works there.
 
 ## Install
 
@@ -18,12 +22,16 @@ You need:
 
 ### 2. Download the mod
 
-Download **`takaro-7d2d-mod.zip`** from the latest `7d2d-vX.Y.Z` release on the releases page:
+Download **`takaro-7d2d-mod-linux-3.2.0.b10-<version>.zip`** from the latest `7d2d-vX.Y.Z` release
+on the releases page:
 
 > https://github.com/gettakaro/connectors/releases
 
 Direct link pattern:
-`https://github.com/gettakaro/connectors/releases/download/7d2d-v<version>/takaro-7d2d-mod.zip`
+`https://github.com/gettakaro/connectors/releases/download/7d2d-v<version>/takaro-7d2d-mod-linux-3.2.0.b10-<version>.zip`
+
+`takaro-7d2d-mod.zip` is still published next to it and is the same bytes, so an old bookmark
+keeps working. The name in the middle is the server build the mod was built against.
 
 Use `7d2d-v0.1.4` or newer. The results in the table below were proven on the code that shipped in
 0.1.4 (the dev build was labelled 0.1.6 during testing). Do not use the

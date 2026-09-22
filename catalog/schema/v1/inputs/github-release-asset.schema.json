@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gettakaro/connectors/catalog/schema/v1/inputs/github-release-asset.schema.json",
+  "title": "GitHub release asset input",
+  "description": "One file published on a GitHub release, addressed by repository, tag and asset name. A rolling tag that is re-uploaded in place is pinned by recording the immutable URL it resolved to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "source", "hashOrigin", "repo", "tag", "asset", "sha256", "installPath"],
+  "properties": {
+    "kind": {"const": "github-release-asset"},
+    "source": {"type": "string", "minLength": 1, "description": "A game.json source whose provider is github-release."},
+    "hashOrigin": {"enum": ["upstream", "self-recorded"]},
+    "repo": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "tag": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"},
+    "asset": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$", "description": "The exact asset file name on the release."},
+    "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "size": {"type": "integer", "minimum": 1},
+    "updatedAt": {"type": "string", "minLength": 1, "description": "RFC 3339; informational for a mutable tag."},
+    "resolvedCoordinate": {"type": "string", "minLength": 1, "description": "The immutable URL a floating tag resolved to."},
+    "installPath": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(/[A-Za-z0-9][A-Za-z0-9._+-]*)*$"}
+  }
+}

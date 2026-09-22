@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using System.Linq;
 using System.Text.Json;
 using Terraria;
@@ -57,7 +58,12 @@ public sealed class TakaroTerrariaEventsPlugin : TerrariaPlugin
         {
             HelpText = "Lifts every active Takaro ban identifier for a player."
         });
-        TShock.Log.ConsoleInfo("Takaro Terraria Events plugin loaded");
+        // The leading text is the line `takaro-maint verify` waits for; the version
+        // behind it is what build-mod.sh stamped in, so a log says which build loaded.
+        var build = typeof(TakaroTerrariaEventsPlugin)
+            .Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion ?? "dev";
+        TShock.Log.ConsoleInfo($"Takaro Terraria Events plugin loaded ({build})");
     }
 
     protected override void Dispose(bool disposing)

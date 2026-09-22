@@ -28,6 +28,12 @@ public final class TakaroAgent {
     public static void premain(String args, Instrumentation inst) {
         try {
             AgentLog.log("premain: Takaro Project Zomboid connector (M2)");
+
+            // Before anything is instrumented: is this the server build the hooks were
+            // pinned to? A refusal installs nothing rather than binding the wrong methods.
+            if (!TargetGuard.check()) {
+                return;
+            }
             AgentLog.log("premain: java.version=" + System.getProperty("java.version")
                     + " vendor=" + System.getProperty("java.vm.vendor"));
             AgentLog.log("premain: jvm input args = "
@@ -61,7 +67,10 @@ public final class TakaroAgent {
 
             // --- install hooks (binds only in the JVM that loads the game classes) ---
             HookInstaller.install(inst);
-            AgentLog.log("premain: hooks installed");
+            var unbound = HookInstaller.unboundHooks();
+            AgentLog.log(unbound.isEmpty()
+                    ? "premain: hooks installed"
+                    : "premain: hooks installed; unbound: " + unbound);
 
             startTickWatchdog();
 

@@ -100,9 +100,12 @@ def _resolve(args: Any) -> int:
             "fp16": resolved["fp16"],
             "image": resolved["containerRef"],
             "toolchain": resolved["toolchainRef"],
-            "java": str(resolved["runtime"]["java"]),
-            "gradle_project": resolved["build"]["gradleProject"],
+            "java": "" if resolved["runtime"]["java"] is None else str(resolved["runtime"]["java"]),
+            "build_system": str(resolved["build"]["system"]),
         }
+        # Only a Gradle build has a project; a job that needs one reads build_system first.
+        if resolved["build"].get("gradleProject") is not None:
+            fields["gradle_project"] = str(resolved["build"]["gradleProject"])
         text = "\n".join(f"{key}={value}" for key, value in fields.items())
         text += "\nenv=" + json.dumps(resolved["env"], separators=(",", ":"))
         if args.out:

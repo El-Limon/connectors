@@ -19,6 +19,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import UpstreamUnavailable
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
 from ...verify.report import build_report, write_report
 from .fabric import TARGET_CHECK_PREFIX
 
@@ -200,7 +201,7 @@ async def run_hosted(
                 await asyncio.to_thread(
                     checks.check_startup,
                     run.server_log,
-                    run.options.startup_timeout,
+                    run.startup_timeout,
                     alive,
                     run.data_dir,
                     ledger_inputs,
@@ -237,6 +238,7 @@ async def run_hosted(
             server_ids.extend(await asyncio.to_thread(takaro.find, identity))
         for server_id in set(server_ids):
             await asyncio.to_thread(takaro.delete, server_id)
+        run._record_missing_selected_checks()
         run.cleanup()
         # Redaction belongs in the `finally`: a run that dies of a boot failure, a docker
         # error or an interrupt keeps its logs just the same, and those are the files that
@@ -385,3 +387,16 @@ async def _hosted_shutdown(takaro: Any, container: Any, server_ids: list[str]) -
         timer.elapsed_ms,
         {"exitCode": code, "note": "shutdown requested through the Takaro API", "problems": problems},
     )
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    check_ids=CHECK_IDS,
+    negative_check_ids=("negative-wrong-target",),
+    hosted_check_ids=("hosted-registration",),
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    negative=negative,
+    run_hosted=run_hosted,
+    scan_runtime_identity=scan_runtime_identity,
+)

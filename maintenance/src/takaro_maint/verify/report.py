@@ -105,11 +105,26 @@ def build_report(
                 "sha1": spec["server"]["sha1"],
                 "size": int(spec["server"]["size"]),
             }
-        else:
-            inputs[name] = {
-                "url": ids.resolved_url(game_record, spec["source"], spec["path"]),
-                "sha256": spec["sha256"],
-            }
+            continue
+        url = ids.input_url(game_record, spec)
+        if url is None:
+            raise VerificationFailed(
+                f"input '{name}' ({spec['kind']}) names no URL to record as evidence; "
+                f"its provider has to answer input_url"
+            )
+        files = spec.get("files")
+        if isinstance(files, dict):
+            # An input that pins a set of files is evidence about each of them, so the
+            # report names every file the target declared rather than the set as a whole.
+            for path, entry in sorted(files.items()):
+                row: dict[str, Any] = {"url": f"{url}/{path}"}
+                if entry.get("sha256"):
+                    row["sha256"] = entry["sha256"]
+                if entry.get("size") is not None:
+                    row["size"] = int(entry["size"])
+                inputs[f"{name}:{path}"] = row
+            continue
+        inputs[name] = {"url": url, "sha256": spec["sha256"]}
     rows = [row for row in manifest["artifacts"] if row["target"] == target.id]
     container = target.record["runtime"]["container"]
     report = {

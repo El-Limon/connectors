@@ -11,6 +11,14 @@ from pathlib import Path
 from .. import output, paths
 
 
+@dataclass
+class _Move:
+    final: Path
+    backup: Path
+    retired: bool = False
+    placed: bool = False
+
+
 def is_protected(relative: str, preserve: list[str]) -> bool:
     """True when ``relative`` (a path under the install dir) must never be replaced."""
     normalised = relative.replace(os.sep, "/")
@@ -66,16 +74,37 @@ class StagedInstall:
         return staged
 
     def commit(self) -> list[str]:
-        """Move every staged file into place. Protected paths are skipped, not overwritten."""
+        """Move every staged file into place, rolling every prior move back on failure."""
         placed: list[str] = []
-        for install_path, staged in sorted(self._staged.items()):
-            if is_protected(install_path, self.preserve):
-                output.info(f"keeping protected {install_path}")
-                continue
-            # Checked again at the write: this is the line that puts bytes into the
-            # caller's directory, and an unchecked record value would escape it.
-            final = self.dest / paths.safe_relative(install_path, field="installPath")
-            final.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staged, final)
-            placed.append(install_path)
+        rollback = self.root / ".rollback"
+        moves: list[_Move] = []
+        try:
+            for install_path, staged in sorted(self._staged.items()):
+                if is_protected(install_path, self.preserve):
+                    output.info(f"keeping protected {install_path}")
+                    continue
+                # Checked again at the write: this is the line that puts bytes into the
+                # caller's directory, and an unchecked record value would escape it.
+                relative = paths.safe_relative(install_path, field="installPath")
+                final = self.dest / relative
+                backup = rollback / relative
+                final.parent.mkdir(parents=True, exist_ok=True)
+                state = _Move(final=final, backup=backup)
+                moves.append(state)
+                if final.exists() or final.is_symlink():
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(final, backup)
+                    state.retired = True
+                os.replace(staged, final)
+                state.placed = True
+                placed.append(install_path)
+        except BaseException:
+            for state in reversed(moves):
+                if state.placed and (state.final.exists() or state.final.is_symlink()):
+                    state.final.unlink()
+                if state.retired and (state.backup.exists() or state.backup.is_symlink()):
+                    state.final.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(state.backup, state.final)
+            raise
+        shutil.rmtree(rollback, ignore_errors=True)
         return placed

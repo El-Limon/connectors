@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import net, output, paths
-from ..exit_codes import INTEGRITY, USAGE, MaintError
+from ..exit_codes import INTEGRITY, USAGE, MaintError, UsageError
 from . import ids, schema
 from .loader import Catalog, Target
 
@@ -163,6 +163,27 @@ def _check_input_kinds(result: ValidationResult, target: Target) -> None:
         )
 
 
+def _check_build_system(result: ValidationResult, target: Target) -> None:
+    file = _relative(target.path)
+    system = target.record.get("build", {}).get("system")
+    if not isinstance(system, str):
+        result.add("build-system-schema", False, "the build declares no system", file)
+        return
+    schema_name = f"build-systems/{system}.schema.json"
+    if not schema.has_schema(schema_name):
+        # The target schema does not enumerate the build systems, so this is the only
+        # gate on them: an unknown system must fail here rather than pass unchecked.
+        result.add(
+            "build-system-schema",
+            False,
+            f"unknown build system '{system}': no catalog/schema/v1/{schema_name}",
+            file,
+        )
+        return
+    errors = schema.errors_for(schema_name, target.record["build"])
+    result.add("build-system-schema", not errors, f"build ({system}): " + ("; ".join(errors) or "valid"), file)
+
+
 def _check_no_null_hash(result: ValidationResult, target: Target) -> None:
     file = _relative(target.path)
     if target.status == "retired":
@@ -171,6 +192,14 @@ def _check_no_null_hash(result: ValidationResult, target: Target) -> None:
     missing: list[str] = []
     for name, spec in target.record.get("inputs", {}).items():
         if spec["kind"] == "mojang-version":
+            continue
+        files = spec.get("files")
+        if isinstance(files, dict):
+            # An input that pins a set of files has no hash of its own; every file it
+            # declares carries one instead.
+            missing += [
+                f"inputs.{name}.files.{path}.sha256" for path, entry in sorted(files.items()) if not entry.get("sha256")
+            ]
             continue
         if not spec.get("sha256"):
             missing.append(f"inputs.{name}.sha256")
@@ -189,10 +218,10 @@ def _check_no_null_hash(result: ValidationResult, target: Target) -> None:
 
 def _check_immutable_images(result: ValidationResult, target: Target) -> None:
     file = _relative(target.path)
-    images = {
-        "runtime.container": target.record["runtime"]["container"],
-        "build.toolchain": target.record["build"]["toolchain"],
-    }
+    images = {"runtime.container": target.record["runtime"]["container"]}
+    toolchain = target.record["build"].get("toolchain")
+    if toolchain is not None:
+        images["build.toolchain"] = toolchain
     for where, image in images.items():
         errors = schema.errors_for("inputs/container-image.schema.json", image)
         result.add(
@@ -270,19 +299,67 @@ def _check_plugins_match_toml(result: ValidationResult, catalog: Catalog, target
     )
 
 
-def _check_gradle_project_exists(result: ValidationResult, catalog: Catalog, target: Target) -> None:
+def _check_build_paths_exist(result: ValidationResult, catalog: Catalog, target: Target) -> None:
+    """Whatever the build names in this repository has to be there.
+
+    Which field names a path is the build system's business, so this reads the fields the
+    record actually carries instead of branching on the system name.
+    """
     file = _relative(target.path)
+    build = target.record["build"]
+    project = build.get("gradleProject")
+    script = build.get("script")
     if target.status == "retired":
-        result.add("gradle-project-exists", True, "retired target; no Gradle project required", file)
+        check_id = "gradle-project-exists" if project is not None else "build-script-exists"
+        result.add(check_id, True, "retired target; the build's paths are not required", file)
         return
-    project_dir = catalog.game(target.game).record["build"]["projectDir"]
-    build_file = (
-        paths.repo_root() / project_dir / "targets" / target.record["build"]["gradleProject"] / "build.gradle.kts"
-    )
+    if project is not None:
+        project_dir = catalog.game(target.game).record["build"]["projectDir"]
+        build_file = paths.repo_root() / project_dir / "targets" / project / "build.gradle.kts"
+        result.add(
+            "gradle-project-exists",
+            build_file.is_file(),
+            f"{_relative(build_file)} " + ("exists" if build_file.is_file() else "is missing"),
+            file,
+        )
+    if script is not None:
+        try:
+            relative = paths.safe_relative(str(script), field="build.script")
+        except UsageError as exc:
+            result.add("build-script-exists", False, exc.message, file)
+        else:
+            script_file = paths.repo_root() / relative
+            result.add(
+                "build-script-exists",
+                script_file.is_file(),
+                f"{_relative(script_file)} " + ("exists" if script_file.is_file() else "is missing"),
+                file,
+            )
+    if project is None and script is None:
+        result.add("build-script-exists", True, "the build names no path in this repository", file)
+
+
+def _check_lockfile_pin(result: ValidationResult, target: Target) -> None:
+    file = _relative(target.path)
+    lockfile = target.record["build"].get("lockfile")
+    if lockfile is None:
+        result.add("lockfile-pinned", True, "the build declares no lockfile", file)
+        return
+    try:
+        relative = paths.safe_relative(str(lockfile["path"]), field="build.lockfile.path")
+    except UsageError as exc:
+        result.add("lockfile-pinned", False, exc.message, file)
+        return
+    path = paths.repo_root() / relative
+    if not path.is_file():
+        result.add("lockfile-pinned", False, f"{_relative(path)} is missing", file)
+        return
+    expected = str(lockfile["sha256"])
+    actual = net.sha256_file(path)
     result.add(
-        "gradle-project-exists",
-        build_file.is_file(),
-        f"{_relative(build_file)} " + ("exists" if build_file.is_file() else "is missing"),
+        "lockfile-pinned",
+        actual == expected,
+        f"{_relative(path)} expected {expected}, actual {actual}",
         file,
     )
 
@@ -356,6 +433,21 @@ def _check_launcher_path(result: ValidationResult, target: Target) -> None:
     )
 
 
+def _check_separate_names(result: ValidationResult, target: Target) -> None:
+    """Every separately claimed proof names a check the verifier can actually run."""
+    from ..verify.runner import check_ids
+
+    file = _relative(target.path)
+    declared = target.record.get("verification", {}).get("separate", [])
+    unknown = sorted(set(declared) - set(check_ids(target.game)))
+    result.add(
+        "separate-names-checks",
+        not unknown,
+        f"unknown verification.separate entries: {unknown}" if unknown else "every separate entry names a check",
+        file,
+    )
+
+
 def _guarded(result: ValidationResult, check_id: str, file: str, run: Any) -> None:
     """A malformed record must fail its check, not crash the validator."""
     try:
@@ -375,15 +467,18 @@ def validate_catalog(catalog: Catalog, *, online: bool = False, cache: Path | No
         ("id-matches-stem", _check_ids),
         ("platform-declared", lambda r, t: _check_platform_declared(r, catalog, t)),
         ("input-kind-schema", _check_input_kinds),
+        ("build-system-schema", _check_build_system),
         ("no-null-hash", _check_no_null_hash),
         ("immutable-tag-and-digest", _check_immutable_images),
         ("no-floating-words", _check_no_floating_words),
         ("minecraft-java-chain", _check_java_chain),
         ("plugins-match-toml", lambda r, t: _check_plugins_match_toml(r, catalog, t)),
-        ("gradle-project-exists", lambda r, t: _check_gradle_project_exists(r, catalog, t)),
+        ("build-script-exists", lambda r, t: _check_build_paths_exist(r, catalog, t)),
+        ("lockfile-pinned", _check_lockfile_pin),
         ("deps-consistent", _check_deps_consistent),
         ("maven-path-derivable", _check_maven_path),
         ("launcher-path-derivable", _check_launcher_path),
+        ("separate-names-checks", _check_separate_names),
     )
     for target in catalog.all_targets():
         file = _relative(target.path)
@@ -434,12 +529,20 @@ def _check_online(result: ValidationResult, catalog: Catalog, cache: Path) -> No
                         code=INTEGRITY,
                     )
                     continue
-                url = ids.resolved_url(game, spec["source"], spec["path"])
+                fetchable = ids.input_url(game, spec)
+                if fetchable is None or not fetchable.startswith(("http://", "https://")):
+                    result.add(
+                        "online-not-http",
+                        True,
+                        f"{name}: {kind} inputs are not fetched over HTTP; their bytes are checked on install",
+                        file,
+                    )
+                    continue
                 dest = tmpdir / f"{name}.bin"
                 try:
-                    net.fetch(url, dest, net.Expectation(sha256=spec["sha256"]), no_cache=True)
+                    net.fetch(fetchable, dest, net.Expectation(sha256=spec["sha256"]), no_cache=True)
                 except MaintError as exc:
                     result.add("online-hash", False, f"{name}: {exc.message}", file, code=exc.code)
                     continue
-                output.debug(f"{name}: {url} still hashes to {spec['sha256']}")
-                result.add("online-hash", True, f"{name}: {url} still hashes to the recorded sha256", file)
+                output.debug(f"{name}: {fetchable} still hashes to {spec['sha256']}")
+                result.add("online-hash", True, f"{name}: {fetchable} still hashes to the recorded sha256", file)

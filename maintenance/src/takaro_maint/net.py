@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import http.client
 import os
 import shutil
+import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +24,7 @@ USER_AGENT = f"takaro-connectors-maint/{__version__} (+https://github.com/gettak
 TIMEOUT_SECONDS = 60
 TIMEOUT_ATTEMPTS = 3
 RETRY_DELAYS_SECONDS: tuple[float, ...] = (2.0, 6.0)
+PinnedAddress = tuple[int, int, int, tuple[Any, ...]]
 
 
 class Transport(Protocol):
@@ -28,10 +33,86 @@ class Transport(Protocol):
     def open(self, url: str, headers: dict[str, str]) -> IO[bytes]: ...
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Turn a redirect into the original 3xx response instead of following its Location."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to a validated socket address, with TLS still authenticating ``host``."""
+
+    source_address: tuple[str, int] | None
+    _context: ssl.SSLContext
+
+    def __init__(self, host: str, *args: Any, pinned_addresses: tuple[PinnedAddress, ...], **kwargs: Any) -> None:
+        self._pinned_addresses = pinned_addresses
+        super().__init__(host, *args, **kwargs)
+
+    def connect(self) -> None:
+        last_error: OSError | None = None
+        for family, socktype, proto, sockaddr in self._pinned_addresses:
+            raw = socket.socket(family, socktype, proto)
+            try:
+                raw.settimeout(self.timeout)
+                if self.source_address:
+                    raw.bind(self.source_address)
+                raw.connect(sockaddr)
+            except OSError as exc:
+                raw.close()
+                last_error = exc
+                continue
+            self.sock = raw
+            break
+        else:
+            raise last_error or OSError("the bearer realm resolved to no connectable address")
+
+        try:
+            self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+        except BaseException:
+            if self.sock is not None:
+                self.sock.close()
+                self.sock = None
+            raise
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    _context: ssl.SSLContext
+
+    def __init__(self, addresses: tuple[PinnedAddress, ...]) -> None:
+        super().__init__()
+        self._addresses = addresses
+
+    def https_open(self, req: urllib.request.Request) -> Any:
+        connection = functools.partial(_PinnedHTTPSConnection, pinned_addresses=self._addresses)
+        return self.do_open(connection, req, context=self._context)
+
+
 class UrllibTransport:
     def open(self, url: str, headers: dict[str, str]) -> IO[bytes]:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **headers})
         return urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS)  # noqa: S310
+
+    def open_no_redirect(self, url: str, headers: dict[str, str], addresses: tuple[PinnedAddress, ...]) -> IO[bytes]:
+        """Open one URL at a validated address, without redirects or another DNS lookup."""
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **headers})
+        # Ignore environment proxies here: a proxy would replace the validated endpoint
+        # with its own name resolution. The original hostname remains in the request and
+        # is still the SNI/certificate name used by _PinnedHTTPSConnection.
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _PinnedHTTPSHandler(addresses), _NoRedirect()
+        )
+        return opener.open(request, timeout=TIMEOUT_SECONDS)  # noqa: S310
 
 
 _transport: Transport = UrllibTransport()
@@ -44,6 +125,14 @@ def set_transport(transport: Transport) -> None:
 
 def get_transport() -> Transport:
     return _transport
+
+
+def open_no_redirect(url: str, headers: dict[str, str], addresses: tuple[PinnedAddress, ...]) -> IO[bytes]:
+    """Open exactly ``url`` at validated addresses; never resolve or redirect it again."""
+    opener = getattr(_transport, "open_no_redirect", None)
+    if opener is None:
+        raise OSError("the configured HTTP transport cannot guarantee redirect refusal")
+    return opener(url, headers, addresses)
 
 
 @dataclass(frozen=True)

@@ -26,8 +26,8 @@ build-release-minecraft version out-dir='dist':
     ./games/minecraft/scripts/build-release.sh {{version}} {{out-dir}}
 
 # Build the 7D2D connector release artifact locally into <out-dir>
-build-release-7d2d version out-dir='dist':
-    ./games/7d2d/scripts/build-release.sh {{version}} {{out-dir}}
+build-release-7d2d version out-dir='dist' target='linux-3.2.0.b10':
+    ./games/7d2d/scripts/build-release.sh {{version}} {{out-dir}} --target {{target}}
 
 # Build the Project Zomboid connector release artifact locally into <out-dir>
 build-release-zomboid version out-dir='dist':
@@ -106,36 +106,40 @@ minecraft-bot-up *args:
 # === 7D2D Connector ===
 
 # Prepare 7D2D build dependencies and game binaries
-sevend2d-setup:
-    cd games/7d2d && ./scripts/setup-environment.sh
+sevend2d-setup target='linux-3.2.0.b10':
+    cd games/7d2d && ./scripts/setup-environment.sh --target {{target}}
 
 # Build the 7D2D mod
-sevend2d-build:
-    cd games/7d2d && ./scripts/build-mod.sh
+sevend2d-build target='linux-3.2.0.b10':
+    cd games/7d2d && ./scripts/build-mod.sh --target {{target}}
 
 # Build the 7D2D mod and deploy it into the dev-servers rig
 sevend2d-build-deploy:
     ./dev-servers/scripts/deploy-connector.sh 7d2d
 
 # Run the Generic Connector protocol contract harness
-sevend2d-test-contract:
-    cd games/7d2d && ./scripts/test-contract.sh
+sevend2d-test-contract target='linux-3.2.0.b10':
+    cd games/7d2d && ./scripts/test-contract.sh --target {{target}}
 
 # Run the 7D2D source-level regression suite
 sevend2d-test-regressions:
     python3 -m unittest tests/test_7d2d_connector_regressions.py
 
-# Start the 7D2D build services (steamcmd/builder/deps; the test server lives in dev-servers/)
+# Read what Steam serves on the pinned branch now and compare it with the catalog
+sevend2d-pin *args:
+    ./maintenance/bin/takaro-maint steam pin --game 7d2d {{args}}
+
+# Start the 7D2D build services (builder/deps; the test server lives in dev-servers/)
 sevend2d-up *args:
-    cd games/7d2d && docker compose up {{args}}
+    ./games/7d2d/scripts/compose.sh up {{args}}
 
 # Stop the 7D2D build services
 sevend2d-down *args:
-    cd games/7d2d && docker compose down {{args}}
+    ./games/7d2d/scripts/compose.sh down {{args}}
 
 # View 7D2D build service logs
 sevend2d-logs *args='--tail 100 -f':
-    cd games/7d2d && docker compose logs {{args}}
+    ./games/7d2d/scripts/compose.sh logs {{args}}
 
 # === Project Zomboid Connector ===
 

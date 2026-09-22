@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# What a Valheim release has to be true of, checked against the archives themselves.
+#
+# Two roles, two archives, and the rule that matters: neither may carry the other's
+# assemblies, and the client may carry nothing that talks to Takaro. Since the connector
+# archives are named by the target record, so this also checks the names, the .meta.json
+# sidecar each one carries, and the three different
+# BepInEx-shaped numbers in manifest.json.
+#
+# Usage: release-package-behavior.sh <version> <dist-dir>
+#   VALHEIM_TARGET_ID, VALHEIM_TARGET_FINGERPRINT   when set, the names and sidecars are
+#                                                   required to match that target
+#   VALHEIM_BEPINEX_VERSION_EXPECTED                when set, the pinned pack version
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,8 +29,60 @@ for command in unzip zipinfo jq rg find; do
   }
 done
 
-server_zip="$dist_dir/takaro-valheim-plugin.zip"
-client_zip="$dist_dir/takaro-valheim-companion.zip"
+# Exactly one archive per role. The name comes from the catalog target, so it is matched
+# by its role prefix rather than spelled out here; two of either is a packaging bug, and a
+# release that shipped both would be ambiguous about which bytes it meant.
+one_archive() {
+  local role_glob="$1" role="$2"
+  local -a found=()
+  while IFS= read -r candidate; do
+    found+=("$candidate")
+  done < <(find "$dist_dir" -maxdepth 1 -type f -name "$role_glob" -print | LC_ALL=C sort)
+  if [ "${#found[@]}" -ne 1 ]; then
+    printf 'expected exactly one %s archive in %s, found %d\n' "$role" "$dist_dir" "${#found[@]}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${found[0]}"
+}
+
+# takaro-valheim-plugin.zip and takaro-valheim-companion.zip are the legacy names; the
+# publisher still ships them as aliases of the target-named archives.
+server_zip="$(one_archive 'takaro-valheim-plugin*.zip' 'server plugin')"
+client_zip="$(one_archive 'takaro-valheim-companion*.zip' 'client companion')"
+
+# When the build knows its target, the archive names and their sidecars have to say so:
+# an archive nobody can place against a target cannot be published as evidence of one.
+check_target_identity() {
+  local archive="$1" role="$2" expected_name meta
+  [ -n "${VALHEIM_TARGET_ID:-}" ] || return 0
+  expected_name="takaro-valheim-${role}-${VALHEIM_TARGET_ID}-${VALHEIM_RELEASE_VERSION}.zip"
+  if [ "$(basename "$archive")" != "$expected_name" ]; then
+    printf 'release archive is not named for its target: %s (expected %s)\n' "$archive" "$expected_name" >&2
+    exit 1
+  fi
+  meta="${archive}.meta.json"
+  [ -f "$meta" ] || {
+    printf 'release archive has no .meta.json sidecar: %s\n' "$meta" >&2
+    exit 1
+  }
+  jq -e \
+    --arg target "$VALHEIM_TARGET_ID" \
+    --arg fingerprint "${VALHEIM_TARGET_FINGERPRINT:-}" \
+    --arg role "$3" \
+    --arg version "$VALHEIM_RELEASE_VERSION" \
+    '.target == $target
+      and .role == $role
+      and .connectorVersion == $version
+      and ($fingerprint == "" or .fingerprint == $fingerprint)' \
+    "$meta" >/dev/null || {
+      printf 'release archive sidecar does not describe this target: %s\n' "$meta" >&2
+      exit 1
+    }
+}
+
+check_target_identity "$server_zip" plugin server-plugin
+check_target_identity "$client_zip" companion client-companion
+
 for archive in "$server_zip" "$client_zip"; do
   [ -f "$archive" ] || {
     printf 'required release archive is missing: %s\n' "$archive" >&2
@@ -99,6 +163,11 @@ if find "$server_extract" "$client_extract" -type l -print -quit | rg -q .; then
   exit 1
 fi
 
+# manifest.json states three different BepInEx-shaped numbers and they are not
+# interchangeable: `pluginVersion` is what [BepInPlugin] declares (this connector's own
+# numeric core), `bepInExPack.version` is the Thunderstore package the target pins, and
+# `bepInExVersion` is the loader assembly's own version. A manifest that repeats the plugin
+# version as the loader version is wrong.
 validate_manifest() {
   local manifest="$1"
   local expected_name="$2"
@@ -106,17 +175,28 @@ validate_manifest() {
   jq -e \
     --arg name "$expected_name" \
     --arg version "$VALHEIM_RELEASE_VERSION" \
-    --arg loader "$VALHEIM_BEPINEX_VERSION" \
+    --arg plugin "$VALHEIM_BEPINEX_VERSION" \
     --arg role "$expected_role" \
+    --arg pack "${VALHEIM_BEPINEX_VERSION_EXPECTED:-}" \
+    --arg target "${VALHEIM_TARGET_ID:-}" \
+    --arg fingerprint "${VALHEIM_TARGET_FINGERPRINT:-}" \
     '.name == $name
       and .productVersion == $version
-      and .bepInExVersion == $loader
+      and .pluginVersion == $plugin
       and .processRole == $role
       and .protocol.minimum == 2
       and .protocol.current == 2
-      and .protocol.maximum == 2' \
+      and .protocol.maximum == 2
+      and .bepInExPack.namespace == "denikson"
+      and .bepInExPack.name == "BepInExPack_Valheim"
+      and (.bepInExPack.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+      and ($pack == "" or .bepInExPack.version == $pack)
+      and (.bepInExVersion | test("^[0-9]+(\\.[0-9]+){1,3}$"))
+      and .bepInExVersion != .pluginVersion
+      and ($target == "" or .target.id == $target)
+      and ($fingerprint == "" or .target.fingerprint == $fingerprint)' \
     "$manifest" >/dev/null || {
-      printf 'release manifest does not match product, role, or protocol contract: %s\n' "$manifest" >&2
+      printf 'release manifest does not match product, role, protocol or BepInEx contract: %s\n' "$manifest" >&2
       exit 1
     }
 }

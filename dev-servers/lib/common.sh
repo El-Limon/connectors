@@ -15,24 +15,15 @@ DS_FOCUS="${DS_DATA}/.focus"
 # id | compose | profile | services | ram_gb | disk_gb | kind | description | datadir
 # profile "-" means the game owns its whole compose file (stop uses `down`);
 # otherwise the game is one profile inside a shared file (stop targets services).
-# Order is the install order: cheap and fast first, so failures surface early.
+# Each game registers itself from lib/games/<game>.sh with the order it installs in:
+# cheap and fast first, so failures surface early.
+DS_REGISTRY_ROWS=()
+
+# ds_register <order> '<registry row>'
+ds_register() { DS_REGISTRY_ROWS+=("$1 $2"); }
+
 ds_registry() {
-    cat <<'REG'
-terraria|terraria.yml|-|terraria|1|1|plugin|TShock server + Takaro events plugin (Takaro connects over TShock REST)|terraria
-minecraft-paper|minecraft.yml|paper|paper|3|2|connector|Paper 1.21.x + Takaro Paper plugin|minecraft/paper
-minecraft-neoforge|minecraft.yml|neoforge|neoforge|3|2|connector|NeoForge 1.21.x + Takaro NeoForge mod|minecraft/neoforge
-minecraft-fabric|minecraft.yml|fabric|fabric|3|2|connector|Fabric (catalog target) + Takaro Fabric mod|minecraft/fabric
-minecraft-fabric-26.1.2|minecraft.yml|fabric-26-1-2|fabric-26-1-2|3|2|connector|Fabric 26.1.2 (catalog target) + Takaro Fabric mod|minecraft/fabric-26.1.2
-valheim|valheim.yml|-|valheim|4|6|connector|Valheim + BepInEx + Takaro Valheim plugin|valheim
-dayz|dayz.yml|-|dayz dayz-takaro|6|4|sidecar|DayZ (Linux, app 223350) + @TakaroIntegration mod + Takaro TypeScript sidecar|dayz
-dragonwilds|dragonwilds.yml|-|dragonwilds dragonwilds-takaro|4|8|sidecar|RuneScape: Dragonwilds (Linux, app 4019830) + Takaro LD_PRELOAD plugin + TypeScript sidecar|dragonwilds-dev
-vein|vein.yml|-|vein vein-takaro|4|20|sidecar|VEIN (Linux, app 2131400) + Takaro LD_PRELOAD plugin + TS sidecar|vein-dev
-rust|rust.yml|-|rust|8|12|connector|Rust + Carbon + TakaroConnector.cs|rust
-7d2d|7d2d.yml|-|7d2d|8|32|connector|7 Days to Die + Takaro mod|7d2d
-zomboid|zomboid.yml|-|zomboid|8|16|connector|Project Zomboid B42 + Takaro javaagent|zomboid
-palworld|palworld.yml|-|palworld palworld-bridge|12|6|bridge|Palworld + third-party Takaro bridge (REST only)|palworld
-conan-exiles|conan-exiles.yml|-|conan-exiles conan-bridge|12|6|sidecar|Conan Exiles + Takaro TypeScript sidecar|conan-exiles
-REG
+    printf '%s\n' "${DS_REGISTRY_ROWS[@]}" | sort -s -n -k1,1 | cut -d' ' -f2-
 }
 
 ds_game_ids() { ds_registry | cut -d'|' -f1; }
@@ -107,6 +98,29 @@ ds_die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 ds_warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 ds_info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 ds_ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
+
+# ── Scratch directories ──────────────────────────────────────────────────────
+# A directory a step needs until the script exits. Registered here rather than with a
+# per-function `trap ... RETURN`: bash runs a RETURN trap again when the *caller* returns,
+# in a scope where the function's `local` is gone, and under `set -u` that kills the
+# script after the work has already succeeded. The path is handed back through a nameref
+# rather than stdout, because a command substitution runs in a subshell whose registration
+# the parent would never see.
+DS_SCRATCH_DIRS=()
+
+# ds_scratch_dir <varname> — make a temporary directory and name it in <varname>.
+ds_scratch_dir() {
+    local -n ds_scratch_out="$1"
+    ds_scratch_out="$(mktemp -d)"
+    DS_SCRATCH_DIRS+=("$ds_scratch_out")
+}
+
+ds_cleanup_scratch() {
+    local d
+    for d in "${DS_SCRATCH_DIRS[@]+"${DS_SCRATCH_DIRS[@]}"}"; do rm -rf "$d"; done
+    DS_SCRATCH_DIRS=()
+}
+trap ds_cleanup_scratch EXIT
 
 ds_validate_game() {
     ds_is_game "$1" || ds_die "unknown game '$1'. Known: $(ds_game_ids | tr '\n' ' ')"
@@ -308,23 +322,7 @@ ds_toolchain_run() {
 # ── Connector source fingerprints ────────────────────────────────────────────
 # Source files that determine a connector's built artifact. Build outputs and
 # runtime data are excluded so they cannot cause false positives.
-ds_source_paths() {
-    case "$1" in
-        rust)               echo "games/rust/mod games/rust/version.txt" ;;
-        minecraft-paper)    echo "games/minecraft/mod/core games/minecraft/mod/paper games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts" ;;
-        minecraft-neoforge) echo "games/minecraft/mod/core games/minecraft/mod/neoforge games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts" ;;
-        minecraft-fabric)   echo "games/minecraft/mod/core games/minecraft/mod/fabric games/minecraft/mod/targets games/minecraft/mod/buildSrc games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts catalog/minecraft" ;;
-        minecraft-fabric-26.1.2) echo "games/minecraft/mod/core games/minecraft/mod/fabric games/minecraft/mod/targets games/minecraft/mod/buildSrc games/minecraft/mod/gradle games/minecraft/mod/build.gradle.kts games/minecraft/mod/settings.gradle.kts catalog/minecraft" ;;
-        7d2d)               echo "games/7d2d/mod/src games/7d2d/mod/Takaro.csproj games/7d2d/mod/ModInfo.xml games/7d2d/version.txt" ;;
-        zomboid)            echo "games/zomboid/mod/core games/zomboid/mod/agent games/zomboid/mod/gradle games/zomboid/mod/build.gradle.kts games/zomboid/mod/settings.gradle.kts games/zomboid/version.txt" ;;
-        valheim)            echo "games/valheim/mod/src games/valheim/version.txt" ;;
-        terraria)           echo "games/terraria/mod/src games/terraria/version.txt" ;;
-        dragonwilds)        echo "games/dragonwilds/mod games/dragonwilds/sidecar/src games/dragonwilds/version.txt" ;;
-        vein)               echo "games/vein/mod games/vein/sidecar/src games/vein/version.txt" ;;
-        conan-exiles)       echo "games/conan-exiles/bridge/src games/conan-exiles/bridge/package.json games/conan-exiles/bridge/tsconfig.json" ;;
-        *)                  echo "" ;;
-    esac
-}
+ds_source_paths() { ds_dispatch_or "" ds_source_paths "$1"; }
 
 # SHA-256 over the current contents of a connector's source tree.
 ds_source_fingerprint() {
@@ -373,80 +371,36 @@ with open(path, "w") as fh:
     fi
 }
 
-# ── Catalog targets ──────────────────────────────────────────────────────────
-# A game whose server build is pinned by catalog/<game>/targets/<id>.json is installed,
-# built and deployed through the maintenance command, so the rig, CI and a release all
-# resolve the same bytes. Games without a target keep their own install path.
+# ── Per-game steps ───────────────────────────────────────────────────────────
+# Every game's install, deploy, source paths and success pattern live in
+# lib/games/<game>.sh. Dispatch turns a rig game id into the function that game
+# defined, so no script here holds a list of games.
 
-ds_maint() { "${REPO_ROOT}/maintenance/bin/takaro-maint" "$@"; }
+# A rig game id is not a function name: minecraft-fabric-26.1.2 -> minecraft_fabric_26_1_2.
+ds_fn_id() { printf '%s' "$1" | tr '.-' '__'; }
 
-# ds_target <rig-game-id> -> the catalog target id driving it, empty when there is none.
-# A failing tool is not the same answer as a game with no target. An empty result from a
-# successful call means "this game is not catalog-driven"; a failure means the rig cannot tell,
-# and must stop rather than skip every catalog check below and boot whatever is on disk. The
-# caller runs this in a command substitution, so the failure is reported by exit status.
-ds_target() {
-    local listing
-    if ! listing="$(ds_maint targets list --rig-game "$1" --format json)"; then
-        ds_warn "takaro-maint targets list --rig-game ${1} failed; see the error above"
-        return 1
-    fi
-    printf '%s' "$listing" | python3 -c 'import json,sys
-targets = json.load(sys.stdin)["targets"]
-print(targets[0]["id"] if targets else "")'
+# ds_dispatch <prefix> <game-id> [args...]
+ds_dispatch() {
+    local prefix="$1" game="$2" fn
+    fn="${prefix}_$(ds_fn_id "$game")"
+    shift 2
+    declare -F "$fn" >/dev/null || ds_die "no ${prefix} step defined for ${game}"
+    "$fn" "$@"
 }
 
-# ds_target_failed <rig-game-id> — the message every caller of ds_target stops with.
-# ds_die has to run in the caller, not inside the command substitution, or the exit is swallowed.
-ds_target_failed() {
-    ds_die "cannot resolve the catalog target for ${1}; the rig will not touch a game whose
-  catalog target it could not read."
+# ds_dispatch_or <default> <prefix> <game-id> — the default when the game defines none.
+ds_dispatch_or() {
+    local default="$1" prefix="$2" game="$3" fn
+    fn="${prefix}_$(ds_fn_id "$game")"
+    if declare -F "$fn" >/dev/null; then "$fn"; else printf '%s\n' "$default"; fi
 }
 
-# The catalog game a rig game belongs to (minecraft-fabric -> minecraft).
-ds_target_game() { printf '%s' "${1%%-*}"; }
-
-ds_target_env_file() { printf '%s/.targets/%s.env' "$DS_DATA" "$1"; }
-
-# Env key prefix for a rig game: minecraft-fabric -> MC_FABRIC.
-ds_target_prefix() {
-    case "$1" in
-        minecraft-paper)    printf 'MC_PAPER' ;;
-        minecraft-neoforge) printf 'MC_NEOFORGE' ;;
-        minecraft-fabric)   printf 'MC_FABRIC' ;;
-        minecraft-fabric-26.1.2) printf 'MC_FABRIC_26_1_2' ;;
-        *) printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_' ;;
-    esac
-}
-
-# Resolve the target into the env file compose reads.
-ds_write_target_env() {
-    local game="$1" target
-    target="$(ds_target "$game")" || ds_target_failed "$game"
-    [ -n "$target" ] || return 0
-    mkdir -p "${DS_DATA}/.targets"
-    ds_maint targets resolve \
-        --game "$(ds_target_game "$game")" \
-        --target "$target" \
-        --format env \
-        --prefix "$(ds_target_prefix "$game")" \
-        --out "$(ds_target_env_file "$game")"
-}
-
-# Refuse to start a target-driven game whose data dir does not hold that target.
-ds_preflight_target() {
-    local game="$1" target
-    target="$(ds_target "$game")" || ds_target_failed "$game"
-    [ -n "$target" ] || return 0
-    if [ ! -f "$(ds_target_env_file "$game")" ]; then
-        ds_die "${game} is driven by catalog target ${target} but has no resolved environment.
-  dev-servers/scripts/install.sh ${game}"
-    fi
-    if ! ds_maint ledger check \
-        --game "$(ds_target_game "$game")" \
-        --target "$target" \
-        --dest "$(ds_data_dir "$game")" >/dev/null; then
-        ds_die "${game} does not hold catalog target ${target} (or its files changed).
-  dev-servers/scripts/install.sh ${game}"
-    fi
-}
+# ── Game definitions and catalog targets ─────────────────────────────────────
+# Sourced last: the game files call ds_register and use the helpers above.
+for _ds_game_file in "$DS_DIR"/lib/games/*.sh; do
+    # shellcheck source=/dev/null
+    [ -f "$_ds_game_file" ] && . "$_ds_game_file"
+done
+unset _ds_game_file
+# shellcheck source=targets.sh
+. "$DS_DIR/lib/targets.sh"

@@ -3,28 +3,76 @@
 Notes for working on the mod itself. Server operators only need
 [`README.md`](README.md).
 
-## Quick Start
+## The target
+
+Everything here is built against one catalog target,
+[`catalog/7d2d/targets/linux-3.2.0.b10.json`](../../catalog/7d2d/targets/linux-3.2.0.b10.json):
+the Steam app, branch, build id and depot manifest that identify V 3.2.0 b10, the sha256 of the
+assemblies the mod compiles against, the Mono image the build runs in, the pinned third-party
+dependencies and the server image the rig boots. No script here hard-codes any of it —
+`scripts/lib-target.sh` resolves the target and exports `SEVEND2D_*` for the rest.
+
+There is no SteamCMD anywhere in this directory. `takaro-maint steam references` downloads only
+the assemblies the build needs, straight from the pinned depot manifests. See
+[maintenance/docs/steam-install.md](../../maintenance/docs/steam-install.md).
+
+## Quick start
 
 From the monorepo root:
 
 ```sh
-just sevend2d-setup
-just sevend2d-build
-just sevend2d-build-deploy
+just sevend2d-setup          # reference assemblies + dependencies for the default target
+just sevend2d-build          # compile the mod
+just sevend2d-build-deploy   # build and deploy into the dev rig
+just sevend2d-test-contract  # the Generic Connector contract harness
 ```
 
 Or from inside `games/7d2d/`:
 
 ```sh
-./scripts/setup-environment.sh
-./scripts/build-mod.sh
-./scripts/build-mod.sh deploy
+./scripts/setup-environment.sh --target linux-3.2.0.b10
+./scripts/build-mod.sh --target linux-3.2.0.b10
+./scripts/build-release.sh <version> <out-dir> --target linux-3.2.0.b10
 ```
 
-Local server files and build outputs live under `games/7d2d/_data/`. The packaged
-release zip (`takaro-7d2d-mod.zip`, containing a single `Takaro/` folder) is
-produced by `./scripts/build-release.sh <version> <out-dir>`, which is also what
-CI runs in the `package` job of `.github/workflows/7d2d.yml`.
+`--target` may be left out everywhere except `build-release.sh`, which insists on it: a release
+artifact is named after the build it was made for, so it may not be built for "whatever the
+default is today".
+
+What lands where:
+
+| Path | What |
+|---|---|
+| `_data/7dtd-binaries/<fingerprint>/` | The target's reference assemblies and the built dependencies, plus `.takaro/references.json` and `.takaro/deps.json`. |
+| `_data/build/` | msbuild output (`Mods/Takaro`) and the staged folder the release zip is made from. |
+| `_data/dist/<fingerprint>/` | `takaro-7d2d-mod-<target>-<version>.zip` and its `.meta.json`. |
+
+A different target has a different fingerprint and therefore its own directories; nothing is
+shared between builds of different server versions.
+
+## The rig
+
+`dev-servers/scripts/install.sh 7d2d` installs the exact pinned build into
+`dev-servers/_data/7d2d/ServerFiles` through `takaro-maint install`, records it in
+`ServerFiles/.takaro/installed-target.json` and renders `Takaro/Config.xml`. The compose file
+pins the server image by digest and runs it with `START_MODE=1` — start what is installed. The
+install writes `DONT_REMOVE.txt`, which is what stops the image's own LinuxGSM auto-install from
+replacing the pinned build with the current branch head.
+
+`dev-servers/scripts/deploy-connector.sh 7d2d` builds the target's artifact and deploys it by
+manifest row, so the mod in `Mods/Takaro` is the one the ledger records.
+
+## Moving to a new server build
+
+1. `just sevend2d-pin` — what does Steam serve on `public` now? `changed` lists the depots that
+   moved.
+2. `takaro-maint steam pin --game 7d2d --buildid <new> --record-files <each declared file> --write`
+   — re-record the hashes from the new manifest and write the new pin.
+3. `./scripts/setup-environment.sh` and `./scripts/test-contract.sh` — the contract harness must
+   pass against the new assemblies.
+4. Re-prove the behaviour that matters on the rig, update the table in `README.md`, and open a PR.
+   The target id, its fingerprint and every artifact name change with the build, which is the
+   point: nothing claims to have been proven on bytes it was not proven on.
 
 ## Architecture
 

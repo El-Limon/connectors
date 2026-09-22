@@ -3,13 +3,18 @@ name: takaro-dev-rust
 
 services:
   rust:
-    build:
-      context: ../../rust
+    # Resolved from the catalog into _data/.targets/rust.env by install.sh: image, tag and
+    # digest all come from catalog/rust/targets/<id>.json. There is no image to build --
+    # this is a plain base image, and what makes it a Rust server is the tree
+    # takaro-maint installed into _data/rust/rust_dedicated plus the tracked launcher.
+    # Nothing here downloads, installs or updates anything.
+    image: "${RUST_IMAGE:-target-not-resolved}"
+    entrypoint: ["/bin/bash", "/takaro/start.sh"]
     container_name: takaro-dev-rust
-    ports:
-      - "28015:28015/udp"
-      - "127.0.0.1:28016:28016"
+    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
     environment:
+      # The base image has no home directory for an arbitrary uid; Unity needs one.
+      HOME: /rust/takaro/home
       RUST_SERVER_NAME: "${RUST_SERVER_NAME:-Takaro Dev Rust}"
       RUST_SERVER_SEED: "${RUST_SERVER_SEED:-12345}"
       RUST_SERVER_WORLDSIZE: "${RUST_SERVER_WORLDSIZE:-1000}"
@@ -23,7 +28,9 @@ services:
       TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_RUST:-takaro-dev-rust}"
       TAKARO_DEBUG: "${TAKARO_DEBUG:-false}"
     volumes:
-      - ../_data/rust/plugins:/rust/carbon/plugins
-      - ../_data/rust/server:/rust/server
-      - ../_data/rust/carbon-logs:/rust/carbon/logs
+      - ../_data/rust/rust_dedicated:/rust
+      - ../../games/rust/start.sh:/takaro/start.sh:ro
+    ports:
+      - "28015:28015/udp"
+      - "127.0.0.1:28016:28016"
     restart: unless-stopped

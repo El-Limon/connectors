@@ -4,6 +4,20 @@
   "title": "Installed target ledger",
   "description": "Written to <dest>/.takaro/installed-target.json: which target a game directory currently holds and which bytes it was built from.",
   "type": "object",
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "connectorVersion", "sourceRevision"],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "connectorVersion": {"type": "string", "minLength": 1},
+        "sourceRevision": {"type": "string", "minLength": 1}
+      }
+    }
+  },
   "additionalProperties": false,
   "required": ["schemaVersion", "game", "target", "fingerprint", "installedAt", "installedBy", "inputs", "container", "world"],
   "properties": {
@@ -39,16 +53,13 @@
       }
     },
     "artifact": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["role", "path", "sha256", "connectorVersion", "sourceRevision"],
-      "properties": {
-        "role": {"type": "string", "minLength": 1},
-        "path": {"type": "string", "minLength": 1},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "connectorVersion": {"type": "string", "minLength": 1},
-        "sourceRevision": {"type": "string", "minLength": 1}
-      }
+      "description": "Read-only compatibility: the single deployed artifact ledgers written before 'artifacts' carried. Deploy replaces it with 'artifacts'.",
+      "$ref": "#/$defs/artifact"
+    },
+    "artifacts": {
+      "description": "Every deployed component role, one row each, sorted by role.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/artifact"}
     },
     "world": {
       "type": "object",

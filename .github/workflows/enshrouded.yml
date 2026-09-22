@@ -1,11 +1,23 @@
-name: Enshrouded Plugin
+name: Enshrouded Connector
 
 on:
   push:
     branches: [main]
-    paths: ['games/enshrouded/**', 'scripts/**', '.github/workflows/enshrouded.yml']
+    paths:
+      - 'games/enshrouded/**'
+      - 'catalog/enshrouded/**'
+      - 'maintenance/**'
+      - 'scripts/**'
+      - '.github/workflows/enshrouded.yml'
+      - '.github/workflows/connector-release.yml'
   pull_request:
-    paths: ['games/enshrouded/**', 'scripts/**', '.github/workflows/enshrouded.yml']
+    paths:
+      - 'games/enshrouded/**'
+      - 'catalog/enshrouded/**'
+      - 'maintenance/**'
+      - 'scripts/**'
+      - '.github/workflows/enshrouded.yml'
+      - '.github/workflows/connector-release.yml'
   workflow_call:
     inputs:
       version:
@@ -34,10 +46,16 @@ concurrency:
 
 jobs:
   test:
-    if: ${{ !inputs.tag }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # The same commit the release job builds: a recovery run for an older tag is
+          # gated on that tag's sources and catalog, never on whatever main has become.
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-tags: true
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
@@ -50,63 +68,32 @@ jobs:
       - name: Typecheck sidecar
         working-directory: games/enshrouded/sidecar
         run: npm run typecheck
+      # The mock-plugin, protocol, actions, events and client suites: what the sidecar does
+      # with the plugin's answers, without a game.
       - name: Test sidecar
         working-directory: games/enshrouded/sidecar
         run: npm test
+      # The native plugin's host-testable parts (the log correlator and the admin-protection
+      # helpers), compiled in the pinned gcc image against a small windows.h shim.
       - name: Plugin host tests
         run: |
           chmod +x games/enshrouded/mod/tests/run.sh
           games/enshrouded/mod/tests/run.sh
 
-  package:
+  params:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+    outputs:
+      version: ${{ steps.params.outputs.version }}
+      tag: ${{ steps.params.outputs.tag }}
+      publish: ${{ steps.params.outputs.publish }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          # A release or recovery run builds the tag, never whatever main has become.
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
           fetch-tags: true
-
-      # The tag, the version, the manifest and the checked-out commit must all agree
-      # before anything is built.
-      - name: Release guard
-        env:
-          IN_VERSION: ${{ inputs.version }}
-          IN_TAG: ${{ inputs.tag }}
-        run: scripts/release-guard.sh enshrouded "$IN_VERSION" "$IN_TAG"
-
-      - name: Generate token
-        id: app-token
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          app-id: ${{ secrets.TAKARO_CI_APP_ID }}
-          private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version: 22.x
-          cache: npm
-          cache-dependency-path: games/enshrouded/sidecar/package-lock.json
-
-      - name: Install zig 0.13.0
-        env:
-          ZIG_URL: https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
-          ZIG_SHA256: d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
-        run: |
-          set -euo pipefail
-          curl -fsSL "$ZIG_URL" -o "$RUNNER_TEMP/zig.tar.xz"
-          echo "${ZIG_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/zig"
-          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
-          "$RUNNER_TEMP/zig/zig" version
-
-      - name: Make scripts executable
-        run: chmod +x games/enshrouded/scripts/*.sh games/enshrouded/mod/*.sh scripts/*.sh
 
       - name: Resolve release params
         id: params
@@ -118,51 +105,19 @@ jobs:
           DEV_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/release-params.sh enshrouded >> "$GITHUB_OUTPUT"
 
-      - name: Build release artifact
-        env:
-          ZIG: ${{ runner.temp }}/zig/zig
-        run: games/enshrouded/scripts/build-release.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
-
-      - name: Build sidecar release artifact
-        run: games/enshrouded/scripts/build-sidecar-release.sh "${{ steps.params.outputs.version }}" "$RUNNER_TEMP/dist"
-
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-        with:
-          version: "0.12.15"
-
-      - run: uv python install
-      - run: uv sync --frozen --project maintenance
-
-      # One publisher for every connector: the set is assembled, published and read
-      # back from GitHub. `--mode legacy` means the files are named here rather than
-      # derived from a catalog, so this connector's asset names are unchanged.
-      # Fork PRs get a read-only token, so they build for validation only.
-      - name: Publish
-        if: ${{ steps.params.outputs.publish != 'none' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        shell: bash
-        run: |
-          scripts/publish-release.sh publish \
-            --connector enshrouded \
-            --channel "${{ steps.params.outputs.publish }}" \
-            --version "${{ steps.params.outputs.version }}" \
-            --tag "${{ steps.params.outputs.tag }}" \
-            --pr-number "${{ github.event.pull_request.number }}" \
-            --mode legacy \
-            --dist "$RUNNER_TEMP/dist" \
-            --out "$RUNNER_TEMP/assembled" \
-            -- \
-            "$RUNNER_TEMP/dist/takaro-enshrouded-plugin.zip" \
-            "$RUNNER_TEMP/dist/takaro-enshrouded-sidecar.zip"
-
-      - name: Comment PR build
-        if: ${{ steps.params.outputs.publish == 'pr' && github.event.pull_request.head.repo.full_name == github.repository }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          scripts/comment-pr-build.sh enshrouded \
-            "${{ github.event.pull_request.number }}" \
-            "${{ steps.params.outputs.tag }}" \
-            "${{ steps.params.outputs.version }}" \
-            "$RUNNER_TEMP/assembled"
+  release:
+    needs: [test, params]
+    uses: ./.github/workflows/connector-release.yml
+    secrets: inherit
+    with:
+      connector: enshrouded
+      version: ${{ needs.params.outputs.version }}
+      tag: ${{ needs.params.outputs.tag }}
+      publish: ${{ needs.params.outputs.publish }}
+      pr_number: ${{ github.event.pull_request.number }}
+      # The Enshrouded dedicated server is a Windows binary that only runs under Proton in
+      # its pinned image, on top of an 8.8 GB Steam depot set. A hosted runner cannot
+      # install and boot that here, so the release claims contract verification only;
+      # runtime verification is proven locally by `takaro-maint verify --game enshrouded`
+      # and its CI onboarding is tracked separately.
+      runtime: false

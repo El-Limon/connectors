@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "enshrouded",
+  "name": "Enshrouded",
+  "connector": "enshrouded",
+  "platforms": ["proton"],
+  "sources": {
+    "steam": {
+      "provider": "steam",
+      "baseUrl": "https://store.steampowered.com",
+      "watch": {
+        "kind": "game",
+        "component": "enshrouded",
+        "app": 2278520,
+        "os": "windows",
+        "depots": ["2278521", "1004"],
+        "channels": {
+          "public": {"branch": "public"},
+          "experimental": {"branch": "experimental", "enabled": false}
+        },
+        "knownBranches": [],
+        "readinessNote": "The Takaro plugin hooks this build by pinned code signatures (proven on game build 1024233 / Steam build 23178631). On any other build every capability self-checks at load and reports degraded; a new build is blocked until the signatures are re-derived and `takaro-maint verify --game enshrouded` reports plugin-health ok (see games/enshrouded/DEVELOPMENT.md)."
+      }
+    }
+  },
+  "build": {"system": "script", "projectDir": "games/enshrouded"},
+  "componentRoles": {
+    "server-plugin": {
+      "description": "Native dbghelp.dll proxy plugin loaded by enshrouded_server.exe (TakaroEnshrouded/)",
+      "artifactPattern": "takaro-enshrouded-plugin-{target}-{version}.zip"
+    },
+    "sidecar": {
+      "description": "Node.js sidecar that speaks the Takaro Generic Connector Protocol (TakaroEnshroudedSidecar/)",
+      "artifactPattern": "takaro-enshrouded-sidecar-{target}-{version}.zip"
+    }
+  },
+  "legacyAssetAliases": {
+    "takaro-enshrouded-plugin.zip": "proton-1024233/server-plugin",
+    "takaro-enshrouded-sidecar.zip": "proton-1024233/sidecar"
+  }
+}

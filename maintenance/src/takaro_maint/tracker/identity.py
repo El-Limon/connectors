@@ -14,7 +14,7 @@ MARKER_PREFIX = "<!-- takaro-maint: "
 MARKER_SUFFIX = " -->"
 
 #: Keys in the order a marker renders them; anything else is appended, sorted.
-KEY_ORDER = ("kind", "provider", "component", "branch", "rev")
+KEY_ORDER = ("kind", "provider", "component", "app", "branch", "buildid", "rev")
 
 #: The label every issue the scan files carries. It must already exist in the repository:
 #: the scan never creates labels.
@@ -64,13 +64,22 @@ def parse_marker(body: str) -> dict[str, str] | None:
 
 def support_marker(observation: Any) -> dict[str, str]:
     """The marker identifying the support issue for one observation."""
-    return {
+    marker = {
         "kind": "support",
         "provider": observation.provider,
         "component": observation.component,
         "branch": observation.branch,
         "rev": observation.rev,
     }
+    # A Steam revision also contains the manifest-set digest and branch. Keep that rich
+    # revision as the issue identity, while carrying the two catalog join keys explicitly
+    # so lifecycle reconciliation never has to mistake it for the bare build id.
+    if observation.provider == "steam":
+        for key in ("app", "buildid"):
+            value = observation.facts.get(key)
+            if value is not None:
+                marker[key] = str(value)
+    return marker
 
 
 def search_terms(marker: dict[str, str]) -> str:

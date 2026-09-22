@@ -59,6 +59,21 @@ def write_ledger(dest: Path, data: dict[str, Any]) -> Path:
     return path
 
 
+def artifacts_of(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every deployed artifact row a ledger carries, whichever shape it is in.
+
+    A game with two component roles deploys twice, and the ledger has to attest both.
+    Ledgers written before that carry a single ``artifact`` object; they are still on
+    rigs, so they read as a one-row list rather than being rewritten in place -- the
+    next deploy upgrades them.
+    """
+    rows = data.get("artifacts")
+    if isinstance(rows, list):
+        return [dict(row) for row in rows]
+    artifact = data.get("artifact")
+    return [dict(artifact)] if artifact else []
+
+
 def check_ledger(dest: Path, target_record: dict[str, Any], fingerprint: str) -> list[str]:
     """Empty when the directory really holds this target; otherwise every reason it does not."""
     reasons: list[str] = []
@@ -81,11 +96,10 @@ def check_ledger(dest: Path, target_record: dict[str, Any], fingerprint: str) ->
             reasons.append(f"{entry['path']} sha1 {digests['sha1']} != recorded {entry['sha1']}")
         if digests["size"] != entry["size"]:
             reasons.append(f"{entry['path']} size {digests['size']} != recorded {entry['size']}")
-    artifact = ledger.data.get("artifact")
-    if artifact:
+    for artifact in artifacts_of(ledger.data):
         path = dest / artifact["path"]
         if not path.is_file():
-            reasons.append(f"missing artifact {artifact['path']}")
+            reasons.append(f"missing artifact {artifact['role']} {artifact['path']}")
         elif net.sha256_file(path) != artifact["sha256"]:
-            reasons.append(f"{artifact['path']} does not match the recorded artifact sha256")
+            reasons.append(f"{artifact['path']} ({artifact['role']}) does not match the recorded artifact sha256")
     return reasons

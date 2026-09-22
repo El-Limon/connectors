@@ -97,11 +97,13 @@ opening marker to the end of the body is treated as the generated block and repl
 delete both or neither. A `<!-- takaro-maint:state=… -->` line inside the block is carried
 over rather than reset, so a lifecycle state written by a later command survives a rescan.
 
-The block holds the observation (revision, release time, the source links, the upstream
-hashes and sizes, the Java major version), the affected-targets table taken from the
-catalog, a readiness line that says readiness is *not* assessed here, the reproducible
-`takaro-maint` next steps, the evidence a fix is expected to produce, and an acceptance
-checklist.
+The block holds the observation (the provider, component and branch, the revision, the
+release time, and whatever else that upstream publishes — for Mojang, the source links,
+the hashes and sizes, and the Java major version), the affected-targets table taken from
+the catalog, the readiness section, the reproducible `takaro-maint` next steps, the
+evidence a fix is expected to produce, and an acceptance checklist. The title and the rows
+an upstream adds come from the provider that observed it (see
+[The provider convention](#the-provider-convention)), never from the tracker.
 
 ## The dashboard issue
 
@@ -140,9 +142,11 @@ means exactly that.
 
 - everything the source has already published is recorded as seen — no issue, no
   per-revision fetch;
-- the exception is a **current head** that no catalog target covers (no target of the game
-  with that revision and a `candidate` or `maintained` status): that, and only that, gets
-  an issue.
+- the exception is a **current head** that no catalog target covers: that, and only that,
+  gets an issue. "Covers" means no `candidate` or `maintained` target of the game carries
+  that revision — unless the provider answers `covers()` itself, which is how an upstream
+  whose heads are not version strings (a Steam build id, say) avoids filing an issue for
+  the exact build the catalog already pins.
 
 After initialisation the checkpoint does the work: any revision the source reports that is
 not seen is processed exactly once, whether it is newer than the head or a gap in history a
@@ -203,6 +207,25 @@ dedicated server jar and the Java major version.
 
 Every observation is validated against `catalog/schema/v1/observation.schema.json` before
 it reaches the tracker.
+
+Two more methods are optional, and exist so that adding a game never edits the tracker:
+
+- `presentation(observation, game_name) -> dict | None` says how this upstream's issues
+  read. Every key is optional — `title`, `intro`, `observationRows`, `readinessLines`,
+  `nextSteps` — and an absent one gets the generic rendering, which names no upstream: the
+  provider, component, branch, revision, release time and observation time, the affected
+  targets, and the catalog/build/verify steps. A provider only answers for what its own
+  upstream makes different (Mojang adds the version list, the manifest, the server jar and
+  the Java major, and the digests a new target record has to pin), and
+  `tracker.issues.observation_rows()` / `tracker.issues.next_steps()` build those two
+  sections so the shared parts stay shared.
+- `covers(observation, targets) -> bool | None` answers "does the catalog already ship
+  this?" during [bootstrap](#bootstrap-and-history). `None` (the default) means the scan
+  compares the observation's revision with each non-retired `candidate`/`maintained`
+  target's `revision`, which is right whenever a target is named by the string the provider
+  observes. A provider whose upstream identity is richer than that — an app on a branch at
+  a build id, say — reads the targets' inputs and answers for itself, so a bootstrap does
+  not file an issue for the exact build the catalog already pins.
 
 ## Frameworks and readiness
 
@@ -376,6 +399,5 @@ each entry's `url` and `sha1` when it serves them. See the READMEs next to the f
 |---|---|
 | Lifecycle transitions, `reconcile`, and a `run` that chains the commands | #156 |
 | Closing superseded previews and lifecycle after `ready-for-agent` | #156 |
-| Steam branch observation | #158 |
 | `dashboard show`, the CI workflow and the portable container | #165 |
 | Filing real issues on the public tracker on a schedule | #166 |

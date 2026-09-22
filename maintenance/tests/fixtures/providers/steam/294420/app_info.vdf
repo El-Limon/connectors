@@ -1,0 +1,135 @@
+"294420"
+{
+	"common"
+	{
+		"name"		"7 Days to Die Dedicated Server"
+		"type"		"Tool"
+		"oslist"		"windows,linux"
+		"parent"		"251570"
+		"osarch"		"64"
+	}
+	"depots"
+	{
+		"228983"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"228980"
+			"sharedinstall"		"1"
+		}
+		"228988"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"228980"
+			"sharedinstall"		"1"
+		}
+		"228989"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"228980"
+			"sharedinstall"		"1"
+		}
+		"overridescddb"		"1"
+		"294421"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1646211645575803407"
+					"size"		"17687233230"
+					"download"		"14450515312"
+				}
+				"v3.2.0"
+				{
+					"gid"		"1646211645575803407"
+					"size"		"17687233230"
+					"download"		"14450515312"
+				}
+				"v3.1.0"
+				{
+					"gid"		"8421519744609534061"
+					"size"		"17683440103"
+					"download"		"14447224688"
+				}
+			}
+		}
+		"294422"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1633674551820196085"
+					"size"		"17607545324"
+					"download"		"14354376816"
+				}
+				"v3.2.0"
+				{
+					"gid"		"1633674551820196085"
+					"size"		"17607545324"
+					"download"		"14354376816"
+				}
+				"v3.1.0"
+				{
+					"gid"		"2089214172134382404"
+					"size"		"17607302336"
+					"download"		"14354128448"
+				}
+			}
+		}
+		"privatebranches"		"1"
+		"branches"
+		{
+			"public"
+			{
+				"buildid"		"24994542"
+				"timeupdated"		"1788196235"
+				"timebuildupdated"		"1787927331"
+			}
+			"v3.2.0"
+			{
+				"buildid"		"24994542"
+				"description"		"Version 3.2.0 Stable"
+				"timeupdated"		"1788195715"
+				"timebuildupdated"		"1787927331"
+			}
+			"v3.1.0"
+			{
+				"buildid"		"24436799"
+				"description"		"Version 3.1.0 Stable"
+				"timeupdated"		"1785337185"
+				"timebuildupdated"		"1785259782"
+			}
+			"alpha21.2"
+			{
+				"buildid"		"12966454"
+				"description"		"Alpha 21.2 Stable"
+				"timeupdated"		"1705617882"
+				"timebuildupdated"		"1702593116"
+			}
+			"alpha12.5"
+			{
+				"buildid"		"745252"
+				"description"		"Alpha 12.5 Stable"
+				"timebuildupdated"		"1440323524"
+			}
+		}
+	}
+}

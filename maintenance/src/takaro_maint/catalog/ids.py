@@ -28,6 +28,23 @@ def resolved_url(game: dict[str, Any], source_id: str, path: str) -> str:
     return base_url(game, source_id) + path
 
 
+def input_url(game: dict[str, Any], spec: dict[str, Any]) -> str | None:
+    """The single URL an input names, or ``None`` when its mechanism names none.
+
+    An input that carries a ``path`` is one HTTP GET against its source's ``baseUrl``.
+    Anything else is asked of the source's provider, so an acquisition mechanism that is
+    not a plain download ships its own URL grammar next to its downloader instead of
+    being listed here.
+    """
+    if "path" in spec:
+        return resolved_url(game, spec["source"], spec["path"])
+    from ..providers import provider_for
+
+    source = source_of(game, spec["source"])
+    url = provider_for(str(source["provider"])).input_url(spec, source)
+    return str(url) if url else None
+
+
 def maven_path(group: str, artifact: str, version: str) -> str:
     return f"/{group.replace('.', '/')}/{artifact}/{version}/{artifact}-{version}.jar"
 

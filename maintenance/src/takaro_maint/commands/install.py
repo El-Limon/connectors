@@ -14,7 +14,7 @@ from ..catalog.loader import resolve
 from ..exit_codes import OK, ConflictError, UsageError
 from ..games import adapter_for
 from ..install import plan_inputs
-from ..install.ledger import Ledger, check_ledger, read_ledger, write_ledger
+from ..install.ledger import Ledger, artifacts_of, check_ledger, read_ledger, write_ledger
 from ..install.staging import StagedInstall, is_protected
 from . import add_selection_arguments, select_one
 
@@ -59,9 +59,8 @@ def _superseded_paths(existing: Ledger | None, plans: list[Any], preserve: list[
         path = str(entry["path"])
         if path not in keep and not is_protected(path, preserve):
             stale.add(path)
-    artifact = existing.data.get("artifact")
-    if artifact and existing.fingerprint != fingerprint:
-        stale.add(str(artifact["path"]))
+    if existing.fingerprint != fingerprint:
+        stale.update(str(artifact["path"]) for artifact in artifacts_of(existing.data))
     return sorted(stale)
 
 
@@ -84,10 +83,18 @@ def _world_dirs(dest: Path, preserve: list[str]) -> list[Path]:
 def _install(args: Any) -> int:
     catalog, target = select_one(args)
     resolved = resolve(catalog, target)
+    adapter = adapter_for(target.game)
+
+    # A game whose inputs are not a list of downloads (a Steam depot set, say) owns the
+    # whole installation: staging, swap, ledger, --dry-run and --rollback included.
+    result = adapter.install(catalog, target, resolved, args)
+    if result is not None:
+        return int(result)
+
     game_record = catalog.game(target.game).record
     dest = Path(args.dest).expanduser().resolve()
     cache = paths.cache_dir()
-    preserve = adapter_for(target.game).preserve_globs(resolved)
+    preserve = adapter.preserve_globs(resolved)
 
     if args.rollback:
         raise UsageError(
@@ -160,6 +167,7 @@ def _install(args: Any) -> int:
     before = tree_hash(dest)
     dest.mkdir(parents=True, exist_ok=True)
     ledger_inputs: list[dict[str, Any]] = []
+    world_moves: list[tuple[Path, Path]] = []
     try:
         with StagedInstall(dest=dest, fp16=target.fp16, preserve=preserve) as staging:
             for plan in plans:
@@ -183,7 +191,9 @@ def _install(args: Any) -> int:
                 destination = dest / moved_world
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 for world in worlds:
-                    shutil.move(str(world), str(destination / world.name))
+                    moved = destination / world.name
+                    shutil.move(str(world), str(moved))
+                    world_moves.append((world, moved))
                 output.info(f"moved {len(worlds)} world director(y|ies) to {moved_world}")
 
             placed = staging.commit()
@@ -191,6 +201,10 @@ def _install(args: Any) -> int:
             # byte-identical to what it was.
             removed = _remove_superseded(dest, superseded)
     except BaseException:
+        for original, moved in reversed(world_moves):
+            if moved.exists() and not original.exists():
+                original.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(moved), str(original))
         after = tree_hash(dest)
         if after != before:
             output.warn(f"{dest} changed during a failed install")
@@ -213,8 +227,10 @@ def _install(args: Any) -> int:
         },
         "world": {"revision": world_revision, "createdBy": target.id},
     }
-    if existing is not None and existing.data.get("artifact") and existing.fingerprint == target.fingerprint:
-        ledger["artifact"] = existing.data["artifact"]
+    if existing is not None and existing.fingerprint == target.fingerprint:
+        carried = artifacts_of(existing.data)
+        if carried:
+            ledger["artifacts"] = carried
     write_ledger(dest, ledger)
 
     output.emit(

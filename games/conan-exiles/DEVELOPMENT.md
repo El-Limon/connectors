@@ -21,16 +21,53 @@ Layout:
 games/conan-exiles/
     bridge/                     # the Node.js sidecar (source of truth for behaviour)
     mod/TakaroConanBridge/      # spec + DevKit handoff for the Takaro-owned .pak (no binary shipped)
-    scripts/build-release.sh    # packages takaro-conan-exiles-bridge.zip
+    scripts/lib-target.sh       # resolves the catalog target every script builds against
+    scripts/build-release.sh    # packages the target-qualified bridge zip
+    scripts/check-exact-source.mjs  # lockfile and tarball hashes vs the catalog, before npm ci
     TakaroConfig.example.txt
     version.txt
     CHANGELOG.md
+
+catalog/conan-exiles/
+    game.json                   # the Steam watch: app 443030, depot 443032, branch public
+    targets/linux-25356024.json # the pinned server build, image, deps and file hashes
 ```
+
+## The pinned server build
+
+The connector is built and verified against one exact server build, declared in
+`catalog/conan-exiles/targets/linux-25356024.json`: Steam app `443030`, branch `public`, build
+`25356024`, depot `443032` manifest `2572292872952587850` plus the Steamworks redistributable depot
+`1006` manifest `4559160656493359681`, with six declared file hashes. Nothing here runs the Steam
+updater any more — the depot manifests are the bytes:
+
+```bash
+maintenance/bin/takaro-maint install --game conan-exiles --dest /path/to/server
+maintenance/bin/takaro-maint ledger check --game conan-exiles --dest /path/to/server
+```
+
+To move the pin to a newer head, read what Steam publishes and record it:
+
+```bash
+maintenance/bin/takaro-maint steam branches --game conan-exiles
+maintenance/bin/takaro-maint steam pin --game conan-exiles --metadata \
+  --record-files ConanSandboxServer.sh \
+  --record-files ConanSandbox/Binaries/Linux/ConanSandboxServer-Linux-Shipping \
+  --record-files ConanSandbox/Binaries/Linux/libDreamworld.so \
+  --record-files ConanSandbox/Content/Paks/global.utoc \
+  --record-files ConanSandbox/Content/Paks/pakchunk0-LinuxServer.utoc \
+  --record-files linux64/steamclient.so \
+  --write
+```
+
+`--write` refuses to record a manifest whose declared files it has not hashed, so a re-pin can
+never leave a target half-describing its own bytes. The `conan-exiles-legacy` branch is the UE4
+server: it is declared in the watch and disabled, so it is never observed and never files an issue.
 
 ## Conan server setup for development
 
-Install the dedicated server with SteamCMD app `443030`. On Linux the current dedicated server
-install includes a native launcher:
+The rig (`dev-servers/scripts/install.sh conan-exiles`) does all of this from the catalog. By hand,
+the native Linux launcher is started like this:
 
 ```bash
 ./ConanSandboxServer.sh -log -server -nosteamclient \
@@ -82,15 +119,33 @@ npm run build
 npm start
 ```
 
-`scripts/build-release.sh <version> <out-dir>` produces `takaro-conan-exiles-bridge.zip`
-containing `dist/`, `scripts/`, `package.json`, `package-lock.json`, `README.md`,
-`TakaroConfig.example.txt` and a generated `README.release.txt`. The zip contains no `src/`, so
-every runtime `package.json` script points at compiled `dist/` output (`npm start` ->
-`dist/index.js`, `npm run mod-helper` -> `dist/mod/pollerCli.js`) and runs under
-`npm ci --omit=dev`; the script fails the build if either entrypoint is missing from the package.
-`npm run mod-helper:dev` is the `tsx` source variant for local development only. CI runs it from
-`.github/workflows/conan-exiles.yml` (`test` job: `npm ci`, `npm test`, `npm run build`;
-`package` job: build + publish stable / rolling `conan-exiles-dev` / per-PR assets).
+A release is built per catalog target, through the shared maintenance command:
+
+```bash
+maintenance/bin/takaro-maint build --game conan-exiles [--target linux-25356024] \
+  --version 1.0.2 --out dist
+```
+
+That runs `scripts/build-release.sh <version> <out-dir> [--target <id>]`, which resolves the target
+and builds inside the image the target pins — the same image the server runs in, so the host needs
+no Node at all. Before `npm ci`, `check-exact-source.mjs` asserts that the lockfile still resolves
+every catalog-pinned dependency to the recorded URL and that the tarball there still hashes to the
+recorded sha256; neither failure falls back to installing something else.
+
+The result is `takaro-conan-exiles-bridge-linux-25356024-<version>.zip` containing `dist/`,
+`scripts/`, `package.json`, `package-lock.json`, `takaro-target.json`, `README.md`,
+`TakaroConfig.example.txt` and a generated `README.release.txt`, plus a `.meta.json` beside it that
+`takaro-maint artifact validate` reads. The zip contains no `src/`, so every runtime `package.json`
+script points at compiled `dist/` output (`npm start` -> `dist/index.js`, `npm run mod-helper` ->
+`dist/mod/pollerCli.js`) and runs under `npm ci --omit=dev`; the script fails the build if either
+entrypoint is missing from the package. Packaging is deterministic: two builds of one commit are
+byte-identical, which CI checks by building twice and comparing.
+
+`npm run mod-helper:dev` is the `tsx` source variant for local development only.
+`.github/workflows/conan-exiles.yml` runs the `test` job (`npm ci`, `npm test`, `npm run build`)
+and then hands the release to `connector-release.yml` in catalog mode, which builds each target,
+validates artifact identity, and publishes the target-qualified zip, the legacy alias, `SHA256SUMS`
+and a compat record.
 
 ## Configuration reference
 
@@ -270,6 +325,94 @@ through `getPlayers`). Non-Pippi chat formats remain best effort.
 `player-death` and player-attributed `entity-killed` are best-effort log-derived events from Conan
 `KillCharacterWithRagdoll_Implementation` lines, enriched from `listplayers` when the character is
 online.
+
+## Portable verification
+
+Two lanes, and each one says what it does not cover.
+
+**Contract level — `npm test`, no game, no network.** `src/__tests__/bridgeContract.test.ts` runs a
+real bridge between a fake Conan RCON server (with Conan's auth-reply quirk) and a fake Takaro
+WebSocket server, in one process. It covers the identify payload, the target stamp on `/health`,
+`testReachability` (a real RCON `help`), `getPlayers`, `executeConsoleCommand`, the documented
+`sendMessage` refusal, the `getMapTile` unsupported error, reconnect after a `1001` close, and a
+clean stop. This is what CI runs: a hosted runner cannot hold a 4.3 GB depot or 10 GB of RAM, so
+the release claims `contract` verification and nothing more.
+
+**Startup level — a real pinned server.** On a host that can boot it:
+
+```bash
+maintenance/bin/takaro-maint verify --game conan-exiles --target linux-25356024 \
+  --artifacts dist --out reports \
+  --checks build,startup,bridge-identify,bridge-reachability,bridge-players,bridge-console,bridge-reconnect,shutdown,bridge-stop \
+  --startup-timeout 600 --cleanup-orphans
+```
+
+The hooks live in `maintenance/src/takaro_maint/games/conan_exiles/verify.py`. They write a per-run
+RCON password into `ConanSandbox/Saved/Config/LinuxServer/Game.ini` before the server starts (never
+on the command line, which is logged), boot the pinned server from the installed depot bytes, then
+start the *deployed artifact* as a second container the way the release README says to
+(`npm ci --omit=dev`, `node dist/index.js`) and drive the checks through it:
+
+| Check | What it proves |
+|---|---|
+| `startup` | The pinned server boots and its declared files are still the ledger's bytes. |
+| `bridge-identify` | The sidecar identified with Takaro, and logged the catalog target it was built for. This is Conan's equivalent of the base `identify` + `connector-load` rows. |
+| `bridge-reachability` | The server opened RCON and the sidecar reached it — `RconCommandLog.log` shows the `help` it says it ran. |
+| `bridge-players` | An empty server answers with an empty list, produced by a logged `listplayers`. |
+| `bridge-console` | A console command runs over RCON; `sendMessage` without the chat helper returns the documented structured refusal, recorded as a coverage statement rather than a pass. |
+| `bridge-reconnect` | Takaro closes the socket with `1001`; the sidecar comes back and is usable again. |
+| `shutdown` | Takaro's `shutdown` reaches the server over RCON and the container exits 0. |
+| `bridge-stop` | The sidecar stops cleanly on SIGTERM and the pinned inputs are unchanged afterwards. |
+
+The base `identify`, `connector-load`, `heartbeat`, `players`, `catalog-*` and `console` rows are
+not selected for this game — they read other games' log lines or run before the sidecar exists — so
+a Conan report reaches level `startup` and never claims `protocol`.
+
+**Not covered by either lane**, and not claimed anywhere: chat delivery (needs Enhanced Pippi and
+the `mod-helper` process), anything the Takaro-owned `TakaroConan.pak` would add (it has no build
+host — see the DevKit gate below), `player-connected` / `player-disconnected` / `player-death` /
+`entity-killed` events, save-database reads, and every gameplay-level effect (an item actually
+landing in an inventory, a teleport moving a client). Those stay on the live-check evidence in
+[README.md](README.md) and on the human lanes.
+
+### Findings from the 25356024 rig lane (2026-09-21)
+
+The rig was run end to end against hosted Takaro on the pinned build: install from the depot
+manifests, `takaro-maint deploy` of the release zip, both containers up from the resolved target.
+
+- The engine banner on this build is `LogInit: Build: ++exiles+release-CL-376069` /
+  `LogInit: Engine Version: 5.8.2-376069+++exiles+release` — the connector's runtime-identity
+  parser reads both, and `Compatible Engine Version` is deliberately not matched.
+- `LoadMap` took 49 s and the process settled around 8.5 GB resident, which is why the verifier's
+  container hook asks for more memory than the runner's 3 GB default.
+- The bridge logged its target stamp, identified with hosted Takaro, and `/health` reported
+  `target.target = linux-25356024`.
+- Through the Takaro API: `testReachability` → `connectable: true`, `getPlayers` → `[]`,
+  `executeConsoleCommand help` → the server's full RCON command list. `RconCommandLog.log`
+  recorded the matching `help` and `listplayers` lines.
+- The WebSocket was closed three times with `1006` during startup, while the log tailer was
+  emitting the boot log as `log` events, and the bridge reconnected and identified on its own.
+  Reconnect works; the event flood at startup is worth a look of its own.
+- `shutdown` works but is **slow**. The server logged
+  `LogRcon: Warning: Received Rcon: shutdown` and `LogNet: World NetDriver shutdown` at once, then
+  ran for about four and a half more minutes — at full CPU, logging nothing — before
+  `LogExit: Exiting.` and a clean exit 0. Any stop timeout around a Conan shutdown has to be
+  minutes, not seconds; the verifier's `shutdown` row needs a budget of at least 360 s here.
+- `docker stop -t 30` on the sidecar exits 0: `index.ts` handles SIGTERM, and the pinned inputs
+  still hash as the ledger recorded them afterwards.
+
+`takaro-maint verify --game conan-exiles` is not yet runnable end to end, for two reasons in the
+shared verifier:
+
+1. The runner boots `containerRef` with the image's own entrypoint and a fixed memory cap. This
+   game needs to name a command and its own options instead. The adapter already ships
+   `container_command` and `container_options` (unit-tested directly); they take effect once that
+   runner seam lands.
+2. The base `shutdown` check waits 120 s for the container to exit, and this server takes about
+   four and a half minutes. That budget has to come from the game before the row can be selected
+   here.
+
+Until both land, the rig lane above is this target's startup-level evidence.
 
 ## Live verification
 

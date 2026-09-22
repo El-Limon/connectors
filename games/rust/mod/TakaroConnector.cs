@@ -34,6 +34,7 @@ namespace Oxide.Plugins
         private volatile bool _shouldReconnect = true;
         private long _currentReconnectDelay = InitialReconnectDelay;
         private volatile bool _connected;
+        private volatile bool _identifySent;
         private readonly object _sendLock = new object();
         private readonly Dictionary<string, Vector3> _lastPosition = new Dictionary<string, Vector3>();
 
@@ -86,7 +87,13 @@ namespace Oxide.Plugins
                 {
                     _ws = new ClientWebSocket();
                     await _ws.ConnectAsync(new Uri(_wsUrl), token);
+                    _identifySent = false;
                     LogInfo("WebSocket connected");
+                    // Identify is the first frame this connector sends, the way every other
+                    // Takaro connector in this repository does it. Waiting to be greeted
+                    // instead means a peer that expects the client to speak first never
+                    // hears from this server at all: the socket sits open and silent.
+                    SendIdentify();
                     await ReceiveLoop(token);
                 }
                 catch (OperationCanceledException) { }
@@ -137,7 +144,7 @@ namespace Oxide.Plugins
 
                 var message = sb.ToString();
                 if (_debug)
-                    LogDebug($"WS RECV: {message}");
+                    LogDebug($"WS RECV: {FrameSummary(message)}");
 
                 try
                 {
@@ -150,6 +157,24 @@ namespace Oxide.Plugins
             }
         }
 
+        // takaro:frames-begin
+        private static string FrameSummary(string message)
+        {
+            try
+            {
+                var json = JObject.Parse(message);
+                var type = json.Value<string>("type") ?? "";
+                if (type != "request") return $"type={type}";
+                return $"type=request action={json.Value<string>("action") ?? ""} " +
+                    $"requestId={json.Value<string>("requestId") ?? ""}";
+            }
+            catch
+            {
+                return $"unparseable frame ({Encoding.UTF8.GetByteCount(message ?? "")} bytes)";
+            }
+        }
+        // takaro:frames-end
+
         private void OnWsMessage(string message)
         {
             var json = JObject.Parse(message);
@@ -158,7 +183,9 @@ namespace Oxide.Plugins
             switch (type)
             {
                 case "connected":
-                    LogInfo("Received server hello, sending identify...");
+                    // Takaro greets a fresh connection. Identify has already gone out when
+                    // the socket opened, so this only does anything if the greeting beat it.
+                    LogInfo("Received server hello");
                     SendIdentify();
                     break;
 
@@ -239,6 +266,11 @@ namespace Oxide.Plugins
 
         private void SendIdentify()
         {
+            // At most once per connection: the socket opening and a server greeting both
+            // lead here, and a second identify would look like a second session.
+            if (_identifySent) return;
+            _identifySent = true;
+
             var msg = new JObject
             {
                 ["type"] = "identify",
@@ -272,9 +304,9 @@ namespace Oxide.Plugins
             var serverId = payload["gameServerId"]?.Value<string>()
                            ?? payload["server"]?.Value<string>("id");
             if (serverId != null)
-                LogInfo($"Identified and connected, server ID: {serverId}");
+                LogInfo($"Identified successfully, server ID: {serverId}");
             else
-                LogInfo("Identified and connected");
+                LogInfo("Identified successfully");
         }
 
         private void SendResponse(string requestId, JToken payload, string error)
@@ -566,13 +598,204 @@ namespace Oxide.Plugins
                 arr.Add(new JObject
                 {
                     ["code"] = shortName,
-                    ["name"] = shortName,
+                    ["name"] = EntityNames.EntityDisplayName(shortName),
                     ["description"] = ""
                 });
             }
 
             return arr;
         }
+
+        // What a console command looks like in the log: the verb, and how many arguments
+        // came with it. `console: help` is unchanged; `say <anything>` never appears.
+        private static string CommandSummary(string command)
+        {
+            var parts = (command ?? "").Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return "";
+            return parts.Length == 1 ? parts[0] : parts[0] + " (" + (parts.Length - 1) + " args)";
+        }
+
+        // takaro:names-begin
+        // Entity prefabs have no localised display name the way items do -- `bear`,
+        // `scientistnpc_heavy`, `wolf2` is all the server knows them by. Opening the
+        // separators and capitalising put "Scientistnpc Heavy" and "Missionprovider
+        // Floatingcity A" in the one field Takaro shows a
+        // human: a formatted dev code, not a name.
+        //
+        // The table is the prefab list a real server returned; anything outside it goes
+        // through the rules below it. Nothing in this region touches Rust, Carbon or
+        // Unity, and the markers are what `tests/names/run.sh` lifts out to compile and
+        // run it on its own -- the behaviour is proven there, not grepped for.
+        private static class EntityNames
+        {
+            private static readonly Dictionary<string, string> Table =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "scientistnpc_arena", "Arena Scientist" },
+                    { "scientistnpc_bradley", "Bradley Scientist" },
+                    { "scientistnpc_bradley_heavy", "Bradley Heavy Scientist" },
+                    { "scientistnpc_cargo", "Cargo Ship Scientist" },
+                    { "scientistnpc_cargo_turret_any", "Cargo Ship Turret Scientist" },
+                    { "scientistnpc_cargo_turret_lr300", "Cargo Ship Turret Scientist (LR-300)" },
+                    { "scientistnpc_ch47_gunner", "Chinook Gunner Scientist" },
+                    { "scientistnpc_excavator", "Excavator Scientist" },
+                    { "scientistnpc_full_any", "Scientist" },
+                    { "scientistnpc_full_lr300", "Scientist (LR-300)" },
+                    { "scientistnpc_full_mp5", "Scientist (MP5)" },
+                    { "scientistnpc_full_pistol", "Scientist (Pistol)" },
+                    { "scientistnpc_full_shotgun", "Scientist (Shotgun)" },
+                    { "scientistnpc_heavy", "Heavy Scientist" },
+                    { "scientistnpc_junkpile_pistol", "Junkpile Scientist" },
+                    { "scientistnpc_oilrig", "Oil Rig Scientist" },
+                    { "scientistnpc_outbreak", "Outbreak Scientist" },
+                    { "scientistnpc_patrol", "Patrol Scientist" },
+                    { "scientistnpc_patrol_arctic", "Arctic Patrol Scientist" },
+                    { "scientistnpc_peacekeeper", "Peacekeeper Scientist" },
+                    { "scientistnpc_ptboat", "Patrol Boat Scientist" },
+                    { "scientistnpc_rhib", "RHIB Scientist" },
+                    { "scientistnpc_roam", "Roaming Scientist" },
+                    { "scientistnpc_roam_nvg_variant", "Roaming Scientist (Night Vision)" },
+                    { "scientistnpc_roamtethered", "Tethered Roaming Scientist" },
+                    { "npc_bandit_guard", "Bandit Guard" },
+                    { "npc_tunneldweller", "Tunnel Dweller" },
+                    { "npc_tunneldwellerspawned", "Tunnel Dweller (Spawned)" },
+                    { "npc_underwaterdweller", "Underwater Dweller" },
+                    { "npcplayertest", "NPC Player (Test)" },
+                    { "polarbear", "Polar Bear" },
+                    { "bear", "Bear" },
+                    { "bear_tutorial", "Bear (Tutorial)" },
+                    { "boar", "Boar" },
+                    { "chicken", "Chicken" },
+                    { "chicken.tutorial", "Chicken (Tutorial)" },
+                    { "stag", "Stag" },
+                    { "wolf", "Wolf" },
+                    { "wolf2", "Wolf" },
+                    { "ridablehorse", "Horse" },
+                    { "ridablehorse2", "Horse" },
+                    { "simpleshark", "Shark" },
+                    { "shark_unused", "Shark (Unused)" },
+                    { "zombie", "Zombie" },
+                    { "scarecrow", "Scarecrow" },
+                    { "scarecrow_dungeon", "Scarecrow (Dungeon)" },
+                    { "scarecrow_dungeonnoroam", "Scarecrow (Dungeon, Stationary)" },
+                    { "gingerbread_dungeon", "Gingerbread Man (Dungeon)" },
+                    { "gingerbread_meleedungeon", "Gingerbread Man (Melee Dungeon)" },
+                    { "frankensteinpet", "Frankenstein Pet" },
+                    { "apartment_vendor", "Apartment Vendor" },
+                    { "apartment_security", "Apartment Security" },
+                    { "farm_access_guard", "Farm Access Guard" },
+                    { "bandit_conversationalist", "Bandit Conversationalist" },
+                    { "bandit_shopkeeper", "Bandit Shopkeeper" },
+                    { "bandit_shopkeeper_sitting", "Bandit Shopkeeper (Sitting)" },
+                    { "boat_shopkeeper", "Boat Shopkeeper" },
+                    { "stables_shopkeeper", "Stables Shopkeeper" },
+                    { "waterwell_shopkeeper", "Water Well Shopkeeper" },
+                    { "missionprovider_bandit_a", "Bandit Mission Provider A" },
+                    { "missionprovider_bandit_b", "Bandit Mission Provider B" },
+                    { "missionprovider_fishing_a", "Fishing Mission Provider A" },
+                    { "missionprovider_fishing_b", "Fishing Mission Provider B" },
+                    { "missionprovider_floatingcity_a", "Floating City Mission Provider A" },
+                    { "missionprovider_generic_a", "Generic Mission Provider A" },
+                    { "missionprovider_outpost_a", "Outpost Mission Provider A" },
+                    { "missionprovider_outpost_b", "Outpost Mission Provider B" },
+                    { "missionprovider_stables_a", "Stables Mission Provider A" },
+                    { "missionprovider_stables_b", "Stables Mission Provider B" },
+                    { "missionprovider_test", "Mission Provider (Test)" },
+                    { "missionprovider_tutorial", "Mission Provider (Tutorial)" }
+                };
+
+            // Prefab words that are several words glued together, or an abbreviation that
+            // capitalising alone would mangle into `Lr300`, `Ch47`, `Mp5`.
+            private static readonly Dictionary<string, string> Glued =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "scientistnpc", "Scientist" },
+                    { "tunneldweller", "Tunnel Dweller" },
+                    { "underwaterdweller", "Underwater Dweller" },
+                    { "polarbear", "Polar Bear" },
+                    { "ridablehorse", "Horse" },
+                    { "simpleshark", "Shark" },
+                    { "waterwell", "Water Well" },
+                    { "missionprovider", "Mission Provider" },
+                    { "meleedungeon", "Melee Dungeon" },
+                    { "dungeonnoroam", "Dungeon, Stationary" },
+                    { "floatingcity", "Floating City" },
+                    { "lr300", "LR-300" },
+                    { "mp5", "MP5" },
+                    { "rhib", "RHIB" },
+                    { "ch47", "CH-47" },
+                    { "nvg", "Night Vision" },
+                    { "ptboat", "Patrol Boat" },
+                    { "oilrig", "Oil Rig" },
+                    { "npc", "NPC" }
+                };
+
+            // Not what the thing is but which copy of it, so these become a parenthesised
+            // suffix rather than a word in the middle of the name.
+            private static readonly Dictionary<string, string> Variants =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "tutorial", "Tutorial" },
+                    { "unused", "Unused" },
+                    { "test", "Test" },
+                    { "spawned", "Spawned" }
+                };
+
+            private static readonly char[] Separators = { '_', '-', '.' };
+
+            public static string EntityDisplayName(string shortName)
+            {
+                if (string.IsNullOrEmpty(shortName)) return shortName;
+
+                string known;
+                if (Table.TryGetValue(shortName, out known)) return known;
+
+                var parts = shortName.Split(Separators, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0) return shortName;
+
+                // `missionprovider_bandit_a` is the bandit camp's mission provider, variant
+                // A: the role belongs between the place and the variant, not at the front.
+                var provider = parts[0].Equals("missionprovider", StringComparison.OrdinalIgnoreCase);
+                var words = new List<string>(parts.Length);
+                var suffixes = new List<string>();
+
+                for (var i = provider ? 1 : 0; i < parts.Length; i++)
+                {
+                    string variant;
+                    if (Variants.TryGetValue(parts[i], out variant))
+                    {
+                        suffixes.Add(variant);
+                        continue;
+                    }
+                    words.Add(Word(parts[i]));
+                }
+                if (provider) words.Insert(words.Count > 0 ? 1 : 0, "Mission Provider");
+
+                var name = string.Join(" ", words.ToArray());
+                if (suffixes.Count > 0) name += " (" + string.Join(", ", suffixes.ToArray()) + ")";
+                return name.Length == 0 ? shortName : name;
+            }
+
+            // One prefab word. A lone letter is a variant label (`_a`, `_b`); a trailing
+            // copy number is dropped, because `wolf2` is the same animal as `wolf`.
+            private static string Word(string part)
+            {
+                string glued;
+                if (Glued.TryGetValue(part, out glued)) return glued;
+                if (part.Length == 1) return part.ToUpperInvariant();
+
+                var end = part.Length;
+                while (end > 0 && char.IsDigit(part[end - 1])) end--;
+                if (end > 0 && end < part.Length && char.IsLetter(part[end - 1]))
+                {
+                    var stem = part.Substring(0, end);
+                    if (Glued.TryGetValue(stem, out glued)) return glued;
+                    part = stem;
+                }
+                return char.ToUpperInvariant(part[0]) + part.Substring(1);
+            }
+        }
+        // takaro:names-end
 
         private JToken HandleListLocations()
         {
@@ -602,6 +825,13 @@ namespace Oxide.Plugins
         private JToken HandleExecuteConsoleCommand(JObject args)
         {
             var command = args.Value<string>("command") ?? "";
+            // Rust's console prints nothing for most commands it is handed (`say` among
+            // them), so this line is the only record an operator has of what Takaro ran on
+            // their server -- and the only thing outside the connector that shows a console
+            // round trip happened at all. Only the verb goes in it: the arguments are
+            // whatever Takaro was asked to run, up to and including a password an admin
+            // typed, and this log is read by anyone who can read the server console.
+            LogInfo($"console: {CommandSummary(command)}");
             try
             {
                 var result = ConsoleSystem.Run(ConsoleSystem.Option.Server, command);
@@ -639,6 +869,10 @@ namespace Oxide.Plugins
             }
             else
             {
+                // Same reasoning as the console audit line above: a broadcast leaves no
+                // trace in Rust's own console, so nothing on the server would ever show
+                // that Takaro said something to everybody.
+                LogInfo($"broadcast: {message}");
                 ConsoleNetwork.BroadcastToAllClients("chat.add", 2, 0, message);
             }
         }

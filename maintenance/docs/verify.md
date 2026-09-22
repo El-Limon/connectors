@@ -15,7 +15,7 @@ runs it on a runner, and only the run id, the labels and the timeouts differ.
 ```
 takaro-maint verify --game G [--target ID … | --all-targets] [--platform P] \
                     --artifacts DIR --out DIR \
-                    [--checks a,b] [--parallel 1] [--startup-timeout 300] \
+                    [--checks a,b] [--parallel 1] [--startup-timeout SECONDS] \
                     [--takaro local|hosted] [--run-id X] [--label k=v]… \
                     [--keep-on-failure] [--cleanup-orphans] [--negative]
 ```
@@ -26,7 +26,7 @@ takaro-maint verify --game G [--target ID … | --all-targets] [--platform P] \
 | `--artifacts DIR` | A build output directory holding `build-manifest.json`. The manifest decides which file is deployed. |
 | `--out DIR` | Where `<target>/report.json` and the logs are written. |
 | `--checks a,b` | Run a subset. Unknown ids are a usage error; the ids a game adds count as known. |
-| `--startup-timeout` | How long the server gets to reach its "Done" line. 300 s locally, 600 s in CI. |
+| `--startup-timeout` | How long the server gets to reach its ready line. Defaults to the game's declared budget (900 s for Terraria), or 300 s when the game declares none; CI may override it explicitly. |
 | `--negative` | Also boot the sibling target's artifact and require it to be refused (see below). |
 | `--takaro hosted` | Register against a real Takaro instead of the local fake (see below). |
 | `--run-id`, `--label` | The container-name suffix and the extra docker labels this run's containers carry. `tm.run` and `tm.ttl` are set by the harness (from `--run-id` and the clock) and are refused as `--label` keys, so a cleanup can always find the run. |
@@ -84,6 +84,28 @@ stdout is one JSON document:
 | `restart` | The same data directory boots a second time, the install ledger is byte-identical, the pinned inputs are intact, and the second server shuts down cleanly too. Skipped when `shutdown` failed — there is no clean data directory to reboot. | 180 s to identify |
 | `negative-wrong-target` | Only with `--negative`. See below. | `--startup-timeout` |
 | `hosted-registration` | Only with `--takaro hosted`. See below. | 60 s |
+
+### What a game contributes: `HOOKS` and `UNSUPPORTED_CHECKS`
+
+The table above is the base ladder, and it was written for the Minecraft connector. A game
+contributes to a run through exactly one object: `HOOKS = GameHooks(...)` at the end of its
+`games/<game>/verify.py`. `GameHooks` is a frozen dataclass whose every field is declared
+and defaulted -- the ready line, the `check_ids` this game adds to the ladder,
+`unsupported_checks`, the opt-in `negative_check_ids` and `hosted_check_ids`, and the
+callables `before_boot`, `after_boot`, `after_protocol`,
+`after_shutdown`, `negative`, `run_hosted` and `scan_runtime_identity`. A game that ships
+no hooks module verifies with the base checks alone; a module that ships hooks but never
+assembles them into `HOOKS` is a usage error rather than a game silently running without
+them. The adapter's own run-time hooks (`install`, `after_deploy`, `container_mounts`,
+`container_options`, `container_command`) come from `games.base.BaseAdapter`, which every
+adapter subclasses, so a hook is a real method with a checked signature.
+
+`unsupported_checks` maps a base check id to why this game cannot pass it and which of the
+game's own checks stands in for it. A run that names no `--checks` is narrowed to
+`check_ids(game)` minus those keys and any negative/hosted checks outside their mode, once,
+in the runner before anything is installed. Each unsupported row is announced as
+`not running <id>: <reason>`. An explicit `--checks` is taken literally, including a check
+the game is known to fail or an opt-in negative check: naming a check is asking for it.
 
 ### Levels and outcome are not the same thing
 

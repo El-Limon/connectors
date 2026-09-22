@@ -39,37 +39,15 @@
       "additionalProperties": false,
       "required": ["java", "container"],
       "properties": {
-        "java": {"type": "integer", "minimum": 8},
+        "java": {"type": ["integer", "null"], "minimum": 8, "description": "The JRE major version the server needs, or null for a game that ships its own runtime."},
         "container": {"$ref": "inputs/container-image.schema.json"}
       }
     },
     "build": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["system", "gradleProject", "javaRelease", "gradleJvm", "gradleVersion", "toolchain", "plugins", "deps"],
-      "properties": {
-        "system": {"const": "gradle"},
-        "gradleProject": {"type": "string", "minLength": 1},
-        "javaRelease": {"type": "integer", "minimum": 8},
-        "gradleJvm": {"type": "integer", "minimum": 8},
-        "gradleVersion": {"type": "string", "minLength": 1},
-        "toolchain": {"$ref": "inputs/container-image.schema.json"},
-        "plugins": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
-        "deps": {
-          "type": "object",
-          "minProperties": 1,
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["coordinate", "sha256"],
-            "properties": {
-              "coordinate": {"type": "string", "pattern": "^[^:]+:[^:]+:[^:]+$"},
-              "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-              "resolvedCoordinate": {"type": "string", "minLength": 1}
-            }
-          }
-        }
-      }
+      "required": ["system"],
+      "description": "How the connector is built for this target. The system names the schema file under build-systems/ that the validator dispatches on, so a new build system means a new file there and never an edit to this one.",
+      "properties": {"system": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}}
     },
     "components": {
       "type": "array",

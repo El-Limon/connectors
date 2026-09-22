@@ -11,14 +11,14 @@
     {
       "pattern": "takaro-terraria-plugin.zip",
       "label": "Plugin",
-      "requires": "TShock stable image",
+      "requires": "TShock 6.1.0 (Terraria 1.4.5.6)",
       "hint": "Copy TakaroTerrariaEvents.dll into <server>/ServerPlugins/.",
       "required": true
     },
     {
       "pattern": "takaro-terraria-bridge.zip",
       "label": "Bridge",
-      "hint": "Unzip anywhere on the host, then run npm ci --omit=dev inside it.",
+      "hint": "Unzip anywhere on the host and run node dist/index.js; its dependency is already inside.",
       "required": true
     }
   ]
