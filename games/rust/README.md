@@ -4,9 +4,10 @@ A server-side-only plugin that connects a Rust dedicated server to Takaro. It is
 **Oxide/uMod** plugin API (`Oxide.Plugins` / `RustPlugin`) and is developed and verified on
 **Carbon**, which runs the same plugins. Players do not install anything.
 
-**Built and verified against Rust public build 25353106 (2026-09-16) with Carbon v2.0.259.** Other
-Rust builds and other Carbon builds are unverified — the plugin will very likely still load, but
-nothing here was checked against them.
+**Built and compile-checked against Rust public build 25454815 (2026-09-22) with Carbon v2.0.259.**
+The protocol/runtime checks were last run on build 25353106 with the same Carbon bytes. Other Rust
+builds and other Carbon builds are unverified — the plugin will very likely still load, but nothing
+here was checked against them.
 
 ## Install
 
@@ -33,7 +34,7 @@ From the latest `rust-vX.Y.Z` release on the releases page
 
 download either name — they are the same bytes:
 
-- **`takaro-rust-plugin-carbon-25353106-<version>.cs`** — the build's own name, which says exactly
+- **`takaro-rust-plugin-carbon-25454815-<version>.cs`** — the build's own name, which says exactly
   which Rust build and which Carbon it was verified against.
 - **`TakaroConnector.cs`** — the same file under the name the framework loads. Direct link pattern:
   `https://github.com/gettakaro/connectors/releases/download/rust-v<version>/TakaroConnector.cs`
@@ -118,9 +119,10 @@ variables are untouched by the upgrade, so the server keeps its identity.
 
 ## What works, what doesn't
 
-✅ means it was proven by an automated run against the exact pinned target (Rust build 25353106,
-Carbon 2.0.259) with **no game client**: the server really booted in its pinned container, Carbon
-really compiled and loaded this plugin, and the protocol harness really asked for each of these.
+✅ means it was proven by an automated run on Rust build 25353106 with Carbon 2.0.259 and **no game
+client**: the server really booted, Carbon compiled and loaded this plugin, and the protocol harness
+asked for each of these. The current build 25454815 is compile-checked against the same Carbon bytes;
+runtime re-verification is tracked separately.
 ⚠️ means the plugin implements it but nothing has confirmed it — everything a real player is
 needed for is in that group. ❌ means it is not implemented or not supported.
 

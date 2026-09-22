@@ -292,7 +292,7 @@ def test_online_validation_passes_against_matching_upstream(run: Any, wired: Any
 def test_the_wired_fixture_serves_exactly_the_targets_it_says(wired: Any) -> None:
     assert wired.served == ("fabric-26.1.2", "fabric-26.2")
     assert wired.unserved == {
-        "carbon-25353106": "no repinner for platform 'carbon'",
+        "carbon-25454815": "no repinner for platform 'carbon'",
         "linux-1.0.15": "no repinner for platform 'linux'",
         "linux-25356024": "no repinner for platform 'linux'",
         "linux-3.2.0.b10": "no repinner for platform 'linux'",

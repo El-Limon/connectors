@@ -39,7 +39,7 @@ from takaro_maint.steam import vdf
 from takaro_maint.tracker import identity
 
 GAME = "rust"
-TARGET = "carbon-25353106"
+TARGET = "carbon-25454815"
 APP = 258550
 VERSION = "0.0.6-dev.abc1234"
 ARTIFACT = f"takaro-rust-plugin-{TARGET}-{VERSION}.cs"
@@ -140,6 +140,9 @@ def repin(root: Path, manifests: dict[str, str] | None = None) -> dict[str, Any]
     manifests = manifests or PINNED
     record = read_target(root)
     server = record["inputs"]["server"]
+    # The synthetic depot tree models the earlier build that supplied these fixtures.
+    server["buildid"] = 25353106
+    record["revision"] = "25353106"
     server["depots"] = {
         depot: {
             "manifest": manifest,
@@ -249,9 +252,9 @@ def test_targets_resolve_env_for_rust(run: Any) -> None:
     env = payload["env"]
     assert env["RUST_STEAM_APP"] == "258550"
     assert env["RUST_STEAM_BRANCH"] == "public"
-    assert env["RUST_STEAM_BUILDID"] == "25353106"
-    assert env["RUST_STEAM_DEPOTS"] == "258552:3352454092778561960;258554:4408100835840826754"
-    assert env["RUST_ARTIFACT"] == "takaro-rust-plugin-carbon-25353106-{version}.cs"
+    assert env["RUST_STEAM_BUILDID"] == "25454815"
+    assert env["RUST_STEAM_DEPOTS"] == "258552:8780771730265493247;258554:2040047463972636387"
+    assert env["RUST_ARTIFACT"] == "takaro-rust-plugin-carbon-25454815-{version}.cs"
     assert env["RUST_CARBON_ASSET"] == "Carbon.Linux.Release.tar.gz"
     assert env["RUST_CARBON_TAG"] == "production_build"
     assert env["RUST_CARBON_SHA256"] == "bfc3cf3d638d588fab94fd4d05a7e8ab2fae28fbbfb5962ecc8fdbd9bb7bb306"
@@ -265,9 +268,9 @@ def test_targets_resolve_env_for_rust(run: Any) -> None:
     assert not any(key.endswith("_JAVA") for key in env)
 
     assert payload["resolvedUrls"]["server"].startswith(
-        "steam://app/258550/branch/public/build/25353106/depot/258552/manifest/3352454092778561960"
+        "steam://app/258550/branch/public/build/25454815/depot/258552/manifest/8780771730265493247"
     )
-    assert "258554/manifest/4408100835840826754" in payload["resolvedUrls"]["server"]
+    assert "258554/manifest/2040047463972636387" in payload["resolvedUrls"]["server"]
     # The Carbon asset is addressed by the URL that actually serves the bytes: the API's
     # asset-id URL answers with JSON unless the request asks for octet-stream, which
     # `catalog validate --online` (and anything else that re-hashes it) cannot do.
@@ -790,7 +793,17 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_head_as_blocked_upstream(
     run: Any, repo: Path, upstream: Any, steam: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The fixture repo is repinned at the fixture depots; the scan is about the real record.
-    write_target(repo, json.loads((REPO_ROOT / "catalog/rust/targets" / f"{TARGET}.json").read_text()))
+    current = json.loads((REPO_ROOT / "catalog/rust/targets" / f"{TARGET}.json").read_text())
+    write_target(repo, current)
+    server = current["inputs"]["server"]
+    steam.document = fake_steamcmd.move_head(
+        steam.document,
+        "public",
+        server["buildid"],
+        {depot: row["manifest"] for depot, row in server["depots"].items()},
+        timeupdated=1790074315,
+    )
+    steam.serve()
     monkeypatch.setenv("GH_TOKEN", TOKEN)
 
     with FakeGitHub() as tracker:
@@ -809,7 +822,7 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_head_as_blocked_upstream(
     steam.document = fake_steamcmd.move_head(
         steam.document,
         "public",
-        25400000,
+        25500000,
         {"258552": HEADS["258552"], "258554": HEADS["258554"]},
         timeupdated=1790100000,
     )
@@ -827,7 +840,7 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_head_as_blocked_upstream(
         assert "provider=steam" in body.splitlines()[0]
         assert f"component={GAME}" in body.splitlines()[0]
         assert "branch=public" in body.splitlines()[0]
-        assert "| Build id | 25400000 |" in body
+        assert "| Build id | 25500000 |" in body
         # Carbon publishes nothing that says which Rust build it targets, so the framework
         # row cannot be anything but `missing` — and that is the blocked state.
         assert re.search(r"^\| carbon \| missing \|", body, re.MULTILINE), body
