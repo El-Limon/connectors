@@ -220,6 +220,12 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_one(
     issue = PROVIDER.presentation(head, "Enshrouded")
     assert issue is not None
     assert issue["title"] == "Enshrouded public: build 23999999 needs a target"
+    # `watch.readinessNote` was config nothing read: an Enshrouded build moving under the
+    # pinned code signatures is exactly the case the generic sentence gets wrong.
+    note = json.loads((repo / "catalog" / GAME / "game.json").read_text())["sources"]["steam"]["watch"]["readinessNote"]
+    assert head.facts["readinessNote"] == note
+    assert issue["readinessLines"] == [note]
+    assert "no framework layer" not in " ".join(issue["readinessLines"])
 
 
 def _served(root: Path) -> dict[str, Any]:

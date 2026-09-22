@@ -342,6 +342,67 @@ def test_every_observation_matches_the_observation_schema() -> None:
         assert observations.validate(document) == [], document
 
 
+def test_a_tag_outside_the_revision_alphabet_does_not_abort_the_scan() -> None:
+    """`carbon@2.0` is a valid GitHub tag and an invalid `rev`; it used to fail the scan.
+
+    `scan.py` raises `RuntimeError` on an observation the schema refuses, which takes the
+    whole run down -- every other source with it -- for one upstream's choice of tag.
+    """
+    from fake_upstream import FakeUpstream
+    from takaro_maint import observations
+
+    listing = carbon_listing()
+    release = next(entry for entry in listing if entry["tag_name"] == "production_build")
+    release["tag_name"] = "carbon@2.0"
+
+    with FakeUpstream() as upstream:
+        upstream.add_json(LISTING_PATH, listing)
+        result = release_provider().observe(source_for(upstream.base_url, watch_block(tag="carbon@2.0")))
+
+    assert [o.rev for o in result.observations] == ["carbon-2.0"]
+    assert observations.REV_RE.match(result.observations[0].rev)
+    # The raw tag is not lost: it is what the facts and the download URL carry.
+    assert result.observations[0].facts["tag"] == "carbon@2.0"
+    document = observations.to_json(result.observations[0], game="dummy", source_id="carbon-api")
+    assert observations.validate(document) == [], document
+
+
+def test_safe_rev_collapses_runs_and_keeps_the_alphabet() -> None:
+    from takaro_maint.observations import REV_RE, safe_rev
+
+    assert safe_rev("carbon@2.0") == "carbon-2.0"
+    assert safe_rev("v1.0 (final)") == "v1.0-final"
+    assert safe_rev("--weird--") == "weird"
+    assert safe_rev("@@@") == "unknown"
+    assert safe_rev("already.fine_1/2+3-4") == "already.fine_1/2+3-4"
+    for text in ("carbon@2.0", "v1.0 (final)", "--weird--", "@@@"):
+        assert REV_RE.match(safe_rev(text)), text
+
+
+def test_two_same_day_reuploads_without_a_digest_are_two_revisions() -> None:
+    """The fallback was the upload date, so the second upload of a day was never filed."""
+    from fake_upstream import FakeUpstream
+
+    def observe(updated_at: str, size: int) -> Any:
+        listing = carbon_listing()
+        release = next(entry for entry in listing if entry["tag_name"] == "production_build")
+        asset = next(item for item in release["assets"] if item["name"] == "Carbon.Linux.Release.tar.gz")
+        asset.pop("digest", None)
+        asset["updated_at"] = updated_at
+        asset["size"] = size
+        with FakeUpstream() as upstream:
+            upstream.add_json(LISTING_PATH, listing)
+            watch = watch_block(tag="production_build", mutable=True)
+            return release_provider().observe(source_for(upstream.base_url, watch))
+
+    morning = observe("2026-09-21T10:00:00Z", 21387905)
+    evening = observe("2026-09-21T18:30:00Z", 21387999)
+
+    assert morning.observations[0].rev == "production_build.20260921T100000Z.21387905"
+    assert evening.observations[0].rev == "production_build.20260921T183000Z.21387999"
+    assert morning.observations[0].rev != evening.observations[0].rev
+
+
 # -- T-C5 the ambiguous pattern ------------------------------------------------
 def test_an_ambiguous_asset_pattern_is_an_upstream_failure() -> None:
     from takaro_maint.exit_codes import UPSTREAM, MaintError

@@ -146,7 +146,15 @@ class GitHubReleaseProvider(Provider):
         """The revision: a version out of the release name when there is one, else the tag.
 
         A mutable tag gets the asset digest appended, so re-uploading ``production_build``
-        is a new revision rather than a silent replacement of the old one.
+        is a new revision rather than a silent replacement of the old one. Without a digest
+        the fallback used to be the upload *date*, so two re-uploads on one day were one
+        revision and the second one was never filed; the timestamp and the asset size are
+        what tell them apart.
+
+        Everything here comes out of a tag or a release name, which GitHub lets carry
+        characters the observation schema's ``rev`` does not -- ``carbon@2.0`` is a valid
+        tag -- so the result goes through :func:`observations.safe_rev`. The raw tag stays
+        in the facts.
         """
         tag = str(release.get("tag_name") or "")
         rev = tag
@@ -158,8 +166,13 @@ class GitHubReleaseProvider(Provider):
                 rev = match.group(1)
         if channel.get("mutable"):
             digest = _digest(asset)
-            rev = f"{rev}.{digest[:8]}" if digest else f"{rev}.{str(asset.get('updated_at') or '')[:10]}"
-        return rev
+            if digest:
+                rev = f"{rev}.{digest[:8]}"
+            else:
+                stamp = re.sub(r"[^0-9TZ]", "", str(asset.get("updated_at") or ""))
+                size = asset.get("size")
+                rev = f"{rev}.{stamp}" + (f".{size}" if size else "")
+        return observations.safe_rev(rev)
 
     def observe(self, source: dict[str, Any]) -> ProviderResult:
         """One observation per (enabled channel, matching release) the listing carries."""

@@ -564,6 +564,8 @@ def test_bootstrap_files_the_uncovered_public_head(run: Any, tracker: Any, steam
     assert "<!-- takaro-maint:state=detected -->" in body
     assert "steam pin --game 7d2d --branch public --metadata" in body
     assert "Steam moved the `public` branch of app 294420" in body
+    # 7D2D declares no `watch.readinessNote`, so the generic sentence is what it gets.
+    assert "no framework layer" in body
     assert [issue["labels"] for issue in tracker.support_issues()] == [["connector-maintenance"]]
     assert (
         tracker.dashboard_state()["work"][f"provider=steam component=7d2d branch=public rev={expected}"]["state"]

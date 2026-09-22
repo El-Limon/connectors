@@ -893,6 +893,104 @@ def test_oci_registry_refuses_an_index_without_the_watched_platform() -> None:
     assert "linux/amd64" in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "realm",
+    [
+        "file:///etc/passwd",
+        "http://169.254.169.254/latest",
+        "https://user@auth.invalid/token",
+        "https://169.254.169.254/latest",
+        "https://localhost/token",
+    ],
+)
+def test_a_hostile_bearer_realm_is_never_followed(realm: str) -> None:
+    """The realm comes from whoever answered the request, so it is attacker-controlled."""
+    from takaro_maint.exit_codes import MaintError
+
+    def tags() -> Any:
+        raise urllib.error.HTTPError(
+            "https://registry.invalid/v2/pryaxis/tshock/tags/list",
+            401,
+            "unauthorized",
+            {"WWW-Authenticate": f'Bearer realm="{realm}",service="registry.invalid"'},  # type: ignore[arg-type]
+            None,
+        )
+
+    transport = ScriptedTransport({"/tags/list": tags})
+    net.set_transport(transport)
+    readiness.reset_registry()
+    try:
+        with pytest.raises(MaintError) as caught:
+            provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    assert caught.value.code == 4
+    assert "is not an https URL to a named host" in str(caught.value)
+    assert not [url for url, _ in transport.seen if url.startswith(realm.split("?")[0])]
+
+
+def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query() -> None:
+    """The challenge's own values were pasted into the query string unencoded."""
+    listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
+    challenged = {"done": False}
+
+    def tags() -> Any:
+        if not challenged["done"]:
+            challenged["done"] = True
+            raise urllib.error.HTTPError(
+                "https://registry.invalid/v2/pryaxis/tshock/tags/list",
+                401,
+                "unauthorized",
+                {  # type: ignore[arg-type]
+                    "WWW-Authenticate": 'Bearer realm="https://auth.invalid/token",'
+                    'service="a&b=c d",scope="repository:pryaxis/tshock:pull"'
+                },
+                None,
+            )
+        return Response(listing)
+
+    transport = ScriptedTransport(
+        {
+            "auth.invalid/token": lambda: Response(json.dumps({"token": "t"}).encode("utf-8")),
+            "/tags/list": tags,
+            "/manifests/": lambda: Response(index_bytes("6.1.0")),
+        }
+    )
+    net.set_transport(transport)
+    readiness.reset_registry()
+    try:
+        provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    realm_call = next(url for url, _ in transport.seen if "auth.invalid" in url)
+    assert "service=a%26b%3Dc+d" in realm_call
+    # The scope's own colons and slashes stay readable, which is the form a registry wants.
+    assert "scope=repository:pryaxis/tshock:pull" in realm_call
+
+
+def test_a_prerelease_is_never_the_channel_head() -> None:
+    """`6.1.0-pre3` sorted after `6.1.0`, so a scan called the prerelease the head."""
+    readiness.reset_registry()
+    with FakeUpstream() as upstream:
+        serve_registry(upstream, tags=["6.1.0-pre3", "6.1.0"])
+        # The prerelease's body only has to be a real index; which one decides its digest.
+        upstream.add(f"/v2/{REPOSITORY}/manifests/6.1.0-pre3", index_bytes("6.0.0"))
+        channels = {
+            "release": {
+                "branch": "release",
+                "tag": r"regex:^[0-9]+\.[0-9]+\.[0-9]+(-pre[0-9]+)?$",
+                "gameRevision": "v{tag}",
+            }
+        }
+        result = provider_for("oci-registry").observe(oci_source(upstream.base_url, channels=channels))
+
+    assert result.status == "ok"
+    assert [observation.facts["tag"] for observation in result.observations] == ["6.1.0", "6.1.0-pre3"]
+    assert result.heads == {"release": result.observations[0].rev}
+
+
 def test_oci_registry_answers_a_bearer_challenge_and_never_prints_the_token(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -908,7 +1006,7 @@ def test_oci_registry_answers_a_bearer_challenge_and_never_prints_the_token(
                 401,
                 "unauthorized",
                 {  # type: ignore[arg-type]
-                    "WWW-Authenticate": 'Bearer realm="http://auth.invalid/token",'
+                    "WWW-Authenticate": 'Bearer realm="https://auth.invalid/token",'
                     'service="registry.invalid",scope="repository:pryaxis/tshock:pull"'
                 },
                 None,
@@ -1394,9 +1492,12 @@ def test_an_archive_without_what_the_server_loads_is_refused(
 
 
 def test_prerelease_tags_sort_by_number_not_by_string() -> None:
+    """A suffix is a prerelease of the version it hangs off, so it sorts before it."""
     from takaro_maint.providers.oci_registry import _sort_key
 
     tags = ["6.0.0-pre9", "6.0.0-pre10", "6.0.0-pre2", "6.0.0"]
 
-    assert sorted(tags, key=_sort_key) == ["6.0.0", "6.0.0-pre2", "6.0.0-pre9", "6.0.0-pre10"]
-    assert max(tags, key=_sort_key) == "6.0.0-pre10"
+    assert sorted(tags, key=_sort_key) == ["6.0.0-pre2", "6.0.0-pre9", "6.0.0-pre10", "6.0.0"]
+    assert max(tags, key=_sort_key) == "6.0.0"
+    # And a deeper version still beats the one it extends.
+    assert sorted(["6.1.0", "6.1.0.1", "6.1.0-pre3"], key=_sort_key) == ["6.1.0-pre3", "6.1.0", "6.1.0.1"]
