@@ -231,11 +231,16 @@ def _matches(marker: dict[str, str], record: dict[str, Any]) -> bool:
             and str(record.get("revision")) == rev
         )
     if kind == "steam-depots":
+        # Current markers carry the catalog join key directly. Accept the prefix of the
+        # compound revision too so issues filed by the first Steam tracker release remain
+        # reconcilable after this fix: ``<buildid>[.<manifest digest>]+<branch>``.
+        marker_buildid = marker.get("buildid") or str(rev or "").partition(".")[0].partition("+")[0]
+        marker_app = marker.get("app")
         return (
             marker.get("provider") == "steam"
-            and str(spec.get("app")) == marker.get("app")
+            and (marker_app is None or str(spec.get("app")) == marker_app)
             and str(spec.get("branch")) == marker.get("branch")
-            and str(spec.get("buildid")) == rev
+            and str(spec.get("buildid")) == marker_buildid
         )
     return False  # pragma: no cover - IDENTITY_KINDS and this table are edited together
 

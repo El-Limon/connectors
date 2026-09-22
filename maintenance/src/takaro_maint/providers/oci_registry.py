@@ -47,6 +47,7 @@ import hashlib
 import ipaddress
 import json
 import re
+import socket
 import urllib.error
 from dataclasses import replace
 from typing import Any
@@ -119,17 +120,58 @@ def _sort_key(tag: str) -> list[tuple[int, int, str]]:
     return key
 
 
-def _refuse_a_hostile_realm(realm: str) -> None:
-    """A token realm has to be an https URL to a named host, or it is not followed at all."""
+def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Recognise canonical and legacy IPv4 spellings before the platform resolver sees them."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        # libc accepts abbreviated, octal and hexadecimal IPv4 (127.1, 017700000001,
+        # 0x7f000001). Treat all of them as literals rather than letting their spelling
+        # smuggle a loopback address through the named-host rule.
+        return ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(host)))
+    except OSError:
+        return None
+
+
+def _refuse_a_hostile_realm(realm: str) -> tuple[net.PinnedAddress, ...]:
+    """Require one HTTPS named host whose every current address is globally routable."""
     parsed = urlparse(realm)
     host = parsed.hostname or ""
-    literal = True
+    malformed = parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.fragment
     try:
-        ipaddress.ip_address(host)
+        port = parsed.port or 443
     except ValueError:
-        literal = False
-    if parsed.scheme != "https" or not host or parsed.username or parsed.password or host == "localhost" or literal:
+        malformed = True
+        port = 443
+    if malformed or host.rstrip(".").casefold() == "localhost" or _ip_literal(host) is not None:
         raise UpstreamUnavailable(f"the registry's bearer realm {realm!r} is not an https URL to a named host")
+    try:
+        answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise UpstreamUnavailable(f"the registry's bearer realm {realm!r} cannot be resolved ({exc})") from exc
+    addresses = {str(answer[4][0]).split("%", 1)[0] for answer in answers if answer[4]}
+    try:
+        unsafe = sorted(
+            address
+            for address in addresses
+            if not ipaddress.ip_address(address).is_global or ipaddress.ip_address(address).is_multicast
+        )
+    except ValueError as exc:
+        raise UpstreamUnavailable(f"the registry's bearer realm {realm!r} resolved to an invalid address") from exc
+    if not addresses or unsafe:
+        detail = ", ".join(unsafe) if unsafe else "no addresses"
+        raise UpstreamUnavailable(
+            f"the registry's bearer realm {realm!r} does not resolve only to public addresses ({detail})"
+        )
+    # Preserve the exact socket addresses that passed the public-address check. The
+    # transport connects to one of these directly; it must not resolve ``host`` again.
+    return tuple(
+        (family, socktype, proto, tuple(sockaddr))
+        for family, socktype, proto, _canonname, sockaddr in answers
+        if sockaddr
+    )
 
 
 class OciRegistryProvider(Provider):
@@ -168,13 +210,25 @@ class OciRegistryProvider(Provider):
         realm = challenge.get("realm")
         if not realm:
             raise UpstreamUnavailable("the registry's bearer challenge names no realm")
-        _refuse_a_hostile_realm(realm)
+        addresses = _refuse_a_hostile_realm(realm)
         query = urlencode(
             sorted((key, value) for key, value in challenge.items() if key != "realm" and value), safe=":/"
         )
         url = f"{realm}?{query}" if query else realm
         try:
-            body, _ = self._open(url, {"Accept": "application/json"})
+            response = net.open_no_redirect(url, {"Accept": "application/json"}, addresses)
+            try:
+                body = response.read()
+            finally:
+                close = getattr(response, "close", None)
+                if close is not None:
+                    close()
+        except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise UpstreamUnavailable(
+                    f"{realm} redirected its bearer-token request; redirects are refused", url=realm, status=exc.code
+                ) from exc
+            raise UpstreamUnavailable(f"{realm} refused an anonymous token (HTTP {exc.code})", url=realm) from exc
         except (urllib.error.URLError, OSError) as exc:
             raise UpstreamUnavailable(f"{realm} refused an anonymous token ({exc})", url=realm) from exc
         try:

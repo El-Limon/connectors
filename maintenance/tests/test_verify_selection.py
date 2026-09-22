@@ -2,8 +2,8 @@
 
 The base ladder is written for the Minecraft connector. Each other game declares only
 base checks that cannot apply to it and names the game-specific check standing in. A
-game's own checks always run by default, including checks that truthfully report a known
-limitation.
+game's own checks run by default, including checks that truthfully report a known
+limitation, except checks declared for an opt-in mode.
 """
 
 from __future__ import annotations
@@ -44,8 +44,12 @@ def test_a_default_run_selects_the_ladder_minus_what_the_game_cannot_pass(game: 
             # `None` -- every check -- is what a bare run means.
             assert run.options.only is None
             return
-        assert run.options.only == [check for check in check_ids(game) if check not in unsupported]
+        conditional = set(game_hooks(game).negative_check_ids) | set(game_hooks(game).hosted_check_ids)
+        assert run.options.only == [
+            check for check in check_ids(game) if check not in unsupported and check not in conditional
+        ]
         assert set(run.options.only).isdisjoint(unsupported)
+        assert set(run.options.only).isdisjoint(conditional)
     finally:
         run.cleanup()
 
@@ -89,6 +93,48 @@ def test_an_explicit_checks_list_is_left_byte_identical(tmp_path: Path) -> None:
         assert run.options.only == asked
     finally:
         run.cleanup()
+
+
+def test_an_explicit_negative_check_is_selected_without_the_convenience_flag(tmp_path: Path) -> None:
+    """Naming an opt-in check invokes it; a forgotten result becomes a failure row."""
+    from takaro_maint.verify.checks import CheckResult
+    from takaro_maint.verify.runner import RunOptions
+
+    asked = ["build", "negative-degraded-hooks"]
+    options = RunOptions(artifacts=tmp_path / "dist", out=tmp_path / "out", run_id="selection", only=asked)
+    run = _run("enshrouded", tmp_path, options)
+    try:
+        assert run.options.negative is False
+        assert run.wanted("negative-degraded-hooks") is True
+        assert run.selected_check_ids() == tuple(asked)
+        run.record(CheckResult("build", "pass", 0))
+
+        run._record_missing_selected_checks()
+
+        missing = next(result for result in run.results if result.id == "negative-degraded-hooks")
+        assert missing.status == "fail"
+        assert "produced no result" in " ".join(missing.detail["problems"])
+    finally:
+        run.cleanup()
+
+
+def test_negative_checks_are_opt_in_for_a_bare_run(tmp_path: Path) -> None:
+    from takaro_maint.verify.runner import RunOptions
+
+    plain = _run("enshrouded", tmp_path)
+    negative = _run(
+        "enshrouded",
+        tmp_path,
+        RunOptions(artifacts=tmp_path / "dist", out=tmp_path / "out", run_id="selection", negative=True),
+    )
+    try:
+        plain._select_default_checks()
+        negative._select_default_checks()
+        assert "negative-degraded-hooks" not in plain.selected_check_ids()
+        assert "negative-degraded-hooks" in negative.selected_check_ids()
+    finally:
+        plain.cleanup()
+        negative.cleanup()
 
 
 def test_one_targets_default_does_not_narrow_the_next_ones(tmp_path: Path) -> None:

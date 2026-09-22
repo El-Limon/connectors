@@ -22,7 +22,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed, ConflictError
 from ...steam import install as steam_install
-from ..base import BaseAdapter, BuildResult, common_env, open_zip
+from ..base import BaseAdapter, BuildResult, common_env, open_zip, replace_directory
 
 GAME_ID = "conan-exiles"
 DIST_ROOT = "games/conan-exiles/_data/dist"
@@ -268,7 +268,8 @@ class ConanExilesAdapter(BaseAdapter):
         preserved: list[tuple[str, bytes, int]] = []
         try:
             with open_zip(artifact) as archive:
-                for name in archive.namelist():
+                names = archive.namelist()
+                for name in names:
                     relative = name.rstrip("/")
                     if not relative:
                         continue
@@ -280,13 +281,22 @@ class ConanExilesAdapter(BaseAdapter):
                             "nothing was extracted"
                         )
                     paths.safe_relative(relative, field="artifact zip entry")
+                required = (
+                    f"{BRIDGE_FOLDER}/dist/index.js",
+                    f"{BRIDGE_FOLDER}/dist/mod/pollerCli.js",
+                    f"{BRIDGE_FOLDER}/takaro-target.json",
+                )
+                missing = [name for name in required if name not in names]
+                if missing:
+                    raise ConflictError(
+                        f"{artifact.name} is missing {', '.join(missing)}; the installed bridge is untouched"
+                    )
                 for name in DEPLOY_PRESERVED:
                     kept = folder / name
                     if kept.is_file():
                         preserved.append((name, kept.read_bytes(), kept.stat().st_mode & 0o777))
                 archive.extractall(stage)
-            shutil.rmtree(folder, ignore_errors=True)
-            os.replace(stage / BRIDGE_FOLDER, folder)
+            replace_directory(stage / BRIDGE_FOLDER, folder, subject=f"{BRIDGE_FOLDER}/")
         finally:
             shutil.rmtree(stage, ignore_errors=True)
         for name, body, mode in preserved:

@@ -198,6 +198,20 @@ def test_steam_pin_refuses_to_write_hashes_it_has_not_recorded(run: Any, repo: P
     assert fake.read_target(repo)["inputs"]["server"]["depots"][fake.DEPOT]["manifest"] == fake.PINNED_MANIFEST
 
 
+def test_steam_pin_refuses_changed_manifests_without_their_build_id(run: Any, repo: Path, dd_log: Path) -> None:
+    before = fake.read_target(repo)
+    record_args: list[str] = []
+    for path in before["inputs"]["server"]["files"]:
+        record_args += ["--record-files", path]
+
+    code, payload, _ = run("steam", "pin", "--game", GAME, "--target", TARGET, "--write", *record_args, repo=repo)
+
+    assert code == 2, payload
+    assert "head's build id" in payload["error"]
+    assert "--buildid or --metadata" in payload["error"]
+    assert fake.read_target(repo) == before
+
+
 def test_steam_pin_writes_only_the_input_it_re_pinned(run: Any, repo: Path, dd_log: Path) -> None:
     before = fake.read_target(repo)
     declared = list(before["inputs"]["server"]["files"])
@@ -623,6 +637,36 @@ def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_mod_alone(
     assert "is not a zip archive" in json.dumps(payload)
     assert (dest / "Mods" / "Takaro" / "ModInfo.xml").read_text() == before
     assert not list((dest / "Mods").glob(".Takaro.staging*")), "no staging directory is left behind"
+
+
+def test_a_valid_zip_missing_the_mod_tree_leaves_the_deployed_mod_alone(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    dest = tmp_path / "ServerFiles"
+    _installed(run, repo, dest)
+    directory = tmp_path / "dist"
+    _mod_zip(directory / ZIP_NAME)
+    manifest = _manifest_for(run, repo, directory, directory / ZIP_NAME)
+    assert (
+        run("deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(manifest), repo=repo)[0]
+        == 0
+    )
+    live = dest / "Mods" / "Takaro" / "ModInfo.xml"
+    before = live.read_bytes()
+    installed_archive = dest / "Mods" / ZIP_NAME
+    archive_before = installed_archive.read_bytes()
+
+    with zipfile.ZipFile(directory / ZIP_NAME, "w"):
+        pass
+    broken = _manifest_for(run, repo, directory, directory / ZIP_NAME)
+    code, payload, _ = run(
+        "deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(broken), repo=repo
+    )
+
+    assert code == 7, payload
+    assert "is missing" in payload["error"]
+    assert live.read_bytes() == before
+    assert installed_archive.read_bytes() == archive_before
 
 
 # -- verification hooks ------------------------------------------------------------------

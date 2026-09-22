@@ -928,6 +928,18 @@ class ScriptedTransport:
                 return answer() if callable(answer) else answer
         raise urllib.error.HTTPError(url, 404, "not found", None, None)  # type: ignore[arg-type]
 
+    def open_no_redirect(self, url: str, headers: dict[str, str], addresses: tuple[net.PinnedAddress, ...]) -> Any:
+        assert addresses
+        return self.open(url, headers)
+
+
+def public_realm_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve the documentation-only auth host to a public address without consulting DNS."""
+    monkeypatch.setattr(
+        "takaro_maint.providers.oci_registry.socket.getaddrinfo",
+        lambda host, port, **kwargs: [(2, 1, 6, "", ("93.184.216.34", port))],
+    )
+
 
 def test_oci_registry_never_follows_pagination_to_another_origin() -> None:
     from takaro_maint.exit_codes import MaintError
@@ -1004,6 +1016,10 @@ def test_oci_registry_refuses_an_index_without_the_watched_platform() -> None:
         "https://user@auth.invalid/token",
         "https://169.254.169.254/latest",
         "https://localhost/token",
+        "https://2130706433/token",
+        "https://0x7f000001/token",
+        "https://017700000001/token",
+        "https://127.1/token",
     ],
 )
 def test_a_hostile_bearer_realm_is_never_followed(realm: str) -> None:
@@ -1033,8 +1049,82 @@ def test_a_hostile_bearer_realm_is_never_followed(realm: str) -> None:
     assert not [url for url, _ in transport.seen if url.startswith(realm.split("?")[0])]
 
 
-def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query() -> None:
+def test_a_realm_name_resolving_to_a_private_address_is_never_followed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from takaro_maint.exit_codes import MaintError
+
+    def tags() -> Any:
+        raise urllib.error.HTTPError(
+            "https://registry.invalid/v2/pryaxis/tshock/tags/list",
+            401,
+            "unauthorized",
+            {"WWW-Authenticate": 'Bearer realm="https://auth.invalid/token"'},  # type: ignore[arg-type]
+            None,
+        )
+
+    monkeypatch.setattr(
+        "takaro_maint.providers.oci_registry.socket.getaddrinfo",
+        lambda host, port, **kwargs: [(2, 1, 6, "", ("10.0.0.7", port))],
+    )
+    transport = ScriptedTransport({"/tags/list": tags})
+    net.set_transport(transport)
+    try:
+        with pytest.raises(MaintError) as caught:
+            provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    assert "does not resolve only to public addresses" in str(caught.value)
+    assert not [url for url, _ in transport.seen if "auth.invalid" in url]
+
+
+def test_a_validated_realm_address_is_reused_without_a_second_dns_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
+    challenged = {"done": False}
+    resolutions = 0
+
+    def resolve(host: str, port: int, **kwargs: Any) -> list[tuple[Any, ...]]:
+        nonlocal resolutions
+        resolutions += 1
+        address = "93.184.216.34" if resolutions == 1 else "127.0.0.1"
+        return [(2, 1, 6, "", (address, port))]
+
+    def tags() -> Any:
+        if not challenged["done"]:
+            challenged["done"] = True
+            raise urllib.error.HTTPError(
+                "https://registry.invalid/v2/pryaxis/tshock/tags/list",
+                401,
+                "unauthorized",
+                {"WWW-Authenticate": 'Bearer realm="https://auth.invalid/token"'},  # type: ignore[arg-type]
+                None,
+            )
+        return Response(listing)
+
+    monkeypatch.setattr("takaro_maint.providers.oci_registry.socket.getaddrinfo", resolve)
+    transport = ScriptedTransport(
+        {
+            "auth.invalid/token": lambda: Response(json.dumps({"token": "t"}).encode()),
+            "/tags/list": tags,
+            "/manifests/": lambda: Response(index_bytes("6.1.0")),
+        }
+    )
+    net.set_transport(transport)
+    readiness.reset_registry()
+    try:
+        provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    assert resolutions == 1
+    realm_url, _headers = next(row for row in transport.seen if "auth.invalid" in row[0])
+    assert realm_url.startswith("https://auth.invalid/token")
+
+
+def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query(monkeypatch: pytest.MonkeyPatch) -> None:
     """The challenge's own values are encoded into the query string."""
+    public_realm_dns(monkeypatch)
     listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
     challenged = {"done": False}
 
@@ -1095,8 +1185,10 @@ def test_a_prerelease_is_never_the_channel_head() -> None:
 
 
 def test_oci_registry_answers_a_bearer_challenge_and_never_prints_the_token(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    public_realm_dns(monkeypatch)
     secret = "secret-xyz"
     listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
     challenged = {"done": False}
@@ -1142,6 +1234,44 @@ def test_oci_registry_answers_a_bearer_challenge_and_never_prints_the_token(
     assert secret not in captured.out
     assert secret not in captured.err
     assert secret not in json.dumps([observation.facts for observation in result.observations])
+
+
+def test_a_bearer_realm_redirect_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from takaro_maint.exit_codes import MaintError
+
+    public_realm_dns(monkeypatch)
+
+    def tags() -> Any:
+        raise urllib.error.HTTPError(
+            "https://registry.invalid/v2/pryaxis/tshock/tags/list",
+            401,
+            "unauthorized",
+            {"WWW-Authenticate": 'Bearer realm="https://auth.invalid/token"'},  # type: ignore[arg-type]
+            None,
+        )
+
+    class RedirectingTransport(ScriptedTransport):
+        def open_no_redirect(self, url: str, headers: dict[str, str], addresses: tuple[net.PinnedAddress, ...]) -> Any:
+            assert addresses
+            self.seen.append((url, dict(headers)))
+            raise urllib.error.HTTPError(
+                url,
+                302,
+                "found",
+                {"Location": "https://127.0.0.1/token"},  # type: ignore[arg-type]
+                None,
+            )
+
+    transport = RedirectingTransport({"/tags/list": tags})
+    net.set_transport(transport)
+    try:
+        with pytest.raises(MaintError) as caught:
+            provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    assert "redirects are refused" in str(caught.value)
+    assert not [url for url, _ in transport.seen if "127.0.0.1" in url]
 
 
 def test_oci_registry_enrich_reads_labels_from_the_platform_config() -> None:

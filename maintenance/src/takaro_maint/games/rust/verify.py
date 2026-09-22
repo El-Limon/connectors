@@ -319,7 +319,7 @@ async def _check_stop(run: Any, fake: Any) -> checks.CheckResult:
         code: int | None = None
         if container is not None:
             code = await asyncio.to_thread(container.wait_for_exit, QUIT_BUDGET)
-            if code is None:
+            if code == -1:
                 problems.append(f"the server was still running {QUIT_BUDGET:.0f} s after it said it was quitting")
     return checks.CheckResult(
         "stop",

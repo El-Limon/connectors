@@ -24,7 +24,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed, ConflictError
 from ...steam import install as steam_install
-from ..base import BaseAdapter, BuildResult, common_env
+from ..base import BaseAdapter, BuildResult, common_env, replace_directory
 
 GAME_ID = "enshrouded"
 DIST_ROOT = "games/enshrouded/_data/dist"
@@ -263,6 +263,12 @@ class EnshroudedAdapter(BaseAdapter):
             if role == "server-plugin":
                 self._place_dll(archive, artifact, install_dir, names)
             else:
+                required = [f"{folder}/{name}" for name in ("dist/index.js", "Dockerfile", "package.json")]
+                missing = [name for name in required if name not in names]
+                if missing:
+                    raise ConflictError(
+                        f"{artifact.name} is missing {', '.join(missing)}; the installed sidecar is untouched"
+                    )
                 self._place_folder(archive, install_dir, folder)
         stale_prefix = f"takaro-enshrouded-{'plugin' if role == 'server-plugin' else 'sidecar'}-"
         for stale in sorted(install_dir.glob(f"{stale_prefix}*.zip")):
@@ -282,14 +288,9 @@ class EnshroudedAdapter(BaseAdapter):
         try:
             archive.extractall(staging)
             destination = install_dir / folder
-            previous = install_dir / f".{folder}.previous"
-            shutil.rmtree(previous, ignore_errors=True)
-            if destination.exists():
-                os.replace(destination, previous)
-            os.replace(staging / folder, destination)
+            replace_directory(staging / folder, destination, subject=f"{folder}/")
         finally:
             shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(install_dir / f".{folder}.previous", ignore_errors=True)
 
     def _checked_names(self, archive: zipfile.ZipFile, artifact: Path, folder: str) -> list[str]:
         """Every entry, refused unless it lives inside the single expected top-level folder.

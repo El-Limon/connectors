@@ -68,6 +68,8 @@ CATALOGUE_LOG_BUDGET = 60.0
 RECONNECT_BUDGET = 150.0
 QUIT_BUDGET = 120.0
 STOP_TIMEOUT = 120
+ITEM_SPOT = ("SwordBronze", "Bronze Sword")
+ENTITY_SPOT = ("Greydwarf_Elite", "Greydwarf Brute")
 
 #: The game has already quit by the time the container is stopped, so what is left is the
 #: image's supervisor. It exits on the signal ``docker stop`` sends rather than trapping it,
@@ -185,8 +187,8 @@ def _named(entries: Any, code: str) -> str | None:
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
     for check_id, coroutine in (
         ("handshake", lambda: _check_handshake(run, fake, alive)),
-        ("items", lambda: _check_catalogue(run, fake, alive, "listItems", "items", "SwordBronze")),
-        ("entities", lambda: _check_catalogue(run, fake, alive, "listEntities", "entities", "Greydwarf_Elite")),
+        ("items", lambda: _check_catalogue(run, fake, alive, "listItems", "items", ITEM_SPOT)),
+        ("entities", lambda: _check_catalogue(run, fake, alive, "listEntities", "entities", ENTITY_SPOT)),
         ("action", lambda: _check_action(run, fake)),
         ("reconnect", lambda: _check_reconnect(run, fake, alive)),
     ):
@@ -234,7 +236,7 @@ async def _check_handshake(run: Any, fake: Any, alive: Any) -> checks.CheckResul
 
 
 async def _check_catalogue(
-    run: Any, fake: Any, alive: Any, request: str, check_id: str, spot: str
+    run: Any, fake: Any, alive: Any, request: str, check_id: str, spot: tuple[str, str]
 ) -> checks.CheckResult:
     """The catalogue answers, and says what it answers with."""
     with checks._Timer() as timer:
@@ -258,6 +260,12 @@ async def _check_catalogue(
                 f"{check_id}: {len(offenders)} of {len(names)} names are translation keys or class names, "
                 f"e.g. {', '.join(offenders[:3])}"
             )
+        spot_code, expected_name = spot
+        actual_name = _named(entries, spot_code)
+        if actual_name is None:
+            problems.append(f"{check_id}: {spot_code} is missing from the catalogue")
+        elif actual_name != expected_name:
+            problems.append(f"{check_id}: {spot_code} is named {actual_name!r}, expected {expected_name!r}")
         logged = None
         if check_id == "items" and not problems:
             # The response comes back over the websocket; the line reaches server.log only
@@ -282,7 +290,7 @@ async def _check_catalogue(
             "request": request,
             "count": len(entries) if isinstance(entries, list) else None,
             "loggedCount": logged,
-            "spotCheck": {"code": spot, "name": _named(entries, spot)},
+            "spotCheck": {"code": spot_code, "expected": expected_name, "actual": actual_name},
             "humanNames": human,
             "problems": problems,
         },

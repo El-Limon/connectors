@@ -77,7 +77,7 @@ def test_every_valheim_verification_body_has_pass_and_failure_paths(
 
     assert asyncio.run(hooks._check_handshake(run, fake, lambda: True)).status == "pass"
     assert (
-        asyncio.run(hooks._check_catalogue(run, fake, lambda: True, "listItems", "items", "SwordBronze")).status
+        asyncio.run(hooks._check_catalogue(run, fake, lambda: True, "listItems", "items", hooks.ITEM_SPOT)).status
         == "pass"
     )
     assert asyncio.run(hooks._check_action(run, fake)).status == "pass"
@@ -106,7 +106,9 @@ def test_every_valheim_verification_body_has_pass_and_failure_paths(
 
     assert asyncio.run(hooks._check_handshake(failed_run, failed, lambda: False)).status == "fail"
     assert (
-        asyncio.run(hooks._check_catalogue(failed_run, failed, lambda: False, "listItems", "items", "x")).status
+        asyncio.run(
+            hooks._check_catalogue(failed_run, failed, lambda: False, "listItems", "items", hooks.ITEM_SPOT)
+        ).status
         == "fail"
     )
     assert asyncio.run(hooks._check_action(failed_run, failed)).status == "fail"
@@ -1046,8 +1048,9 @@ def _catalogue_run(tmp_path: Path) -> Any:
 
 def _catalogue(tmp_path: Path, entries: Any, *, check_id: str = "entities") -> Any:
     request = "listItems" if check_id == "items" else "listEntities"
+    spot = hooks.ITEM_SPOT if check_id == "items" else hooks.ENTITY_SPOT
     return asyncio.run(
-        hooks._check_catalogue(_catalogue_run(tmp_path), _CatalogueFake(entries), lambda: True, request, check_id, "x")
+        hooks._check_catalogue(_catalogue_run(tmp_path), _CatalogueFake(entries), lambda: True, request, check_id, spot)
     )
 
 
@@ -1061,6 +1064,20 @@ def test_the_catalogue_check_passes_on_display_names(tmp_path: Path) -> None:
     # when the prefab happens to be spelled the way a player reads it.
     assert result.status == "pass", result.detail["problems"]
     assert result.detail["humanNames"] is True
+
+
+def test_the_catalogue_check_requires_the_spot_code_and_expected_name(tmp_path: Path) -> None:
+    missing = _catalogue(tmp_path, [{"code": "Boar", "name": "Boar"}])
+    assert missing.status == "fail"
+    assert missing.detail["spotCheck"] == {
+        "code": "Greydwarf_Elite",
+        "expected": "Greydwarf Brute",
+        "actual": None,
+    }
+
+    wrong = _catalogue(tmp_path, [{"code": "Greydwarf_Elite", "name": "Greydwarf Elite"}])
+    assert wrong.status == "fail"
+    assert "expected 'Greydwarf Brute'" in " ".join(wrong.detail["problems"])
 
 
 def test_a_compound_code_handed_back_as_its_own_name_is_a_dev_name(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,45 @@ def test_a_failed_install_leaves_a_working_install_byte_identical(run: Any, wire
 
     assert code != 0
     assert tree(dest) == before
+
+
+def test_a_failed_multi_file_commit_restores_every_input_and_a_fresh_world(
+    run: Any, wired: Any, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Failure after the first replacement must not leave a mixed-version install."""
+    dest = tmp_path / "server"
+    install(run, wired, dest)
+    (dest / "world").mkdir()
+    (dest / "world/level.dat").write_bytes(b"old world")
+    ledger_file = dest / ".takaro/installed-target.json"
+    ledger = json.loads(ledger_file.read_text())
+    ledger["world"]["revision"] = "26.1.2"
+    ledger_file.write_text(json.dumps(ledger))
+    before = tree(dest)
+
+    record = wired.target()
+    record["runtime"]["container"]["env"]["EXTRA"] = "force-a-new-fingerprint"
+    wired.save(record)
+
+    real_replace = os.replace
+    refused = False
+    fail_at = dest / "mods/fabric-api-0.160.0+26.2.jar"
+
+    def fail_the_second_input(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal refused
+        if not refused and Path(dst) == fail_at and ".takaro/staging/" in str(src):
+            refused = True
+            raise OSError(28, "No space left on device")
+        real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", fail_the_second_input)
+
+    code, _, _ = install(run, wired, dest, "--fresh-world")
+
+    assert code != 0
+    assert refused, "the failure was injected after at least one input was replaced"
+    assert tree(dest) == before
+    assert (dest / "world/level.dat").read_bytes() == b"old world"
 
 
 def test_protected_paths_survive_a_reinstall(run: Any, wired: Any, tmp_path: Path) -> None:

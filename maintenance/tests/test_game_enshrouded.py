@@ -562,6 +562,38 @@ def test_deploy_places_the_dll_and_the_sidecar_folder_and_refuses_escapes(
         assert not (tmp_path / "escaped.txt").exists()
 
 
+def test_a_valid_zip_missing_the_sidecar_tree_leaves_the_deployed_sidecar_alone(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    directory = tmp_path / "dist"
+    _plugin_zip(directory / PLUGIN_ZIP)
+    _sidecar_zip(directory / SIDECAR_ZIP)
+    files = {"server-plugin": directory / PLUGIN_ZIP, "sidecar": directory / SIDECAR_ZIP}
+    manifest = _manifest_for(run, repo, directory, files)
+    assert (
+        run("deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(manifest), repo=repo)[0]
+        == 0
+    )
+    live = dest / "takaro" / "sidecar" / "TakaroEnshroudedSidecar" / "dist" / "index.js"
+    before = live.read_bytes()
+    installed_archive = dest / "takaro" / "sidecar" / SIDECAR_ZIP
+    archive_before = installed_archive.read_bytes()
+
+    with zipfile.ZipFile(directory / SIDECAR_ZIP, "w"):
+        pass
+    broken = _manifest_for(run, repo, directory, files)
+    code, payload, _ = run(
+        "deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(broken), repo=repo
+    )
+
+    assert code == 7, payload
+    assert "is missing" in payload["error"]
+    assert live.read_bytes() == before
+    assert installed_archive.read_bytes() == archive_before
+
+
 # --------------------------------------------------------------------------- 11-12 verify hooks
 
 
@@ -877,11 +909,13 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
         "console",
         "shutdown",
     }
-    selected = [check for check in check_ids("enshrouded") if check not in declared.unsupported_checks]
-    # The record and the hooks cannot drift: what a bare run selects is what the target says
-    # it verifies separately, plus the two rows every game climbs.
-    assert selected == ["build", "startup", *hooks.CHECK_IDS]
-    assert selected == ["build", *Target.record["verification"]["separate"]]
+    declared_checks = [check for check in check_ids("enshrouded") if check not in declared.unsupported_checks]
+    # The record and hooks cannot drift. The negative remains a known, declared check, but a
+    # bare run excludes it until --negative or an explicit --checks asks for it.
+    assert declared_checks == ["build", "startup", *hooks.CHECK_IDS]
+    assert declared_checks == ["build", *Target.record["verification"]["separate"]]
+    selected = [check for check in declared_checks if check not in declared.negative_check_ids]
+    assert selected == ["build", "startup", *hooks.CHECK_IDS[:-1]]
 
     assert written == tmp_path / "takaro" / "plugin.json"
     assert oct(written.stat().st_mode)[-3:] == "600"

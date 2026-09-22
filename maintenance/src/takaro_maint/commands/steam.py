@@ -278,6 +278,8 @@ def _pin(args: Any) -> int:
                 + "; re-run with --record-files for each before --write",
                 files=stale,
             )
+        if changed and buildid is None:
+            raise UsageError("writing changed Steam manifests needs that head's build id: pass --buildid or --metadata")
         record = dict(target.record)
         record["inputs"] = {**record["inputs"], spec.name: snippet}
         target.path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

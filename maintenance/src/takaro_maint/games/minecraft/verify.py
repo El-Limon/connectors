@@ -238,6 +238,7 @@ async def run_hosted(
             server_ids.extend(await asyncio.to_thread(takaro.find, identity))
         for server_id in set(server_ids):
             await asyncio.to_thread(takaro.delete, server_id)
+        run._record_missing_selected_checks()
         run.cleanup()
         # Redaction belongs in the `finally`: a run that dies of a boot failure, a docker
         # error or an interrupt keeps its logs just the same, and those are the files that
@@ -391,6 +392,8 @@ async def _hosted_shutdown(takaro: Any, container: Any, server_ids: list[str]) -
 #: What this game contributes to a verification run; the runner reads nothing else.
 HOOKS = GameHooks(
     check_ids=CHECK_IDS,
+    negative_check_ids=("negative-wrong-target",),
+    hosted_check_ids=("hosted-registration",),
     after_protocol=after_protocol,
     after_shutdown=after_shutdown,
     negative=negative,
