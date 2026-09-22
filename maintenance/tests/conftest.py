@@ -208,11 +208,18 @@ def make_jar(
 class Wired:
     """A catalog copy whose declared ``served`` targets point at a fake upstream."""
 
-    def __init__(self, root: Path, upstream: Any, *, served: tuple[str, ...], unserved: dict[str, str]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        upstream: Any,
+        *,
+        served: tuple[str, ...] = (),
+        unserved: dict[str, str] | None = None,
+    ) -> None:
         self.root = root
         self.upstream = upstream
         self.served = served
-        self.unserved = unserved
+        self.unserved = unserved or {}
 
     def target(self, target_id: str = "fabric-26.2") -> dict[str, Any]:
         return read_target(self.root, target_id)
