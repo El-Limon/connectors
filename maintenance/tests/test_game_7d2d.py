@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 import fake_depotdownloader as fake
+from takaro_maint.commands.steam import selects
 from takaro_maint.games import adapter_for
 from takaro_maint.games.seven_days import verify as hooks
 from takaro_maint.publish.manifest import artifact_row, write_manifest, write_meta
@@ -263,6 +264,34 @@ def test_steam_pin_write_records_the_branch_it_read(
     assert after["depots"][fake.DEPOT]["manifest"] == EXPERIMENTAL_MANIFEST
 
 
+def test_steam_pin_refuses_to_write_a_new_branch_without_its_build_id(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {fake.DEPOT: EXPERIMENTAL_MANIFEST}}}),
+    )
+    before = fake.read_target(repo)
+
+    code, payload, _ = run(
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--branch",
+        "latest_experimental",
+        "--write",
+        repo=repo,
+    )
+
+    assert code == 2, payload
+    assert "needs that head's build id" in payload["error"]
+    assert "--buildid or --metadata" in payload["error"]
+    assert fake.read_target(repo) == before
+
+
 def test_steam_pin_refuses_a_depot_subset_on_a_different_branch(
     run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -309,6 +338,34 @@ def test_steam_pin_reports_an_unavailable_manifest_as_upstream(
 
 def references(run: Any, repo: Path, dest: Path, *extra: str) -> tuple[int, Any, str]:
     return run("steam", "references", "--game", GAME, "--target", TARGET, "--dest", str(dest), *extra, repo=repo)
+
+
+@pytest.mark.parametrize(
+    ("relative", "selectors", "expected"),
+    [
+        ("Managed/Assembly-CSharp.dll", ["managed/assembly-csharp.DLL"], True),
+        ("Managed/Assembly-CSharp.dll", [r"regex:^managed/.*\.DLL$"], True),
+        ("Managed/Assembly-CSharp.dll", ["Managed"], False),
+        ("Managed/Assembly-CSharp.dll", ["Managed/Other.dll"], False),
+    ],
+)
+def test_reference_selectors_match_depotdownloaders_file_list_rules(
+    relative: str, selectors: list[str], expected: bool
+) -> None:
+    assert selects(relative, selectors) is expected
+
+
+def test_a_plain_reference_selector_naming_a_directory_matches_nothing(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    record = fake.read_target(repo)
+    record["build"]["references"] = [MANAGED]
+    fake.write_target(repo, record)
+
+    code, payload, _ = references(run, repo, tmp_path / "references")
+
+    assert code == 5, payload
+    assert "served no file matching" in payload["error"]
 
 
 def test_steam_references_downloads_only_the_subset_and_records_it(
