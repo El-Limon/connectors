@@ -322,17 +322,7 @@ def test_cross_provider_issues_reconcile_independently(
         code, payload, stderr = harness.reconcile(run, "--publish")
         assert code == 0, stderr
 
-        observed = conan_state()
-        if observed != "awaiting-release":
-            # D1: the Steam support marker carries no ``app=`` and a digest-suffixed ``rev``,
-            # while tracker/lifecycle.py matches a steam-depots target only on a bare buildid
-            # and an ``app`` key -- so a Steam-marked issue can never leave ``detected``.
-            assert observed == "detected", observed
-            pytest.xfail(
-                "D1: Steam markers carry no app= and a digest-suffixed rev, so lifecycle never "
-                "matches a steam-depots target; see discoveries/166-D1"
-            )
-        assert observed == "awaiting-release"
+        assert conan_state() == "awaiting-release"
 
 
 # =============================================================================

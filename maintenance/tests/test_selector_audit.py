@@ -10,7 +10,8 @@ would -- entry points only, prose and the tool's own sources excluded -- and fai
 * a *rig image* that a dev-server compose file names literally instead of taking it from the
   resolved catalog target, and a *rig version* default someone typed by hand;
 * a catalog game that is not registered end to end (sources, roles, targets, one default per
-  platform, a verification policy, working legacy aliases, a rig and the shared release workflow).
+  platform, a verification policy, working legacy aliases and the shared release workflow), or
+  a declared rig whose compose file does not exist.
 
 Every knowingly-kept string is an :class:`Allow` with a reason naming a policy or a discovery, and
 ``test_every_allowlist_entry_still_matches_something`` deletes the list the moment it goes stale.
@@ -130,6 +131,11 @@ ALLOWLIST: tuple[Allow, ...] = (
     ),
     Allow(
         "catalog/rust/targets/carbon-25353106.json",
+        r"production_build",
+        "the input pins sha256 and size; the tag is an address, not an identity (games/rust/DEVELOPMENT.md)",
+    ),
+    Allow(
+        "catalog/rust/targets/carbon-25454815.json",
         r"production_build",
         "the input pins sha256 and size; the tag is an address, not an identity (games/rust/DEVELOPMENT.md)",
     ),
@@ -422,10 +428,11 @@ def test_the_eight_rigs_take_their_images_from_the_resolved_target() -> None:
 # --------------------------------------------------------------------------------------------
 
 
-def test_every_catalog_game_registers_sources_roles_targets_and_a_rig() -> None:
-    """Each of the eight connectors is registered end to end, with one default per platform."""
+def test_every_catalog_game_registers_sources_roles_targets_and_declared_rigs() -> None:
+    """Each connector is registered end to end; only the documented Enshrouded rig gap remains."""
     on_disk = {path.name for path in (REPO_ROOT / "catalog").iterdir() if path.is_dir() and path.name != "schema"}
     assert set(CATALOG_GAMES) == on_disk
+    missing_rigs: list[str] = []
 
     for game, record in _games().items():
         watched = [key for key, source in record["sources"].items() if source.get("watch")]
@@ -448,8 +455,16 @@ def test_every_catalog_game_registers_sources_roles_targets_and_a_rig() -> None:
         for alias, points_at in (record.get("legacyAssetAliases") or {}).items():
             assert points_at in known, f"{game} legacy alias {alias} points at unknown {points_at}"
 
-        compose = REPO_ROOT / "dev-servers" / "compose" / record["devServers"]["composeFile"]
-        assert compose.is_file(), f"{game} names a rig compose file that does not exist: {compose.name}"
+        compose_name = (record.get("devServers") or {}).get("composeFile")
+        if compose_name is None:
+            missing_rigs.append(game)
+        else:
+            compose = REPO_ROOT / "dev-servers" / "compose" / compose_name
+            assert compose.is_file(), f"{game} names a rig compose file that does not exist: {compose.name}"
+
+    # Phase-2 follow-up F6 owns the missing Enshrouded dispatch. Keep that gap visible and make
+    # any second missing rig fail instead of silently weakening the rollout audit.
+    assert missing_rigs == ["enshrouded"]
 
 
 def test_every_catalog_connector_releases_through_the_shared_workflow() -> None:
