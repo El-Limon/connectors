@@ -522,7 +522,7 @@ def test_deploy_places_the_agent_and_a_stable_copy_and_removes_older_jars(
     assert not (dest / "Takaro" / "takaro-zomboid-agent-linux-42.20.4-0.9.0.jar").exists()
     assert not (dest / "Takaro" / "TakaroConnector-0.9.0.jar").exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"] == f"Takaro/{JAR_NAME}"
+    assert ledger["artifacts"][0]["path"] == f"Takaro/{JAR_NAME}"
 
 
 def test_deploy_into_a_directory_holding_another_fingerprint_is_refused(
@@ -560,10 +560,15 @@ def test_verify_hooks_regexes_and_check_ids() -> None:
         "Picked up JAVA_TOOL_OPTIONS: -javaagent:/home/steam/ZomboidDedicatedServer/Takaro/TakaroConnector.jar"
     )
     assert hooks.HOOKS_INSTALLED_LINE.search("[2026-09-21 10:00:00.000] [Takaro] premain: hooks installed")
-    assert hooks.TICK_CONFIRMED_LINE.search(
-        "[2026-09-21 10:00:00.000] [Takaro] HOOK CONFIRMED: tick (RCONServer.update) firing on thread=main"
-    )
-    assert hooks.TARGET_CHECK_LINE.search('[2026-09-21 10:00:00.000] [Takaro] target-check: {"result":"ok"}')
+    # Those two lines are the agent's, built in Java, and matched here by a Python regex.
+    # The samples come out of the agent source rather than being restated, so a renamed
+    # literal fails here instead of making a check wait out its budget in a live run.
+    prefix = "[2026-09-21 10:00:00.000] "
+    banner = _java_literal("AgentLog.java", r'String line = "\[" \+ TS.format\(ZonedDateTime.now\(\)\) \+ "(\] .*?) "')
+    tick = _java_literal("hooks/Bridge.java", r'AgentLog\.log\("(HOOK CONFIRMED: tick[^"]*)"')
+    target_check = _java_literal("TargetGuard.java", r'AgentLog\.log\("(target-check: )" \+ gson\.toJson')
+    assert hooks.TICK_CONFIRMED_LINE.search(f"{prefix}{banner} {tick}thread=main")
+    assert hooks.TARGET_CHECK_LINE.search(f'{prefix}{banner} {target_check}{{"result":"ok"}}')
     assert set(hooks.HOOKED_CLASSES) == {
         "zombie.network.RCONServer",
         "zombie.network.GameServer",
@@ -602,7 +607,7 @@ def test_the_catalogue_rule_states_the_limit_instead_of_pretending_there_is_none
     assert detail["unnamed"]["examples"][0].startswith("Base.Wound_")
     assert detail["spotCheck"]["actual"] == "Firefighter Axe"
 
-    # Every row reported by its own id: the display-name lookup is gone, not the game's.
+    # Every row named by its own id: the display-name lookup is broken, not the game's catalogue.
     broken = [{"code": row["code"], "name": row["code"]} for row in [*named, spot]]
     problems, _ = hooks._catalogue_problems(broken, "items", ("Base.Axe", "Firefighter Axe"))
     assert any("display-name lookup looks broken" in problem for problem in problems)
@@ -784,3 +789,13 @@ def test_the_registry_row_and_source_paths_are_unchanged() -> None:
 
     assert rows == [REGISTRY_ROW]
     assert bash(". dev-servers/lib/common.sh; ds_source_paths zomboid").strip() == SOURCE_PATHS
+
+
+def _java_literal(relative: str, pattern: str) -> str:
+    """The one literal `pattern` finds in an agent source file, or a loud failure."""
+    source = (REPO_ROOT / "games/zomboid/mod/agent/src/main/java/io/takaro/zomboid/agent" / relative).read_text(
+        encoding="utf-8"
+    )
+    found = re.findall(pattern, source)
+    assert len(found) == 1, f"{relative}: {pattern!r} matched {len(found)} times, expected exactly one"
+    return str(found[0])

@@ -85,6 +85,27 @@ stdout is one JSON document:
 | `negative-wrong-target` | Only with `--negative`. See below. | `--startup-timeout` |
 | `hosted-registration` | Only with `--takaro hosted`. See below. | 60 s |
 
+### What a game contributes: `HOOKS` and `UNSUPPORTED_CHECKS`
+
+The table above is the base ladder, and it was written for the Minecraft connector. A game
+contributes to a run through exactly one object: `HOOKS = GameHooks(...)` at the end of its
+`games/<game>/verify.py`. `GameHooks` is a frozen dataclass whose every field is declared
+and defaulted -- the ready line, the `check_ids` this game adds to the ladder,
+`unsupported_checks`, and the callables `before_boot`, `after_boot`, `after_protocol`,
+`after_shutdown`, `negative`, `run_hosted` and `scan_runtime_identity`. A game that ships
+no hooks module verifies with the base checks alone; a module that ships hooks but never
+assembles them into `HOOKS` is a usage error rather than a game silently running without
+them. The adapter's own run-time hooks (`install`, `after_deploy`, `container_mounts`,
+`container_options`, `container_command`) come from `games.base.BaseAdapter`, which every
+adapter subclasses, so a hook is a real method with a checked signature.
+
+`unsupported_checks` maps a base check id to why this game cannot pass it and which of the
+game's own checks stands in for it. A run that names no `--checks` is narrowed to
+`check_ids(game)` minus those keys, once, in the runner, before anything is installed, and
+each dropped row is announced as `not running <id>: <reason>`. An explicit `--checks` is
+taken literally, including a check the game is known to fail: naming a check is asking for
+it.
+
 ### Levels and outcome are not the same thing
 
 `level` is how far the run got through the classes `build < contract < startup < protocol`,

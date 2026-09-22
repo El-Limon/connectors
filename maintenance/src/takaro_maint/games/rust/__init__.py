@@ -31,7 +31,7 @@ from ...exit_codes import OK, BuildFailed, ConflictError, IntegrityError
 from ...install.ledger import check_ledger, ledger_path, read_ledger, write_ledger
 from ...providers import provider_for
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env
 
 GAME_ID = "rust"
 REFERENCES_ROOT = "games/rust/_data/rust-binaries"
@@ -142,6 +142,7 @@ def _carbon_download_url(spec: dict[str, Any]) -> str:
 
 def _safe_members(archive: tarfile.TarFile, root: Path) -> list[tarfile.TarInfo]:
     """Every entry of the archive, once it is certain that none of them escapes ``root``."""
+    root_resolved = root.resolve()
     members = []
     for member in archive.getmembers():
         name = member.name.replace("\\", "/")
@@ -149,8 +150,13 @@ def _safe_members(archive: tarfile.TarFile, root: Path) -> list[tarfile.TarInfo]
         if name.startswith("/") or any(segment == ".." for segment in segments):
             raise IntegrityError(f"the Carbon archive holds '{member.name}', which escapes the install directory")
         if member.islnk() or member.issym():
-            link = (root / name).parent.joinpath(member.linkname).resolve()
-            if not str(link).startswith(str(root.resolve())):
+            # A hard link names a path relative to the archive root; a symlink names one
+            # relative to its own directory. Resolving both the same way let `root-evil`
+            # pass as a prefix of `root`, so containment is a path relationship, not a
+            # string one.
+            base = root_resolved if member.islnk() else (root_resolved / name).parent
+            link = base.joinpath(member.linkname.replace("\\", "/")).resolve()
+            if not link.is_relative_to(root_resolved):
                 raise IntegrityError(f"the Carbon archive links '{member.name}' outside the install directory")
         members.append(member)
     return members
@@ -230,9 +236,11 @@ def _install_carbon(staging: Path, spec: dict[str, Any], source: dict[str, Any],
     provider_for("github-release").fetch_input(spec, source, archive, cache)
     output.info(f"unpacking {spec['asset']} ({str(spec['sha256'])[:16]}\u2026) into the staged install")
     with tarfile.open(archive, "r:gz") as tar:
-        # `_safe_members` has already refused anything that escapes; the stdlib filter
-        # is the second pair of eyes, and without it 3.14 would change this silently.
-        tar.extractall(staging, members=_safe_members(tar, staging), filter="tar")  # noqa: S202
+        # `_safe_members` has already refused anything that escapes; the `data` filter
+        # is the second pair of eyes, and it is the strictest one the stdlib offers --
+        # it refuses links, devices and absolute paths on its own. The pinned Carbon
+        # archive is plain files and directories, so nothing it ships needs more.
+        tar.extractall(staging, members=_safe_members(tar, staging), filter="data")  # noqa: S202
     for directory in CARBON_DIRECTORIES:
         (staging / directory).mkdir(parents=True, exist_ok=True)
     for relative in EXECUTABLES:
@@ -281,7 +289,7 @@ def _append_carbon_rows(dest: Path, spec: dict[str, Any]) -> list[dict[str, Any]
     return rows
 
 
-class RustAdapter:
+class RustAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -291,10 +299,7 @@ class RustAdapter:
         carbon = _carbon_spec(resolved)
         depots = ";".join(f"{depot}:{server['depots'][depot]['manifest']}" for depot in sorted(server["depots"]))
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_STEAM_APP": str(server["app"]),
@@ -433,7 +438,7 @@ class RustAdapter:
         return list(CONTAINER_COMMAND)
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """Two pinned depots plus the pinned Carbon archive, or nothing at all."""
         dest = Path(args.dest).expanduser().resolve()
         cache = paths.cache_dir()

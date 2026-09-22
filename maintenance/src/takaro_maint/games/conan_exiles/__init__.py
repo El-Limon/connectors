@@ -16,14 +16,13 @@ import os
 import re
 import shutil
 import subprocess
-import zipfile
 from pathlib import Path
 from typing import Any
 
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed, ConflictError
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env, open_zip
 
 GAME_ID = "conan-exiles"
 DIST_ROOT = "games/conan-exiles/_data/dist"
@@ -31,6 +30,8 @@ BUILD_SCRIPT = "games/conan-exiles/scripts/build-release.sh"
 
 #: The one folder an artifact zip may write to, and the folder the operator ends up running.
 BRIDGE_FOLDER = "TakaroConanExiles"
+#: Where an archive is unpacked before it replaces the live bridge folder.
+BRIDGE_STAGE = ".TakaroConanExiles.staging"
 
 #: Operator state that lives inside that folder and never inside the zip. The bridge folder
 #: is emptied before a new artifact is unpacked so a removed file cannot survive an upgrade,
@@ -62,7 +63,7 @@ def _env_key(name: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
 
 
-class ConanExilesAdapter:
+class ConanExilesAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -71,10 +72,7 @@ class ConanExilesAdapter:
         server = resolved["inputs"]["server"]
         depots = ";".join(f"{depot}:{server['depots'][depot]['manifest']}" for depot in sorted(server["depots"]))
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_STEAM_APP": str(server["app"]),
@@ -214,7 +212,7 @@ class ConanExilesAdapter:
         ]
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """The whole installation is one Steam depot set, so the adapter owns it."""
         del catalog
         dest = Path(args.dest).expanduser().resolve()
@@ -258,26 +256,35 @@ class ConanExilesAdapter:
         """The operator runs ``TakaroBridge/TakaroConanExiles``, so the zip is unpacked there."""
         install_dir = dest / paths.safe_relative(component["installDir"], field="components[].installDir")
         folder = install_dir / BRIDGE_FOLDER
-        with zipfile.ZipFile(artifact) as archive:
-            for name in archive.namelist():
-                relative = name.rstrip("/")
-                if not relative:
-                    continue
-                # The folder's own entry is the one name that is the folder rather than a
-                # path inside it; a deterministic zip written by CPython carries it.
-                if relative != BRIDGE_FOLDER and not relative.startswith(f"{BRIDGE_FOLDER}/"):
-                    raise ConflictError(
-                        f"{artifact.name} holds '{name}', outside the single {BRIDGE_FOLDER}/ folder; "
-                        "nothing was extracted"
-                    )
-                paths.safe_relative(relative, field="artifact zip entry")
-            preserved = []
-            for name in DEPLOY_PRESERVED:
-                kept = folder / name
-                if kept.is_file():
-                    preserved.append((name, kept.read_bytes(), kept.stat().st_mode & 0o777))
+        # Staged, not extracted over the live folder: the bridge used to be deleted first,
+        # so an archive that failed halfway through took the working bridge with it -- and
+        # `TakaroConfig.txt`, which is only restored after a successful extraction.
+        stage = install_dir / BRIDGE_STAGE
+        shutil.rmtree(stage, ignore_errors=True)
+        preserved: list[tuple[str, bytes, int]] = []
+        try:
+            with open_zip(artifact) as archive:
+                for name in archive.namelist():
+                    relative = name.rstrip("/")
+                    if not relative:
+                        continue
+                    # The folder's own entry is the one name that is the folder rather than
+                    # a path inside it; a deterministic zip written by CPython carries it.
+                    if relative != BRIDGE_FOLDER and not relative.startswith(f"{BRIDGE_FOLDER}/"):
+                        raise ConflictError(
+                            f"{artifact.name} holds '{name}', outside the single {BRIDGE_FOLDER}/ folder; "
+                            "nothing was extracted"
+                        )
+                    paths.safe_relative(relative, field="artifact zip entry")
+                for name in DEPLOY_PRESERVED:
+                    kept = folder / name
+                    if kept.is_file():
+                        preserved.append((name, kept.read_bytes(), kept.stat().st_mode & 0o777))
+                archive.extractall(stage)
             shutil.rmtree(folder, ignore_errors=True)
-            archive.extractall(install_dir)
+            os.replace(stage / BRIDGE_FOLDER, folder)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
         for name, body, mode in preserved:
             restored = folder / name
             if restored.exists():

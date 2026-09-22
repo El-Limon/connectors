@@ -8,6 +8,7 @@ standing in for Thunderstore, so what is asserted is what a maintainer, the rig 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -442,6 +443,34 @@ def test_install_refuses_a_pack_whose_manifest_disagrees_with_the_pin(
     assert not list(dest.parent.glob(".staging-*"))
 
 
+def test_a_pack_entry_that_escapes_the_install_directory_is_refused(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, upstream: FakeUpstream
+) -> None:
+    """`build_pack_zip(escape=True)` was written for this and never called.
+
+    A Thunderstore pack is an archive from a third party. `_safe_zip_entry` refuses an
+    entry whose path leaves the install directory -- and until this test nothing proved
+    it, on a fixture that exists precisely to prove it.
+    """
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    before = tree_hash(dest)
+
+    hostile = build_pack_zip(tmp_path / "hostile" / "pack.zip", escape=True)
+    upstream.files[PACK_PATH] = hostile
+    record = read_target(repo)
+    record["inputs"]["bepinex"]["sha256"] = _sha256(hostile)
+    record["inputs"]["bepinex"]["size"] = len(hostile)
+    write_target(repo, record)
+
+    code, payload, _ = install(run, repo, dest)
+
+    assert code == 5, payload
+    assert not list(tmp_path.rglob("escaped.txt")), "nothing was written outside the archive"
+    assert tree_hash(dest) == before, "the existing install is byte-identical"
+    assert not list(dest.parent.glob(".staging-*"))
+
+
 def test_install_refuses_a_pack_with_the_wrong_hash(
     run: Any, repo: Path, dd_log: Path, tmp_path: Path, upstream: FakeUpstream
 ) -> None:
@@ -699,7 +728,9 @@ def test_deploy_unpacks_the_plugin_and_parks_the_companion(run: Any, repo: Path,
     assert parked.is_file()
     assert not (dest / "takaro-companion" / "TakaroValheimCompanion").exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["role"] == "server-plugin"
+    by_role = {row["role"]: row["path"] for row in ledger["artifacts"]}
+    assert by_role["server-plugin"].endswith(PLUGIN_ZIP)
+    assert by_role["client-companion"].endswith(COMPANION_ZIP)
 
 
 def test_a_plugin_zip_with_a_second_top_level_folder_is_refused(
@@ -782,7 +813,7 @@ def test_verify_hooks_render_config_and_use_the_valheim_lines(tmp_path: Path) ->
 
 
 def test_the_hook_patterns_match_the_lines_the_server_really_writes() -> None:
-    # Captured from an isolated run on this exact pin (issue #161 evidence).
+    # Captured from an isolated run on this exact pin.
     assert hooks.READY_LINE.search("09/21/2026 17:52:48: Game server connected")
     assert hooks.HANDSHAKE_LINE.search("[Info   :Takaro Valheim] Takaro Valheim identified as gameServerId=3f0c..")
     loaded = hooks.LOADED_LINE.search("[Info   :   BepInEx] Loading [Takaro Valheim 3.0.3]")
@@ -911,3 +942,97 @@ def test_dev_servers_valheim_dispatches_through_the_target() -> None:
         found = bash(f'. dev-servers/lib/common.sh; declare -F "{step}_valheim" >/dev/null && echo yes')
         assert found.strip() == "yes", f"valheim has no {step} step"
     assert "ds_valheim_builder_image" not in (DS_ROOT / "lib" / "games" / "valheim.sh").read_text()
+
+
+# ------------------------------------------------------- the catalogue check, directly
+
+
+class _CatalogueFake:
+    """Only what `_check_catalogue` reaches for: one request and one canned answer."""
+
+    def __init__(self, entries: Any) -> None:
+        self.entries = entries
+        self.identify_count = 1
+
+    async def request(self, action: str, params: Any, timeout: float | None = None) -> Any:
+        del action, params, timeout
+        return self.entries
+
+
+def _catalogue_run(tmp_path: Path) -> Any:
+    from types import SimpleNamespace
+
+    log = tmp_path / "server.log"
+    log.write_text("boot\n", encoding="utf-8")
+    return SimpleNamespace(server_log=log, wanted=lambda check_id: True)
+
+
+def _catalogue(tmp_path: Path, entries: Any, *, check_id: str = "entities") -> Any:
+    request = "listItems" if check_id == "items" else "listEntities"
+    return asyncio.run(
+        hooks._check_catalogue(_catalogue_run(tmp_path), _CatalogueFake(entries), lambda: True, request, check_id, "x")
+    )
+
+
+def test_the_catalogue_check_passes_on_display_names(tmp_path: Path) -> None:
+    result = _catalogue(
+        tmp_path,
+        [{"code": "Greydwarf_Elite", "name": "Greydwarf Brute"}, {"code": "Boar", "name": "Boar"}],
+    )
+
+    # "Boar" is both the code and the name, which is what a real display name looks like
+    # when the prefab happens to be spelled the way a player reads it.
+    assert result.status == "pass", result.detail["problems"]
+    assert result.detail["humanNames"] is True
+
+
+def test_a_compound_code_handed_back_as_its_own_name_is_a_dev_name(tmp_path: Path) -> None:
+    """`SwordBronze` is not a translation of `SwordBronze`; `Boar` is a word."""
+    result = _catalogue(tmp_path, [{"code": "SwordBronze", "name": "SwordBronze"}], check_id="items")
+
+    assert result.status == "fail"
+    assert "SwordBronze -> SwordBronze" in " ".join(result.detail["problems"])
+
+
+def test_the_catalogue_check_fails_on_translation_keys(tmp_path: Path) -> None:
+    """`humanNames` was recorded and never asserted, so the check passed on keys."""
+    result = _catalogue(
+        tmp_path,
+        [
+            {"code": "SwordBronze", "name": "$item_sword_bronze"},
+            {"code": "Greydwarf_Elite", "name": "$enemy_greydwarfbrute"},
+            {"code": "Deer", "name": "Deer"},
+        ],
+    )
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "translation keys or class names" in problems
+    assert "2 of 3" in problems, "`Deer` is the word a player reads, not a dev name"
+    assert "SwordBronze -> $item_sword_bronze" in problems
+    assert result.detail["humanNames"] is False
+
+
+def test_the_catalogue_check_fails_on_a_class_name(tmp_path: Path) -> None:
+    result = _catalogue(tmp_path, [{"code": "Greydwarf", "name": "enemy_greydwarf"}])
+
+    assert result.status == "fail"
+    assert "enemy_greydwarf" in " ".join(result.detail["problems"])
+
+
+def test_valheim_excludes_the_catalogue_checks_from_a_default_run() -> None:
+    """The plugin ships translation keys by documented design, so a bare run says so.
+
+    The check now fails on keys, and Valheim's plugin returns keys. A default run must
+    not go red on a known, documented limit that `verification.separate` never listed --
+    it says which checks it is not running and why, and `--checks items,entities` shows
+    the failure.
+    """
+    from takaro_maint.verify.runner import check_ids, game_hooks
+
+    unsupported = game_hooks(GAME).unsupported_checks
+    assert {"items", "entities"} <= set(unsupported)
+    for check in ("items", "entities"):
+        assert "translation keys" in unsupported[check]
+        assert "--checks items,entities" in unsupported[check]
+    assert {"items", "entities"} <= set(check_ids(GAME))

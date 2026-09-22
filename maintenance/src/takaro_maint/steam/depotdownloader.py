@@ -298,7 +298,12 @@ def manifest_only(
     log: Path,
     credentials: dict[str, str] | None = None,
 ) -> ManifestInfo:
-    """Read one depot's manifest listing without downloading any content."""
+    """Read one depot's manifest listing without downloading any content.
+
+    ``out`` is a fresh temporary directory in both callers, so a listing that was already
+    there when this started is not this run's -- it is a leftover, and answering with it
+    would report the *old* manifest as the one Steam just served.
+    """
     out.mkdir(parents=True, exist_ok=True)
     args = [
         "-app",
@@ -322,8 +327,6 @@ def manifest_only(
     before = {path for path in out.rglob("manifest_*.txt")}
     run(args, cwd=out, log=log, cache=cache, secrets=secrets)
     produced = sorted(path for path in out.rglob(f"manifest_{depot}_*.txt") if path not in before)
-    if not produced:
-        produced = sorted(out.rglob(f"manifest_{depot}_*.txt"))
     if not produced:
         raise UpstreamUnavailable(
             f"DepotDownloader wrote no manifest listing for depot {depot}; {NO_FALLBACK}",

@@ -12,14 +12,13 @@ import os
 import re
 import shutil
 import subprocess
-import zipfile
 from pathlib import Path
 from typing import Any
 
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed, ConflictError
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env, open_zip
 
 GAME_ID = "7d2d"
 REFERENCES_ROOT = "games/7d2d/_data/7dtd-binaries"
@@ -41,6 +40,8 @@ _VERSION_BANNERS = (
 
 # The mod folder the server loads, and the only path an artifact zip may write to.
 MOD_FOLDER = "Takaro"
+#: Where an archive is unpacked before it replaces the live mod folder.
+MOD_STAGE = ".Takaro.staging"
 
 DONT_REMOVE = (
     "Managed by takaro-maint: this directory holds an exactly pinned Steam build.\n"
@@ -52,7 +53,7 @@ def _env_key(name: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
 
 
-class SevenDaysAdapter:
+class SevenDaysAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -61,10 +62,7 @@ class SevenDaysAdapter:
         server = resolved["inputs"]["server"]
         depots = ";".join(f"{depot}:{server['depots'][depot]['manifest']}" for depot in sorted(server["depots"]))
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_STEAM_APP": str(server["app"]),
@@ -178,7 +176,7 @@ class SevenDaysAdapter:
         ]
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """This game's whole installation is one Steam depot set, so the adapter owns it."""
         del catalog
         dest = Path(args.dest).expanduser().resolve()
@@ -218,20 +216,27 @@ class SevenDaysAdapter:
         """The server loads ``Mods/Takaro/``, so the zip is unpacked where it lands."""
         install_dir = dest / paths.safe_relative(component["installDir"], field="components[].installDir")
         folder = install_dir / MOD_FOLDER
-        with zipfile.ZipFile(artifact) as archive:
-            names = archive.namelist()
-            for name in names:
-                relative = name.rstrip("/")
-                if not relative:
-                    continue
-                if not relative.startswith(f"{MOD_FOLDER}/"):
-                    raise ConflictError(
-                        f"{artifact.name} holds '{name}', outside the single {MOD_FOLDER}/ folder; "
-                        "nothing was extracted"
-                    )
-                paths.safe_relative(relative, field="artifact zip entry")
+        # Staged, not extracted over the live folder: the mod used to be deleted first, so
+        # an archive that failed halfway through took the working install with it.
+        stage = install_dir / MOD_STAGE
+        shutil.rmtree(stage, ignore_errors=True)
+        try:
+            with open_zip(artifact) as archive:
+                for name in archive.namelist():
+                    relative = name.rstrip("/")
+                    if not relative:
+                        continue
+                    if not relative.startswith(f"{MOD_FOLDER}/"):
+                        raise ConflictError(
+                            f"{artifact.name} holds '{name}', outside the single {MOD_FOLDER}/ folder; "
+                            "nothing was extracted"
+                        )
+                    paths.safe_relative(relative, field="artifact zip entry")
+                archive.extractall(stage)
             shutil.rmtree(folder, ignore_errors=True)
-            archive.extractall(install_dir)
+            os.replace(stage / MOD_FOLDER, folder)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
         for stale in sorted(install_dir.glob("takaro-7d2d-mod-*.zip")):
             if stale.name != artifact.name:
                 stale.unlink()

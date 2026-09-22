@@ -125,7 +125,7 @@
     }
   ],
   "verification": {
-    "required": "build",
+    "required": "contract",
     "separate": [
       "startup",
       "carbon-compile",

@@ -73,6 +73,10 @@ jobs:
       # fake Takaro, so a hosted runner proves the protocol without a 4.3 GB game.
       - name: Test
         run: npm test
+      # `check-exact-source.mjs` is the gate between `npm ci` and whatever the lockfile
+      # points at; it is not under the bridge's own test glob, so it needs its own step.
+      - name: Test the build scripts
+        run: npm run test:scripts
       - name: Build
         run: npm run build
 

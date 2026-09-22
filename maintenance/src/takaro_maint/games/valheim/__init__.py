@@ -36,11 +36,11 @@ from typing import Any
 
 from ... import net, output, paths
 from ...catalog import ids
-from ...exit_codes import OK, BuildFailed, ConflictError, IntegrityError, UsageError
+from ...exit_codes import OK, BuildFailed, ConflictError, IntegrityError
 from ...install.ledger import read_ledger, write_ledger
 from ...providers import provider_for
 from ...steam import install as steam_install
-from ..base import BuildResult
+from ..base import BaseAdapter, BuildResult, common_env
 
 GAME_ID = "valheim"
 REFERENCES_ROOT = "games/valheim/_data/references"
@@ -98,6 +98,10 @@ def _safe_zip_entry(value: str, *, field: str) -> PurePosixPath:
     BepInEx pack legitimately ships ``.doorstop_version``, and dropping it would make the
     install something other than the pack. So this keeps the part that matters — nothing may
     escape the staging directory — and allows a dotfile.
+
+    An entry that does escape is an `IntegrityError`, not a usage error: nobody typed it.
+    It is a third party's archive saying something about the bytes that arrived, which is
+    exactly what exit 5 means, and it leaves the existing install untouched.
     """
     text = str(value)
     segments = text.split("/")
@@ -110,14 +114,14 @@ def _safe_zip_entry(value: str, *, field: str) -> PurePosixPath:
         or re.fullmatch(r"[A-Za-z]:.*", text) is not None
     )
     if unsafe:
-        raise UsageError(
+        raise IntegrityError(
             f"{field} must be a relative path inside the install directory "
             f"(no leading '/', no '..', no backslash), not {value!r}"
         )
     return PurePosixPath(text)
 
 
-class ValheimAdapter:
+class ValheimAdapter(BaseAdapter):
     id = GAME_ID
 
     # -- description ----------------------------------------------------------
@@ -128,10 +132,7 @@ class ValheimAdapter:
         depots = ";".join(f"{depot}:{server['depots'][depot]['manifest']}" for depot in sorted(server["depots"]))
         artifacts = resolved["artifactFileNames"]
         env = {
-            f"{prefix}_TARGET": str(resolved["id"]),
-            f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
-            f"{prefix}_FP16": str(resolved["fp16"]),
-            f"{prefix}_IMAGE": str(resolved["containerRef"]),
+            **common_env(resolved, prefix),
             f"{prefix}_TOOLCHAIN": str(resolved["toolchainRef"]),
             f"{prefix}_REVISION": str(resolved["revision"]),
             f"{prefix}_STEAM_APP": str(server["app"]),
@@ -267,7 +268,7 @@ class ValheimAdapter:
         ]
 
     # -- install --------------------------------------------------------------
-    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int:
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         """The whole installation is one depot set plus one pinned pack, so the adapter owns it."""
         dest = Path(args.dest).expanduser().resolve()
         cache = paths.cache_dir()

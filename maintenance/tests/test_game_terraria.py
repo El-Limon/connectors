@@ -165,7 +165,7 @@ def test_catalog_validate_accepts_the_terraria_target(run: Any) -> None:
 
 
 def test_a_stable_image_tag_is_refused(run: Any, repo: Path) -> None:
-    """`stable` is the tag this connector used to run. Pinning it again has to fail."""
+    """A floating tag such as `stable` is never a pin: validation has to refuse it."""
     record = read_target(repo)
     record["runtime"]["container"]["tag"] = "stable"
     write_target(repo, record)
@@ -425,7 +425,75 @@ def test_deploy_unpacks_the_plugin_dll_and_the_bridge_folder_and_keeps_the_opera
     assert (dest / "bridge" / "TakaroTerrariaBridge" / "dist" / "index.js").read_text() == "bridge"
     assert config.read_bytes() == config_before
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"].endswith(BRIDGE_ZIP) or ledger["artifact"]["path"].endswith(PLUGIN_ZIP)
+    # Both roles are attested, each with the path it actually landed at.
+    by_role = {row["role"]: row["path"] for row in ledger["artifacts"]}
+    assert by_role["plugin"].endswith(PLUGIN_ZIP)
+    assert by_role["bridge"].endswith(BRIDGE_ZIP)
+
+
+def test_ledger_check_guards_every_deployed_role(run: Any, pinned: Any, tmp_path: Path) -> None:
+    """Both roles, not just the last one deployed, are what `ledger check` answers for.
+
+    A two-role game deploys twice, so a ledger that remembered only the final role left
+    the first artifact unattested: tampering with it, or deleting it, read as a clean
+    install.
+    """
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    bridge_zip(directory)
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+
+    def check() -> tuple[int, Any]:
+        code, payload, _ = run(
+            "ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=pinned.root
+        )
+        return code, payload
+
+    assert check()[0] == 0
+
+    ledger_file = dest / ".takaro" / "installed-target.json"
+    clean = ledger_file.read_bytes()
+    rows = {row["role"]: dest / row["path"] for row in json.loads(clean)["artifacts"]}
+    assert set(rows) == {"plugin", "bridge"}
+
+    for role, path in rows.items():
+        kept = path.read_bytes()
+        path.write_bytes(kept + b"tampered")
+        code, payload = check()
+        assert code == 7, (role, payload)
+        assert role in json.dumps(payload), (role, payload)
+        path.unlink()
+        code, payload = check()
+        assert code == 7, (role, payload)
+        assert role in json.dumps(payload) and "missing artifact" in json.dumps(payload), (role, payload)
+        path.write_bytes(kept)
+        assert check()[0] == 0, role
+
+
+def test_a_legacy_single_artifact_ledger_still_checks_and_is_upgraded(run: Any, pinned: Any, tmp_path: Path) -> None:
+    """Ledgers already on rigs carry one `artifact` object; they keep working."""
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    bridge_zip(directory)
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+
+    ledger_file = dest / ".takaro" / "installed-target.json"
+    data = json.loads(ledger_file.read_text(encoding="utf-8"))
+    legacy = [row for row in data.pop("artifacts") if row["role"] == "bridge"][0]
+    data["artifact"] = legacy
+    ledger_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    code, payload, _ = run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=pinned.root)
+    assert code == 0, payload
+
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+    upgraded = json.loads(ledger_file.read_text(encoding="utf-8"))
+    assert "artifact" not in upgraded
+    assert sorted(row["role"] for row in upgraded["artifacts"]) == ["bridge", "plugin"]
 
 
 @pytest.mark.parametrize("role", ["plugin", "bridge"])
@@ -546,7 +614,7 @@ def test_verify_hooks_render_both_configs_and_know_the_terraria_lines(run: Any, 
     assert command[command.index("-autocreate") + 1] == "1"
     # And nothing asks for a non-root run: TShock writes inside /server, which is neither
     # writable nor a volume, so a --user run dies before it reads its configuration.
-    assert not hasattr(adapter, "container_options")
+    assert adapter.container_options(resolved, fake_run.data_dir) == []
 
     mounts = adapter.container_mounts(resolved, fake_run.data_dir)
     assert [mount.split(":")[-1] for mount in mounts] == ["/tshock", "/worlds", "/plugins"]
@@ -825,6 +893,104 @@ def test_oci_registry_refuses_an_index_without_the_watched_platform() -> None:
     assert "linux/amd64" in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "realm",
+    [
+        "file:///etc/passwd",
+        "http://169.254.169.254/latest",
+        "https://user@auth.invalid/token",
+        "https://169.254.169.254/latest",
+        "https://localhost/token",
+    ],
+)
+def test_a_hostile_bearer_realm_is_never_followed(realm: str) -> None:
+    """The realm comes from whoever answered the request, so it is attacker-controlled."""
+    from takaro_maint.exit_codes import MaintError
+
+    def tags() -> Any:
+        raise urllib.error.HTTPError(
+            "https://registry.invalid/v2/pryaxis/tshock/tags/list",
+            401,
+            "unauthorized",
+            {"WWW-Authenticate": f'Bearer realm="{realm}",service="registry.invalid"'},  # type: ignore[arg-type]
+            None,
+        )
+
+    transport = ScriptedTransport({"/tags/list": tags})
+    net.set_transport(transport)
+    readiness.reset_registry()
+    try:
+        with pytest.raises(MaintError) as caught:
+            provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    assert caught.value.code == 4
+    assert "is not an https URL to a named host" in str(caught.value)
+    assert not [url for url, _ in transport.seen if url.startswith(realm.split("?")[0])]
+
+
+def test_a_hostile_challenge_parameter_cannot_rewrite_the_realm_query() -> None:
+    """The challenge's own values were pasted into the query string unencoded."""
+    listing = json.dumps({"tags": ["6.1.0"]}).encode("utf-8")
+    challenged = {"done": False}
+
+    def tags() -> Any:
+        if not challenged["done"]:
+            challenged["done"] = True
+            raise urllib.error.HTTPError(
+                "https://registry.invalid/v2/pryaxis/tshock/tags/list",
+                401,
+                "unauthorized",
+                {  # type: ignore[arg-type]
+                    "WWW-Authenticate": 'Bearer realm="https://auth.invalid/token",'
+                    'service="a&b=c d",scope="repository:pryaxis/tshock:pull"'
+                },
+                None,
+            )
+        return Response(listing)
+
+    transport = ScriptedTransport(
+        {
+            "auth.invalid/token": lambda: Response(json.dumps({"token": "t"}).encode("utf-8")),
+            "/tags/list": tags,
+            "/manifests/": lambda: Response(index_bytes("6.1.0")),
+        }
+    )
+    net.set_transport(transport)
+    readiness.reset_registry()
+    try:
+        provider_for("oci-registry").observe(oci_source("https://registry.invalid"))
+    finally:
+        net.set_transport(net.UrllibTransport())
+
+    realm_call = next(url for url, _ in transport.seen if "auth.invalid" in url)
+    assert "service=a%26b%3Dc+d" in realm_call
+    # The scope's own colons and slashes stay readable, which is the form a registry wants.
+    assert "scope=repository:pryaxis/tshock:pull" in realm_call
+
+
+def test_a_prerelease_is_never_the_channel_head() -> None:
+    """`6.1.0-pre3` sorted after `6.1.0`, so a scan called the prerelease the head."""
+    readiness.reset_registry()
+    with FakeUpstream() as upstream:
+        serve_registry(upstream, tags=["6.1.0-pre3", "6.1.0"])
+        # The prerelease's body only has to be a real index; which one decides its digest.
+        upstream.add(f"/v2/{REPOSITORY}/manifests/6.1.0-pre3", index_bytes("6.0.0"))
+        channels = {
+            "release": {
+                "branch": "release",
+                "tag": r"regex:^[0-9]+\.[0-9]+\.[0-9]+(-pre[0-9]+)?$",
+                "gameRevision": "v{tag}",
+            }
+        }
+        result = provider_for("oci-registry").observe(oci_source(upstream.base_url, channels=channels))
+
+    assert result.status == "ok"
+    assert [observation.facts["tag"] for observation in result.observations] == ["6.1.0", "6.1.0-pre3"]
+    assert result.heads == {"release": result.observations[0].rev}
+
+
 def test_oci_registry_answers_a_bearer_challenge_and_never_prints_the_token(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -840,7 +1006,7 @@ def test_oci_registry_answers_a_bearer_challenge_and_never_prints_the_token(
                 401,
                 "unauthorized",
                 {  # type: ignore[arg-type]
-                    "WWW-Authenticate": 'Bearer realm="http://auth.invalid/token",'
+                    "WWW-Authenticate": 'Bearer realm="https://auth.invalid/token",'
                     'service="registry.invalid",scope="repository:pryaxis/tshock:pull"'
                 },
                 None,
@@ -971,7 +1137,7 @@ def test_dev_servers_terraria_rig_parses_and_resolves() -> None:
     assert bash(". dev-servers/lib/common.sh; ds_target_prefix terraria").strip() == "TERRARIA"
     assert bash(". dev-servers/lib/common.sh; ds_target_dest terraria").strip().endswith("/terraria")
     assert bash(". dev-servers/lib/common.sh; ds_success_pattern_terraria").strip() == "Identified successfully"
-    # The shared registry row is #157's fixture, not this game's to rewrite.
+    # The registry row is shared across games: assert it, never rewrite it from here.
     registry = bash(". dev-servers/lib/common.sh; ds_registry")
     assert "terraria|terraria.yml|-|terraria|1|1|plugin|" in registry
 
@@ -1036,7 +1202,7 @@ def test_the_workflow_delegates_to_connector_release_without_runtime_ci() -> Non
     assert "uses: ./.github/workflows/connector-release.yml" in body
     assert "connector: terraria" in body
     assert "runtime: false" in body
-    # The old hand-rolled package job is gone: nothing here sets up .NET or names the assets.
+    # The workflow packages nothing itself: it sets up no .NET and names no assets.
     assert "setup-dotnet" not in body
     assert "--mode legacy" not in body
     assert "catalog/terraria/**" in body
@@ -1274,19 +1440,17 @@ def test_a_corrupt_bridge_archive_leaves_the_working_bridge_in_place(run: Any, p
 
 
 def test_a_default_run_drops_the_checks_this_connector_cannot_answer(run: Any, repo: Path, tmp_path: Path) -> None:
-    """The obvious command must not be four guaranteed failures."""
-    from takaro_maint.verify.runner import check_ids
+    """The obvious command must not be four guaranteed failures.
 
-    resolved = resolve(run, repo)
-    fake_run = FakeRun(tmp_path, resolved)
-    assert fake_run.options.only is None
+    The narrowing itself lives in the runner and is tested for every game in
+    `test_verify_selection.py`; what Terraria owes is the declaration behind it.
+    """
+    from takaro_maint.verify.runner import check_ids, game_hooks
 
-    hooks.before_boot(fake_run, TAKARO_ENV)
+    declared = game_hooks("terraria")
+    selected = set(check_ids("terraria")) - set(declared.unsupported_checks)
 
-    assert fake_run.options.only is not None
-    selected = set(fake_run.options.only)
-    assert selected.isdisjoint(hooks.UNSUPPORTED_CHECKS)
-    assert selected == set(check_ids("terraria")) - set(hooks.UNSUPPORTED_CHECKS)
+    assert declared.unsupported_checks == hooks.UNSUPPORTED_CHECKS
     # Each dropped check names the Terraria check that stands in for it, and the report
     # carries that map under `handshake` -- the runner's own skip reason cannot say it.
     assert set(hooks.UNSUPPORTED_CHECKS) == {"connector-load", "identify", "catalog-items", "catalog-entities"}
@@ -1294,12 +1458,6 @@ def test_a_default_run_drops_the_checks_this_connector_cannot_answer(run: Any, r
     # Everything Terraria does answer is still in, including the base lifecycle.
     assert {"build", "startup", "heartbeat", "players", "console", "shutdown"} <= selected
     assert set(hooks.CHECK_IDS) <= selected
-
-    # A caller that named its own set gets exactly that set, untouched.
-    chosen = FakeRun(tmp_path / "second", resolved)
-    chosen.options.only = ["startup", "identify"]
-    hooks.before_boot(chosen, TAKARO_ENV)
-    assert chosen.options.only == ["startup", "identify"]
 
 
 @pytest.mark.parametrize(
@@ -1333,10 +1491,58 @@ def test_an_archive_without_what_the_server_loads_is_refused(
     assert not landed.exists()
 
 
+@pytest.mark.parametrize("role", ["plugin", "bridge"])
+@pytest.mark.parametrize("body", [b"not a zip at all", b"PK\x03\x04truncated"])
+def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_connector_alone(
+    run: Any, pinned: Any, tmp_path: Path, role: str, body: bytes
+) -> None:
+    """The manifest's sha256 says the bytes are the built ones, not that they are a zip."""
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    bridge_zip(directory)
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+    landed = (
+        dest / "plugins" / "TakaroTerrariaEvents.dll"
+        if role == "plugin"
+        else dest / "bridge" / "TakaroTerrariaBridge" / "dist" / "index.js"
+    )
+    before = landed.read_bytes()
+
+    (directory / (PLUGIN_ZIP if role == "plugin" else BRIDGE_ZIP)).write_bytes(body)
+    code, payload, _ = deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))
+
+    assert code == 7, payload
+    assert "is not a zip archive" in json.dumps(payload)
+    assert landed.read_bytes() == before
+    assert not list(dest.glob(".*.staging*"))
+
+
 def test_prerelease_tags_sort_by_number_not_by_string() -> None:
+    """A suffix is a prerelease of the version it hangs off, so it sorts before it."""
     from takaro_maint.providers.oci_registry import _sort_key
 
     tags = ["6.0.0-pre9", "6.0.0-pre10", "6.0.0-pre2", "6.0.0"]
 
-    assert sorted(tags, key=_sort_key) == ["6.0.0", "6.0.0-pre2", "6.0.0-pre9", "6.0.0-pre10"]
-    assert max(tags, key=_sort_key) == "6.0.0-pre10"
+    assert sorted(tags, key=_sort_key) == ["6.0.0-pre2", "6.0.0-pre9", "6.0.0-pre10", "6.0.0"]
+    assert max(tags, key=_sort_key) == "6.0.0"
+    # And a deeper version still beats the one it extends.
+    assert sorted(["6.1.0", "6.1.0.1", "6.1.0-pre3"], key=_sort_key) == ["6.1.0-pre3", "6.1.0", "6.1.0.1"]
+
+
+def test_the_identify_line_the_harness_waits_for_is_the_one_the_bridge_writes() -> None:
+    """The contract is across two languages, so it has to be bound rather than restated.
+
+    `hooks.IDENTIFIED_LINE` is a Python regex; the line it waits for is built by a
+    TypeScript template. Renaming either used to leave the other looking correct, and the
+    check would then wait out its budget on a line that is being written under a new name.
+    """
+    source = (REPO_ROOT / "games/terraria/bridge/src/takaro/connectionLog.ts").read_text(encoding="utf-8")
+
+    prefixes = re.findall(r"^export const IDENTIFIED_PREFIX = '([^']+)';$", source, re.MULTILINE)
+    assert len(prefixes) == 1, "exactly one IDENTIFIED_PREFIX, or this test is reading the wrong thing"
+    # `identifiedLine` interpolates the id after the prefix; the harness matches the prefix.
+    sample = f"info: {prefixes[0]} (gameServerId=gs_terraria)"
+
+    assert hooks.IDENTIFIED_LINE.search(sample), f"{hooks.IDENTIFIED_LINE.pattern!r} does not match {sample!r}"

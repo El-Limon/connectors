@@ -20,9 +20,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from .. import output, paths, redact
@@ -33,6 +32,7 @@ from ..install.ledger import read_ledger
 from ..publish import read_manifest
 from . import checks as base_checks
 from .fake_takaro import FakeTakaro
+from .hooks import GameHooks
 from .report import build_report, write_report
 
 CHECK_IDS = (
@@ -49,27 +49,33 @@ CHECK_IDS = (
 )
 
 
-def game_hooks(game: str) -> ModuleType | None:
-    """A ``verify`` module in the game adapter's own package, when it ships one.
+def game_hooks(game: str) -> GameHooks:
+    """What this game contributes to a run, as one declared object.
 
-    The hooks are looked up next to the adapter rather than at a path spelled out here, so
-    a game whose package is not named after its catalog id is found too. A game without
-    hooks verifies with the base checks alone; nothing here is a hard dependency.
+    The hooks module is looked up next to the adapter rather than at a path spelled out
+    here, so a game whose package is not named after its catalog id is found too. A game
+    without one verifies with the base checks alone, which is what the empty ``GameHooks``
+    means; a module that ships hooks but never assembles them into ``HOOKS`` is a mistake,
+    not a game with no hooks, so it is refused rather than quietly ignored.
     """
     try:
         adapter = adapter_for(game)
     except UsageError:
-        return None
+        return GameHooks()
     try:
-        return importlib.import_module(f"{type(adapter).__module__}.verify")
+        module = importlib.import_module(f"{type(adapter).__module__}.verify")
     except ModuleNotFoundError:
-        return None
+        return GameHooks()
+    hooks = getattr(module, "HOOKS", None)
+    if not isinstance(hooks, GameHooks):
+        raise UsageError(f"{module.__name__} ships verification hooks but no HOOKS = GameHooks(...)")
+    return hooks
 
 
 def check_ids(game: str | None = None) -> tuple[str, ...]:
     """The base check ids, plus the ones the game's own hooks add."""
-    hooks = game_hooks(game) if game else None
-    return (*CHECK_IDS, *getattr(hooks, "CHECK_IDS", ()))
+    hooks = game_hooks(game) if game else GameHooks()
+    return (*CHECK_IDS, *hooks.check_ids)
 
 
 def docker_command() -> list[str]:
@@ -282,14 +288,11 @@ class TargetRun:
 
     def container_mounts(self) -> list[str]:
         """The ``-v`` arguments this game's server needs; one data dir bound at /data by default."""
-        mounts = getattr(self.adapter, "container_mounts", None)
-        if mounts is None:
-            return [f"{self.data_dir}:/data"]
-        return [str(mount) for mount in mounts(self.resolved, self.data_dir)]
+        return [str(mount) for mount in self.adapter.container_mounts(self.resolved, self.data_dir)]
 
     def ready_line(self) -> re.Pattern[str]:
         """The log line that says this game's server finished booting."""
-        return getattr(self.hooks, "READY_LINE", base_checks.DONE_LINE)
+        return self.hooks.ready_line
 
     def container_argv(self, ws_url: str, *, suffix: str = "", extra_env: dict[str, str] | None = None) -> list[str]:
         takaro_env = self.takaro_env(ws_url, extra_env)
@@ -319,6 +322,9 @@ class TargetRun:
         for label in self.options.labels:
             argv += ["--label", label]
         argv += ["--add-host", "host.docker.internal:host-gateway", "--memory", "3g"]
+        # A game that needs more than the run's own defaults appends them here -- docker
+        # takes the last value of a repeated option, so these win over what is above.
+        argv += [str(option) for option in self.adapter.container_options(self.resolved, self.data_dir)]
         for key, value in sorted(environment.items()):
             argv += ["-e", f"{key}={value}"]
         for mount in self.container_mounts():
@@ -327,9 +333,9 @@ class TargetRun:
         # Some servers take settings the image exposes no environment variable for -- a world
         # name on the command line, say -- so a game may append its own arguments after the
         # image reference. Games that need none ship no hook and get the image's own Cmd.
-        command = getattr(self.adapter, "container_command", None)
+        command = self.adapter.container_command(self.resolved, self.data_dir)
         if command is not None:
-            argv += [str(part) for part in command(self.resolved, self.data_dir)]
+            argv += [str(part) for part in command]
         self.container_name = name
         return argv
 
@@ -360,21 +366,48 @@ class TargetRun:
         self.container = container
         # Anything the server has to find on disk before it starts -- a config file the
         # game reads instead of the environment, say -- is written here.
-        before_boot = getattr(self.hooks, "before_boot", None)
-        if before_boot is not None:
-            before_boot(self, self.takaro_env(ws_url, extra_env))
+        if self.hooks.before_boot is not None:
+            self.hooks.before_boot(self, self.takaro_env(ws_url, extra_env))
         container.start()
         bindings = container.inspect_port_bindings()
         with self.docker_log.open("a", encoding="utf-8") as handle:
             handle.write(f"HostConfig.PortBindings={bindings}\n")
         # Anything that can only exist once the container does -- a sidecar joining its network
         # namespace, say -- is started here, while `before_boot` still runs against the disk.
-        after_boot = getattr(self.hooks, "after_boot", None)
-        if after_boot is not None:
-            after_boot(self, container, self.takaro_env(ws_url, extra_env))
+        if self.hooks.after_boot is not None:
+            self.hooks.after_boot(self, container, self.takaro_env(ws_url, extra_env))
         return container
 
     # -- checks ---------------------------------------------------------------
+    def _select_default_checks(self) -> None:
+        """A run that named no ``--checks`` skips what this game cannot pass.
+
+        The base ladder is written for the Minecraft connector, and most of it looks for
+        things the other seven games do not have -- a load line only that connector
+        writes, Minecraft item and entity spot values, an exit code a Unity teardown does
+        not give. Left in, `takaro-maint verify --game <g>` would spend a timeout failing
+        on each. Each game declares which base checks cannot pass on it and what stands in
+        for them, and the exclusion happens here, once, for every game -- three of them
+        used to do it in their own `before_boot`, which is after the install and the
+        deploy and only for the games that remembered to.
+
+        An explicit ``--checks`` is left exactly as written: naming a check is asking for
+        it, including one this game is known to fail. ``replace`` rather than a field
+        assignment, because one ``RunOptions`` is shared by every target of the command
+        and one target's default must not narrow the next one's.
+        """
+        if self.options.only is not None:
+            return
+        unsupported = self.hooks.unsupported_checks
+        if not unsupported:
+            return
+        self.options = replace(
+            self.options,
+            only=[check for check in check_ids(self.target.game) if check not in unsupported],
+        )
+        for check, reason in sorted(unsupported.items()):
+            output.info(f"not running {check}: {reason}")
+
     def wanted(self, check_id: str) -> bool:
         return self.options.only is None or check_id in self.options.only
 
@@ -395,13 +428,14 @@ class TargetRun:
             self.cleanup()
 
     async def _run(self, started_at: str) -> dict[str, Any]:
+        self._select_default_checks()
         manifest = self.install_and_deploy()
         ledger = read_ledger(self.data_dir)
         assert ledger is not None
         ledger_inputs = ledger.data["inputs"]
 
         if self.options.takaro == "hosted":
-            if self.hooks is None or not hasattr(self.hooks, "run_hosted"):
+            if self.hooks.run_hosted is None:
                 raise UsageError(f"game '{self.target.game}' ships no hosted verification")
             hosted: dict[str, Any] = await self.hooks.run_hosted(self, manifest, ledger_inputs, started_at)
             return hosted
@@ -484,7 +518,7 @@ class TargetRun:
                 else:
                     self.skip(check_id, "not selected by --checks")
 
-            if self.hooks is not None and hasattr(self.hooks, "after_protocol"):
+            if self.hooks.after_protocol is not None:
                 await self.hooks.after_protocol(self, fake, alive)
 
             if self.wanted("shutdown"):
@@ -492,11 +526,11 @@ class TargetRun:
             else:
                 self.skip("shutdown", "not selected by --checks")
 
-            if self.hooks is not None and hasattr(self.hooks, "after_shutdown"):
+            if self.hooks.after_shutdown is not None:
                 await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)
 
             if self.options.negative:
-                if self.hooks is not None and hasattr(self.hooks, "negative"):
+                if self.hooks.negative is not None:
                     await self.hooks.negative(self, fake, ws_url, manifest)
                 else:
                     self.skip("negative-wrong-target", f"game '{self.target.game}' ships no negative check")
@@ -520,9 +554,8 @@ class TargetRun:
         return report
 
     def _scan_runtime_identity(self) -> dict[str, Any]:
-        scan = getattr(self.hooks, "scan_runtime_identity", None)
-        if scan is not None:
-            return dict(scan(self.adapter, self.server_log) or {})
+        if self.hooks.scan_runtime_identity is not None:
+            return dict(self.hooks.scan_runtime_identity(self.adapter, self.server_log) or {})
         found = base_checks.find_line(self.server_log, "with Fabric Loader")
         if not found:
             return {}

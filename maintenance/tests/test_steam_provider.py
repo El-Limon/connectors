@@ -197,6 +197,20 @@ def test_a_secret_in_the_environment_never_reaches_the_log(
 
 
 # -- the revision digest -------------------------------------------------------
+def test_a_pathologically_nested_app_info_is_a_failed_source_not_a_traceback(steam: Any) -> None:
+    """A `RecursionError` is not a `VdfError`, so it escaped `app_info` and exited 1."""
+    from takaro_maint.exit_codes import UPSTREAM, MaintError
+
+    deep = f'"{APP}"' + "\n{\n" + '"a"\n{\n' * 2000
+    (steam.root / f"{APP}.vdf").write_text(deep, encoding="utf-8")
+
+    with pytest.raises(MaintError) as caught:
+        steamcmd.app_info(APP, log=steam.tool_log)
+
+    assert caught.value.code == UPSTREAM
+    assert "nesting deeper than" in caught.value.message
+
+
 def test_the_manifest_digest_binds_the_whole_depot_set() -> None:
     one = steamcmd.manifest_digest({"294422": "1633674551820196085"})
     two = steamcmd.manifest_digest({"294422": "1633674551820196085", "294421": "1646211645575803407"})
@@ -564,6 +578,8 @@ def test_bootstrap_files_the_uncovered_public_head(run: Any, tracker: Any, steam
     assert "<!-- takaro-maint:state=detected -->" in body
     assert "steam pin --game 7d2d --branch public --metadata" in body
     assert "Steam moved the `public` branch of app 294420" in body
+    # 7D2D declares no `watch.readinessNote`, so the generic sentence is what it gets.
+    assert "no framework layer" in body
     assert [issue["labels"] for issue in tracker.support_issues()] == [["connector-maintenance"]]
     assert (
         tracker.dashboard_state()["work"][f"provider=steam component=7d2d branch=public rev={expected}"]["state"]
@@ -637,19 +653,56 @@ def test_a_hidden_branch_is_a_failed_observation(run: Any, tracker: Any, steam: 
     assert "privatebranches=1" in error
 
 
+#: The head `latest_experimental` publishes, distinct from the public branch's.
+EXPERIMENTAL_MANIFEST = "3000000000000000001"
+
+
+def test_a_protected_branch_without_its_password_is_a_failed_source(
+    run: Any, tracker: Any, steam: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No password, no observation -- not an observation of whatever the public head is."""
+    for name, value in fake_dd.environment(tmp_path, tmp_path / "dd-argv.jsonl").items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {"294422": EXPERIMENTAL_MANIFEST}, "protected": True}}),
+    )
+    enable_experimental(tracker.root)
+    fake_steamcmd.add_branch(
+        steam.document, "latest_experimental", 25200000, {"294422": EXPERIMENTAL_MANIFEST}, pwdrequired=True
+    )
+    steam.serve()
+    monkeypatch.delenv(steam_provider.password_env(APP, "latest_experimental"), raising=False)
+
+    code, payload, _ = tracker.scan(run, "--bootstrap", "--publish")
+
+    assert code == 4, payload
+    source = payload["sources"][STEAM_KEY]
+    assert source["status"] == "failed"
+    assert steam_provider.password_env(APP, "latest_experimental") in source["error"]
+    assert not [o for o in payload.get("observations", []) if o.get("branch") == "experimental"]
+
+
 def test_credentials_resolve_a_protected_branch_and_never_appear_anywhere(
     run: Any, tracker: Any, steam: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Both a long password and a four-character one: neither reaches any output."""
     for name, value in fake_dd.environment(tmp_path, tmp_path / "dd-argv.jsonl").items():
         monkeypatch.setenv(name, value)
+    # The branch publishes its own head. Without this the tool answered with the *public*
+    # head whatever `-branch` said, so the test could not tell a password that worked from
+    # one that was ignored.
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {"294422": EXPERIMENTAL_MANIFEST}, "protected": True}}),
+    )
     for password in ("hunter2-secret-value", "ab12"):
         with FakeGitHub() as fake:
             harness = ScanRig(root=tracker.root, upstream=None, fake=fake)  # type: ignore[arg-type]
             enable_experimental(harness.root)
             document = fake_steamcmd.recorded(APP)
             fake_steamcmd.add_branch(
-                document, "latest_experimental", 25200000, {"294422": "3000000000000000001"}, pwdrequired=True
+                document, "latest_experimental", 25200000, {"294422": EXPERIMENTAL_MANIFEST}, pwdrequired=True
             )
             fake_steamcmd.serve(steam.root, APP, document)
             monkeypatch.setenv(steam_provider.password_env(APP, "latest_experimental"), password)
@@ -659,7 +712,7 @@ def test_credentials_resolve_a_protected_branch_and_never_appear_anywhere(
 
             assert code == 0, err
             observation = next(o for o in payload["observations"] if o["branch"] == "experimental")
-            assert observation["facts"]["depots"]["294422"]["manifest"] == fake_dd.HEAD_MANIFEST
+            assert observation["facts"]["depots"]["294422"]["manifest"] == EXPERIMENTAL_MANIFEST
             assert observation["facts"]["credentialsEnv"] == (
                 "TAKARO_MAINT_STEAM_BRANCH_PASSWORD__294420__LATEST_EXPERIMENTAL"
             )

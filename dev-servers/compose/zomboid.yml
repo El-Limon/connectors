@@ -29,8 +29,8 @@ services:
       UDP_PORT: "16262"
       TZ: Europe/Brussels
       # Takaro connector: injected into the PZ server JVM. The native launcher
-      # (ProjectZomboid64 -> JNI_CreateJavaVM) has no JAVA_OPTS knob. The agent now lives
-      # in the install directory, which the stubbed updater can no longer revert.
+      # (ProjectZomboid64 -> JNI_CreateJavaVM) has no JAVA_OPTS knob. The agent lives in
+      # the install directory, which the stubbed updater does not revert.
       JAVA_TOOL_OPTIONS: "-javaagent:/home/steam/ZomboidDedicatedServer/Takaro/TakaroConnector.jar"
       # enforce: the agent refuses to install its hooks in a server that is not the build
       # the catalog target pins. warn to run it against another build anyway.

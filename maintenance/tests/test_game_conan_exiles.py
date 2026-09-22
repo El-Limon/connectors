@@ -606,7 +606,43 @@ def test_deploy_unpacks_the_bridge_folder_and_removes_older_zips(
     assert json.loads((unpacked / "takaro-target.json").read_text())["target"] == TARGET
     assert not stale.exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"] == f"{INSTALL_DIR}/{ZIP_NAME}"
+    assert ledger["artifacts"][0]["path"] == f"{INSTALL_DIR}/{ZIP_NAME}"
+
+
+@pytest.mark.parametrize("body", [b"not a zip at all", b"PK\x03\x04truncated"])
+def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_bridge_and_its_config_alone(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, body: bytes
+) -> None:
+    """The manifest's sha256 says the bytes are the built ones, not that they are a zip."""
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    directory = tmp_path / "dist"
+    bridge_zip(directory / ZIP_NAME)
+    assert deploy(run, repo, dest, manifest_for(run, repo, directory, directory / ZIP_NAME))[0] == 0
+    unpacked = dest / INSTALL_DIR / BRIDGE_FOLDER
+    config = unpacked / "TakaroConfig.txt"
+    config.write_text("registrationToken=the-operators-own\n")
+    before = sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*"))
+
+    (directory / ZIP_NAME).write_bytes(body)
+    code, payload, _ = run(
+        "deploy",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--dest",
+        str(dest),
+        "--from",
+        str(manifest_for(run, repo, directory, directory / ZIP_NAME)),
+        repo=repo,
+    )
+
+    assert code == 7, payload
+    assert "is not a zip archive" in json.dumps(payload)
+    assert config.read_text() == "registrationToken=the-operators-own\n"
+    assert sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*")) == before
+    assert not list((dest / INSTALL_DIR).glob(".TakaroConanExiles.staging*"))
 
 
 def test_deploy_keeps_the_operators_config_and_drops_the_previous_release(
@@ -982,3 +1018,67 @@ def test_the_rig_runs_the_resolved_target_and_never_steamcmd() -> None:
     )
     # git grep exits 1 when nothing matched, which is exactly what this asserts.
     assert found.returncode == 1, f"a floating coordinate survived:\n{found.stdout}"
+
+
+def test_the_server_container_gets_the_memory_and_the_user_the_adapter_asks_for(tmp_path: Path) -> None:
+    """``container_options`` was declared and never reached a ``docker run``.
+
+    The runner looked the hook up by name on the adapter and Conan's spelling was never
+    the one it looked for, so the server ran at the generic 3g cap and as root -- which is
+    how a Unreal dedicated server dies on its own saved world.
+    """
+    import os
+
+    from takaro_maint import paths
+    from takaro_maint.catalog.loader import load
+    from takaro_maint.games.conan_exiles import MEMORY
+    from takaro_maint.verify.runner import RunOptions, TargetRun
+
+    paths.set_repo_root(REPO_ROOT)
+    catalog = load()
+    options = RunOptions(artifacts=tmp_path / "dist", out=tmp_path / "out", run_id="argv")
+    run = TargetRun(catalog, catalog.select(GAME, target_id=TARGET), options)
+    try:
+        argv = run.container_argv("ws://host.docker.internal:1/")
+    finally:
+        run.cleanup()
+
+    memory = [index for index, item in enumerate(argv) if item == "--memory"]
+    assert [argv[index + 1] for index in memory] == ["3g", MEMORY], "docker takes the last one"
+    user = argv.index("--user")
+    assert argv[user + 1] == f"{os.getuid()}:{os.getgid()}"
+    assert user > memory[0], "the adapter's options come after the runner's own"
+
+
+def test_the_stamp_line_the_harness_reads_is_the_one_the_bridge_writes() -> None:
+    """The contract is across two languages, so it has to be bound rather than restated.
+
+    `hooks.STAMP_LINE` is a Python regex with named groups; the line it reads is built by
+    a TypeScript template. Renaming a word in either used to leave the other looking
+    correct, and `bridge-identify` would then report an unstamped bridge.
+    """
+    source = (REPO_ROOT / "games/conan-exiles/bridge/src/targetStamp.ts").read_text(encoding="utf-8")
+
+    body = source[source.index("export function describeStamp") :]
+    body = body[: body.index("\n}")]
+    templates = re.findall(r"`([^`]*)`", body)
+    assert templates, "describeStamp builds its line from template literals"
+    # Every `${...}` becomes a value, and the literal text between them is the contract.
+    sample = "".join(templates)
+    values = {
+        "stamp.target": "linux-25356024",
+        "stamp.fingerprint.slice(0, 16)": "0123456789abcdef",
+        "stamp.revision": "25356024",
+        "stamp.connectorVersion": "1.2.3",
+        "stamp.sourceRevision": "deadbeef",
+    }
+    for expression, value in values.items():
+        sample = sample.replace("${" + expression + "}", value)
+    assert "${" not in sample, f"describeStamp interpolates something this test does not know: {sample}"
+
+    found = hooks.STAMP_LINE.search(sample)
+    assert found, f"{hooks.STAMP_LINE.pattern!r} does not match {sample!r}"
+    assert found.group("target") == "linux-25356024"
+    assert found.group("fp16") == "0123456789abcdef"
+    assert found.group("revision") == "25356024"
+    assert found.group("version") == "1.2.3"

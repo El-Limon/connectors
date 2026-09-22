@@ -14,9 +14,9 @@ booting a deliberately corrupted build.
 
 The base ``connector-load``/``identify``/``heartbeat``/``players``/``catalog-*``/
 ``console``/``shutdown`` checks look for lines and answers that arrive from the *sidecar*
-here, so they stay out of an Enshrouded run -- :func:`default_checks` is what keeps them
-out, from the target record's own ``verification.separate`` -- and each ``sidecar-*`` check
-says which one it replaces. That is why an Enshrouded report reaches ``startup`` and never
+here, so they stay out of an Enshrouded run -- :data:`UNSUPPORTED_CHECKS` is what keeps
+them out, and the runner applies it to every game -- and each ``sidecar-*`` check says
+which one it replaces. That is why an Enshrouded report reaches ``startup`` and never
 claims ``protocol``.
 """
 
@@ -28,12 +28,12 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from ... import net, output
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
 from ...verify.runner import Container, docker_command
 from . import PLUGIN_DLL, SERVER_DIR, plugin_token
 
@@ -52,6 +52,22 @@ CHECK_IDS = (
 
 # What the container log (supervisord + the game's own stdout) says at each moment.
 READY_LINE = re.compile(r"\[Session\] 'HostOnline' \(up\)!")
+
+#: Base checks this connector cannot satisfy, and the check that stands in for each.
+#: A run that names no ``--checks`` excludes these rather than failing them.
+UNSUPPORTED_CHECKS = {
+    "connector-load": (
+        "the connector lives in the sidecar, not the game container; `plugin-health` asserts the plugin"
+    ),
+    "identify": ("the sidecar identifies to Takaro; `sidecar-identify` asserts that frame"),
+    "heartbeat": ("the sidecar answers Takaro, not the game container; `sidecar-identify` covers the link"),
+    "players": ("the player list comes from the sidecar; `sidecar-players` asserts it"),
+    "catalog-items": ("spot-checks a Minecraft item id; `sidecar-catalog` spot-checks an Enshrouded one"),
+    "catalog-entities": ("spot-checks a Minecraft entity id; `sidecar-catalog` covers Enshrouded's entities"),
+    "console": ("the base console check drives a Minecraft command; `sidecar-console` drives an Enshrouded one"),
+    "shutdown": ("asserts an exit code this server's teardown does not give; `stop` asserts the shutdown"),
+}
+
 BUILD_LINE = re.compile(r"Game Version \(SVN\): (?P<build>\d+)")
 SHUTDOWN_LINE = re.compile(r"\[app\] Trigger gameflow shutdown, exit: Ctrl_C")
 SAVED_LINE = re.compile(r"\[server\] Saved")
@@ -83,40 +99,6 @@ SIDECAR_FOLDER = Path("takaro") / "sidecar" / "TakaroEnshroudedSidecar"
 # --------------------------------------------------------------------------- run setup
 
 
-def default_checks(run: Any) -> list[str] | None:
-    """What a bare ``takaro-maint verify --game enshrouded`` runs, from the target record.
-
-    ``verification.separate`` names the checks this target proves on its own -- ``startup``
-    plus every id in :data:`CHECK_IDS` -- and this is what consumes it. The rest of the
-    generic ladder watches the *game* container for a connector that lives in the sidecar,
-    so on Enshrouded those checks cannot pass and are never selected by default; ``build``
-    reads the artifacts and not the server, so it always is. ``None`` means "select
-    everything", which is what a target that declares no ``separate`` list asks for.
-    """
-    record = run.target.record.get("verification") or {}
-    separate = [str(check) for check in record.get("separate") or ()]
-    if not separate:
-        return None
-    return ["build", *separate]
-
-
-def _select_default_checks(run: Any) -> None:
-    """Narrow this run's selection when the caller named no ``--checks``.
-
-    An explicit ``--checks`` is left exactly as it was written, including a selection that
-    asks for a check this game cannot pass: naming it is asking for it.
-    """
-    if run.options.only is not None:
-        return
-    selection = default_checks(run)
-    if selection is None:
-        return
-    # `replace` rather than a field assignment: one RunOptions is shared by every target of
-    # the command, and one target's default must not narrow the next one's.
-    run.options = replace(run.options, only=selection)
-    output.info("checks: " + ", ".join(selection) + " (this target's own set; --checks narrows it further)")
-
-
 def before_boot(run: Any, takaro_env: dict[str, str]) -> Path:
     """This run's check selection and the plugin's only configuration, before the boot.
 
@@ -126,7 +108,6 @@ def before_boot(run: Any, takaro_env: dict[str, str]) -> Path:
     The token never reaches the docker command line: the plugin reads it from this file
     when ``TAKARO_PLUGIN_TOKEN`` is unset, and the sidecar is given the same derived value.
     """
-    _select_default_checks(run)
     path = run.data_dir / PLUGIN_CONFIG
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"token": plugin_token(takaro_env)}) + "\n", encoding="utf-8")
@@ -140,7 +121,7 @@ def scan_runtime_identity(adapter: Any, log_file: Path) -> dict[str, Any]:
     found = checks.find_line(log_file, BUILD_LINE)
     identity = dict(adapter.parse_runtime_identity(found[1]) or {}) if found else {}
     if identity:
-        identity["loaderVersion"] = _proton_version(getattr(adapter, "last_container_ref", "")) or None
+        identity["loaderVersion"] = _proton_version(adapter.last_container_ref) or None
     return identity
 
 
@@ -511,6 +492,29 @@ async def _check_players(run: Any, fake: Any) -> checks.CheckResult:
     )
 
 
+#: A dev token that has no business in a name an operator reads. The same set the mod's
+#: own corpus test asserts over ``kEntities``/``kLocations`` (``mod/tests/names_test.cpp``),
+#: applied here to what the running server actually answered.
+_DEV_TOKENS = frozenset({"ag2", "deprecated", "placement", "noui", "healthbar"})
+_BARE_TIER = re.compile(r"^[Tt]\d$")
+
+
+def _looks_like_a_dev_name(name: str, code: str) -> bool:
+    """A template code handed back rather than a name, by the mod's own rules.
+
+    Entity and location names are derived from the codes, because the dedicated server
+    ships no localisation to read them from. That derivation is only worth anything if its
+    output is actually readable, so every predicate the C++ corpus test asserts over the
+    shipped table is asserted here over the live answer too -- otherwise a mod that
+    regressed to opening underscores would still pass this check.
+    """
+    if not name or name[0] == " " or name[0].isdigit() or "_" in name:
+        return True
+    if name == code.replace("_", " "):
+        return True
+    return any(word.lower() in _DEV_TOKENS or _BARE_TIER.match(word) for word in name.split())
+
+
 async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
     """Enshrouded's ``catalog-items``/``catalog-entities``, read out of the server's own kfc."""
     del run
@@ -518,7 +522,7 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
         problems: list[str] = []
         samples: dict[str, list[str]] = {}
         counts: dict[str, int] = {}
-        for action in ("listItems", "listEntities"):
+        for action in ("listItems", "listEntities", "listLocations"):
             entries: Any = None
             try:
                 entries = await fake.request(action, {})
@@ -530,16 +534,34 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
                 continue
             counts[action] = len(entries)
             samples[action] = [str(entry.get("name")) for entry in entries[:3] if isinstance(entry, dict)]
-            for entry in entries:
-                if not isinstance(entry, dict) or not entry.get("code") or not entry.get("name"):
-                    problems.append(f"{action} holds an entry without a code and a name: {entry!r}")
-                    break
-                if entry["name"] == entry["code"]:
-                    problems.append(f"{action} holds {entry['code']!r} whose name is its code")
-                    break
-                if "_" in str(entry["name"]):
-                    problems.append(f"{action} holds the name {entry['name']!r}, which is still a dev code")
-                    break
+            malformed = next(
+                (e for e in entries if not isinstance(e, dict) or not e.get("code") or not e.get("name")), None
+            )
+            if malformed is not None:
+                problems.append(f"{action} holds an entry without a code and a name: {malformed!r}")
+                continue
+            same = [e for e in entries if e["name"] == e["code"]]
+            if same:
+                problems.append(
+                    f"{action}: {len(same)} of {len(entries)} names are the code itself, "
+                    f"e.g. {', '.join(str(e['code']) for e in same[:3])}"
+                )
+            if action == "listItems":
+                # Items keep the name gen_gamedata.py baked into ItemDef::name, which is the
+                # code with its underscores opened. Deriving 3,609 item names is follow-up F1.
+                underscored = [e for e in entries if "_" in str(e["name"])]
+                if underscored:
+                    problems.append(
+                        f"{action}: {len(underscored)} of {len(entries)} names are still dev codes, "
+                        f"e.g. {', '.join(str(e['name']) for e in underscored[:3])}"
+                    )
+                continue
+            offenders = [e for e in entries if _looks_like_a_dev_name(str(e["name"]), str(e["code"]))]
+            if offenders:
+                problems.append(
+                    f"{action}: {len(offenders)} of {len(entries)} names are dev codes rather than "
+                    f"display names, e.g. " + ", ".join(f"{e['code']} -> {e['name']}" for e in offenders[:3])
+                )
     return checks.CheckResult(
         "sidecar-catalog",
         "pass" if not problems else "fail",
@@ -548,8 +570,8 @@ async def _check_catalog(run: Any, fake: Any) -> checks.CheckResult:
             "counts": counts,
             "firstNames": samples,
             "note": (
-                "Enshrouded's `catalog-items`/`catalog-entities`; the names are the server's codes "
-                "with spaces because no localisation ships with the dedicated server"
+                "Enshrouded's `catalog-items`/`catalog-entities`; entity and location names are "
+                "derived from the template codes because the dedicated server ships no localisation"
             ),
             "problems": problems,
         },
@@ -941,3 +963,16 @@ def _build_degraded(mod: Path, zig: str, signature: str, out: Path) -> Path:
     if not built.is_file():
         raise RuntimeError(f"{built} was not produced")
     return built
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    ready_line=READY_LINE,
+    check_ids=CHECK_IDS,
+    unsupported_checks=UNSUPPORTED_CHECKS,
+    before_boot=before_boot,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    negative=negative,
+    scan_runtime_identity=scan_runtime_identity,
+)

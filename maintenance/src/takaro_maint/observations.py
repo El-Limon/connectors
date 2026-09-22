@@ -7,6 +7,7 @@ document is what a maintenance issue quotes, so its shape is validated, not assu
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,6 +15,22 @@ from .catalog import schema
 from .providers.base import Observation
 
 SCHEMA_NAME = "observation.schema.json"
+
+#: The alphabet `observation.schema.json` allows in a `rev` (and a `branch`). A provider
+#: that builds a revision out of an upstream string has to pass it through `safe_rev`
+#: first: a valid GitHub tag like `carbon@2.0` is not a valid revision, and it used to
+#: reach the schema as written and fail the whole scan rather than that one source.
+REV_RE = re.compile(r"^[A-Za-z0-9._+/-]+$")
+
+
+def safe_rev(text: str) -> str:
+    """An upstream string as a revision: anything outside the alphabet becomes a dash.
+
+    Runs collapse and the ends are stripped, so `carbon@2.0` is `carbon-2.0` and
+    `v1.0 (final)` is `v1.0-final`. The raw upstream string stays in the facts, which is
+    where anyone reading the observation looks for it.
+    """
+    return re.sub(r"[^A-Za-z0-9._+/-]+", "-", text).strip("-") or "unknown"
 
 
 def utcnow() -> str:

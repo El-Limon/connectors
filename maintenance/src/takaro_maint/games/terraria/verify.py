@@ -41,6 +41,7 @@ from typing import Any
 
 from ... import output
 from ...verify import checks, checks_lifecycle, runner
+from ...verify.hooks import GameHooks
 
 CHECK_IDS = ("handshake", "items", "entities", "action", "references", "reconnect")
 
@@ -138,23 +139,8 @@ def render_bridge_config(data_dir: Path, takaro_env: dict[str, str], rest_token:
 # --------------------------------------------------------------------------- boot hooks
 
 
-def select_checks(run: Any) -> None:
-    """Narrow a default run to the checks this connector can answer.
-
-    The runner runs every check unless ``--checks`` names a subset, and four of its base
-    checks look for things Terraria does not have. Left alone they would turn the obvious
-    command into four guaranteed failures, so a run that named nothing gets everything else.
-    """
-    if run.options.only is not None:
-        return
-    run.options.only = [check for check in runner.check_ids("terraria") if check not in UNSUPPORTED_CHECKS]
-    for check, reason in sorted(UNSUPPORTED_CHECKS.items()):
-        output.info(f"not running {check}: {reason}")
-
-
 def before_boot(run: Any, takaro_env: dict[str, str]) -> None:
     """Both configuration files, before the server container exists."""
-    select_checks(run)
     run.rest_token = secrets.token_urlsafe(24)
     tshock = render_tshock_config(run.data_dir, run.rest_token)
     bridge = render_bridge_config(run.data_dir, takaro_env, run.rest_token, run.options.run_id)
@@ -511,3 +497,16 @@ def health_snapshot(container_name: str) -> dict[str, Any]:
         return dict(json.loads(completed.stdout.strip()))
     except json.JSONDecodeError:
         return {}
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    ready_line=READY_LINE,
+    check_ids=CHECK_IDS,
+    unsupported_checks=UNSUPPORTED_CHECKS,
+    before_boot=before_boot,
+    after_boot=after_boot,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    scan_runtime_identity=scan_runtime_identity,
+)

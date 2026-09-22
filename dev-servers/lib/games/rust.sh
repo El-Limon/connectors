@@ -43,12 +43,7 @@ install_rust() {
 deploy_rust() {
     local target tmp
     target="$(ds_target rust)"
-    # A staging directory beside the install rather than a RETURN trap: a RETURN trap set
-    # here fires a second time when ds_dispatch itself returns, by which point $tmp is gone
-    # and `set -u` kills deploy-connector.sh after a successful deploy.
-    tmp="$(ds_data_dir rust)/.build"
-    rm -rf "$tmp"
-    mkdir -p "$tmp"
+    ds_scratch_dir tmp
 
     # "Building" a Rust connector is compile-checking the source against the pinned game
     # and Carbon assemblies and stamping the version into it; Carbon compiles the result.
@@ -59,7 +54,6 @@ deploy_rust() {
     ds_maint deploy --game rust --target "$target" \
         --dest "$(ds_target_dest rust)" \
         --from "${tmp}/build-manifest.json"
-    rm -rf "$tmp"
     ds_ok "$(ds_target_dest rust)/carbon/plugins/TakaroConnector.cs"
 }
 

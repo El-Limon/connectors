@@ -13,11 +13,13 @@ are about what a maintainer, the rig and CI observe.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -567,7 +569,7 @@ def test_deploy_installs_the_plugin_as_takaroconnector_cs_and_removes_stale_vers
     assert not stale.exists()
     ledger = read_ledger(dest)
     assert ledger is not None
-    assert ledger.data["artifact"]["path"] == f"takaro/{ARTIFACT}"
+    assert ledger.data["artifacts"][0]["path"] == f"takaro/{ARTIFACT}"
     assert run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=repo)[0] == 0
 
     # A build for a target this directory does not hold is refused, and writes nothing.
@@ -677,12 +679,28 @@ def test_the_plugin_source_keeps_its_release_markers() -> None:
     # the client to speak first must not be left waiting for a greeting that never comes.
     assert re.search(r'LogInfo\("WebSocket connected"\);\s*(?://[^\n]*\n\s*)*SendIdentify\(\);', source)
     # Rust's console echoes neither a command it was handed nor a broadcast, so the
-    # connector is what records them.
-    assert 'LogInfo($"console: {command}")' in source
+    # connector is what records them -- the console one by verb and argument count only,
+    # because the arguments are whatever Takaro was asked to run.
+    assert 'LogInfo($"console: {CommandSummary(command)}")' in source
+    assert 'LogInfo($"console: {command}")' not in source
     assert 'LogInfo($"broadcast: {message}")' in source
-    # listEntities answers with display names, never the dev short name.
+    # listEntities answers with display names, never the dev short name. What those names
+    # come out as is `games/rust/tests/names/run.sh`, which compiles the region below and
+    # runs it; all this file can say is that the region exists and is what is called.
     assert not re.search(r'\["name"\]\s*=\s*shortName', source)
-    assert "Humanize(shortName)" in source
+    assert "EntityNames.EntityDisplayName(shortName)" in source
+    region = source[source.index("// takaro:names-begin") : source.index("// takaro:names-end")]
+    assert "RustPlugin" not in region and "UnityEngine" not in region, "the region has to compile alone"
+    vectors = dict(
+        line.split("\t", 1)
+        for line in (REPO_ROOT / "games/rust/tests/names/names.tsv").read_text(encoding="utf-8").splitlines()
+        if line
+    )
+    table = dict(re.findall(r'\{\s*"([^"]+)",\s*"([^"]+)"\s*\}', region[: region.index("// Prefab words")]))
+    assert table, "the curated table is what the harness covers"
+    missing = sorted(code for code in table if code not in vectors)
+    assert not missing, f"names.tsv does not cover {missing}"
+    assert all(vectors[code] == name for code, name in table.items())
 
 
 # --------------------------------------------------------------------------- scan
@@ -849,7 +867,7 @@ def test_compat_record_carries_the_steam_and_carbon_pins(run: Any, repo: Path, t
     assert code == 0, f"{err}\n{payload}"
     record = json.loads((out / f"takaro-{GAME}-{VERSION}.compat.json").read_text())
     entry = record["targets"][TARGET]
-    assert entry["verification"]["required"] == "build"
+    assert entry["verification"]["required"] == "contract"
     assert entry["verification"]["executed"] is None
     server_url = entry["inputs"]["server"]["url"]
     assert server_url.startswith("steam://app/258550/branch/public/build/25353106/")
@@ -894,7 +912,7 @@ def test_dev_servers_rust_rig_is_target_driven() -> None:
     assert "/takaro/start.sh" in compose
     assert "build:" not in compose
 
-    # AC3: nothing tracked reaches for the branch head or the moving Carbon alias. The
+    # Nothing tracked reaches for the branch head or the moving Carbon alias. The
     # prose that explains the pin lives in DEVELOPMENT.md, which is excluded.
     audited = subprocess.run(
         [
@@ -931,43 +949,27 @@ def test_a_bare_verify_run_selects_only_the_checks_this_target_proves() -> None:
     Without this, `takaro-maint verify --game rust` -- exactly as DEVELOPMENT.md documents it,
     with no `--checks` -- would select `connector-load` (a line only the Minecraft connector
     writes), `catalog-items`/`catalog-entities` (Minecraft spot values) and the base
-    `shutdown` (an exit code Rust's Unity teardown does not give), and fail on all four.
+    `shutdown` (an exit code Rust's Unity teardown does not give), and fail on all four. The
+    narrowing itself is the runner's (`test_verify_selection.py`); what Rust owes is the
+    declaration, and that it agrees with the target record.
     """
-    from dataclasses import dataclass, field
-
-    from takaro_maint.verify.runner import RunOptions, check_ids
+    from takaro_maint.verify.runner import check_ids, game_hooks
 
     record = json.loads((REPO_ROOT / f"catalog/{GAME}/targets/{TARGET}.json").read_text(encoding="utf-8"))
 
-    @dataclass
-    class StubTarget:
-        record: dict[str, Any] = field(default_factory=lambda: record)
+    declared = game_hooks(GAME)
+    selection = [check for check in check_ids(GAME) if check not in declared.unsupported_checks]
+    # Same rows as the record names, in the ladder's own order rather than the record's.
+    assert set(selection) == {"build", *record["verification"]["separate"]}
+    assert selection == [check for check in check_ids(GAME) if check in selection]
 
-    @dataclass
-    class StubRun:
-        target: Any = field(default_factory=StubTarget)
-        options: RunOptions = field(
-            default_factory=lambda: RunOptions(artifacts=Path("dist"), out=Path("reports"), run_id="r")
-        )
-
-    selection = hooks.default_checks(StubRun())
-    assert selection == ["build", *record["verification"]["separate"]]
-
-    run = StubRun()
-    hooks.before_boot(run, {})
-    assert run.options.only == selection
     for unreachable in ("connector-load", "catalog-items", "catalog-entities", "shutdown"):
         assert unreachable in check_ids(GAME), unreachable
-        assert unreachable not in run.options.only, unreachable
+        assert unreachable not in selection, unreachable
+        assert declared.unsupported_checks[unreachable], unreachable
     # Everything the hooks add, and the base checks Rust does pass, are in.
-    assert set(hooks.CHECK_IDS) <= set(run.options.only)
-    assert {"startup", "identify", "heartbeat", "players", "console"} <= set(run.options.only)
-
-    # An explicit --checks is left exactly as it was written: naming a check is asking for it.
-    named = StubRun()
-    named.options = RunOptions(artifacts=Path("dist"), out=Path("reports"), run_id="r", only=["shutdown"])
-    hooks.before_boot(named, {})
-    assert named.options.only == ["shutdown"]
+    assert set(hooks.CHECK_IDS) <= set(selection)
+    assert {"startup", "identify", "heartbeat", "players", "console"} <= set(selection)
 
 
 def test_a_failed_carbon_repair_leaves_the_install_and_its_ledger_intact(
@@ -1011,3 +1013,189 @@ def test_a_failed_carbon_repair_leaves_the_install_and_its_ledger_intact(
     assert install(run, repo, dest)[0] == 0
     assert list(dest.parent.glob(f"{dest.name}.stale-ledger")) == []
     assert run("ledger", "check", "--game", GAME, "--target", TARGET, "--dest", str(dest), repo=repo)[0] == 0
+
+
+# ------------------------------------------------------------------- archive containment
+
+
+def _carbon_like_tar(path: Path, entries: list[tarfile.TarInfo], payloads: dict[str, bytes]) -> None:
+    """A gzip tarball shaped like the Carbon asset, carrying the given entries verbatim."""
+    with tarfile.open(path, "w:gz") as tar:
+        for info in entries:
+            if info.isreg():
+                data = payloads.get(info.name, b"")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            else:
+                tar.addfile(info)
+
+
+def _link(name: str, linkname: str, *, hard: bool) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.LNKTYPE if hard else tarfile.SYMTYPE
+    info.linkname = linkname
+    return info
+
+
+def _regular(name: str, data: bytes = b"x") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.REGTYPE
+    info.size = len(data)
+    return info
+
+
+def _members(tmp_path: Path, entries: list[tarfile.TarInfo], root: Path) -> list[tarfile.TarInfo]:
+    from takaro_maint.games.rust import _safe_members
+
+    archive = tmp_path / "carbon-under-test.tar.gz"
+    _carbon_like_tar(archive, entries, {})
+    with tarfile.open(archive, "r:gz") as tar:
+        return _safe_members(tar, root)
+
+
+def test_a_symlink_resolving_beside_the_install_is_refused(tmp_path: Path) -> None:
+    """`<root>-evil` is not inside `<root>`, however much of a string prefix it is.
+
+    The containment test this replaces compared resolved paths as strings, so a link
+    pointing at a sibling directory whose name merely starts with the install's name was
+    accepted -- and the extraction then wrote the operator's own files through it.
+    """
+    root = tmp_path / "install"
+    root.mkdir()
+    (tmp_path / "install-evil").mkdir()
+    (tmp_path / "install-evil" / "pwned.txt").write_text("host bytes", encoding="utf-8")
+
+    with pytest.raises(Exception) as caught:
+        _members(tmp_path, [_link("carbon/link", "../../install-evil/pwned.txt", hard=False)], root)
+
+    assert "outside the install directory" in str(caught.value)
+    assert (tmp_path / "install-evil" / "pwned.txt").read_text(encoding="utf-8") == "host bytes"
+    assert list(root.rglob("*")) == []
+
+
+def test_a_hard_link_is_resolved_against_the_archive_root_not_the_entry(tmp_path: Path) -> None:
+    """A hard link's target is archive-relative; resolving it per-directory hid escapes."""
+    root = tmp_path / "install"
+    root.mkdir()
+
+    with pytest.raises(Exception) as caught:
+        _members(tmp_path, [_link("carbon/managed/link", "../outside", hard=True)], root)
+
+    assert "outside the install directory" in str(caught.value)
+
+
+def test_a_link_inside_the_install_is_accepted(tmp_path: Path) -> None:
+    root = tmp_path / "install"
+    root.mkdir()
+
+    entries = [
+        _regular("carbon/managed/Carbon.dll"),
+        _link("carbon/managed/alias.dll", "Carbon.dll", hard=False),
+        _link("carbon/hard.dll", "carbon/managed/Carbon.dll", hard=True),
+    ]
+
+    assert [member.name for member in _members(tmp_path, entries, root)] == [
+        "carbon/managed/Carbon.dll",
+        "carbon/managed/alias.dll",
+        "carbon/hard.dll",
+    ]
+
+
+def test_an_escaping_link_in_the_carbon_asset_fails_the_install(
+    run: Any, repo: Path, dd_log: Path, upstream: Any, tmp_path: Path
+) -> None:
+    """End to end: a hostile asset exits 5 and writes nothing outside the install."""
+    outside = tmp_path / "rust_dedicated-evil"
+    outside.mkdir()
+    (outside / "pwned.txt").write_text("host bytes", encoding="utf-8")
+
+    hostile = tmp_path / "hostile-carbon.tar.gz"
+    _carbon_like_tar(
+        hostile,
+        [_regular("carbon/managed/Carbon.dll"), _link("carbon/escape", "../../rust_dedicated-evil", hard=False)],
+        {},
+    )
+    upstream.add_file(ASSET_PATH, hostile)
+    record = read_target(repo)
+    record["inputs"]["carbon"]["sha256"] = fake.sha256_of(hostile)
+    record["inputs"]["carbon"]["size"] = hostile.stat().st_size
+    write_target(repo, record)
+
+    dest = tmp_path / "rust_dedicated"
+    code, payload, _ = install(run, repo, dest)
+
+    assert code == 5, payload
+    assert "outside the install directory" in json.dumps(payload)
+    assert sorted(p.name for p in outside.iterdir()) == ["pwned.txt"]
+    assert (outside / "pwned.txt").read_text(encoding="utf-8") == "host bytes"
+    assert not dest.exists()
+    assert staging_siblings(dest) == []
+
+
+# ------------------------------------------------------- the entity catalogue, directly
+
+
+class _EntityFake:
+    """Only what `check_catalog` reaches for: one canned answer."""
+
+    def __init__(self, entries: Any) -> None:
+        self.entries = entries
+
+    async def request(self, action: str, params: Any, timeout: float | None = None) -> Any:
+        del action, params, timeout
+        return self.entries
+
+
+def _entities(entries: Any) -> Any:
+    import asyncio
+
+    from takaro_maint.verify import checks
+
+    return asyncio.run(
+        checks.check_catalog(
+            _EntityFake(entries), "listEntities", "entities", hooks.ENTITY_SPOT, hooks._prefab_name_problems
+        )
+    )
+
+
+def test_the_entity_check_passes_on_curated_display_names() -> None:
+    result = _entities(
+        [
+            {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},
+            {"code": "scientistnpc_full_lr300", "name": "Scientist (LR-300)"},
+            {"code": "wolf2", "name": "Wolf"},
+        ]
+    )
+
+    assert result.status == "pass", result.detail["problems"]
+    assert result.detail["spotCheck"] == {
+        "code": "scientistnpc_heavy",
+        "expected": "Heavy Scientist",
+        "actual": "Heavy Scientist",
+    }
+
+
+def test_the_entity_check_fails_on_a_formatted_prefab_code() -> None:
+    """`Scientistnpc Heavy` is what the connector answered before the curated table."""
+    result = _entities(
+        [
+            {"code": "scientistnpc_heavy", "name": "Heavy Scientist"},
+            {"code": "scientistnpc_cargo_turret_lr300", "name": "Scientistnpc Cargo Turret Lr300"},
+            {"code": "wolf2", "name": "Wolf2"},
+        ]
+    )
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "2 of 3 names are formatted prefab codes" in problems
+    assert "scientistnpc_cargo_turret_lr300 -> Scientistnpc Cargo Turret Lr300" in problems
+
+
+def test_the_entity_spot_check_is_a_name_the_old_derivation_could_not_produce() -> None:
+    """`bear` -> `Bear` passed whether or not anything was curated; this one cannot."""
+    assert hooks.ENTITY_SPOT == ("scientistnpc_heavy", "Heavy Scientist")
+
+    result = _entities([{"code": "scientistnpc_heavy", "name": "Scientistnpc Heavy"}])
+
+    assert result.status == "fail"
+    assert any("Heavy Scientist" in problem for problem in result.detail["problems"])

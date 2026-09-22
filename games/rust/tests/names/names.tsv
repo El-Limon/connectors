@@ -1,0 +1,63 @@
+scientistnpc_arena	Arena Scientist
+scientistnpc_bradley	Bradley Scientist
+scientistnpc_bradley_heavy	Bradley Heavy Scientist
+scientistnpc_cargo	Cargo Ship Scientist
+scientistnpc_cargo_turret_any	Cargo Ship Turret Scientist
+scientistnpc_cargo_turret_lr300	Cargo Ship Turret Scientist (LR-300)
+scientistnpc_ch47_gunner	Chinook Gunner Scientist
+scientistnpc_excavator	Excavator Scientist
+scientistnpc_full_any	Scientist
+scientistnpc_full_lr300	Scientist (LR-300)
+scientistnpc_full_mp5	Scientist (MP5)
+scientistnpc_full_pistol	Scientist (Pistol)
+scientistnpc_full_shotgun	Scientist (Shotgun)
+scientistnpc_heavy	Heavy Scientist
+scientistnpc_junkpile_pistol	Junkpile Scientist
+scientistnpc_oilrig	Oil Rig Scientist
+scientistnpc_outbreak	Outbreak Scientist
+scientistnpc_patrol	Patrol Scientist
+scientistnpc_patrol_arctic	Arctic Patrol Scientist
+scientistnpc_peacekeeper	Peacekeeper Scientist
+scientistnpc_ptboat	Patrol Boat Scientist
+scientistnpc_rhib	RHIB Scientist
+scientistnpc_roam	Roaming Scientist
+scientistnpc_roam_nvg_variant	Roaming Scientist (Night Vision)
+scientistnpc_roamtethered	Tethered Roaming Scientist
+npc_bandit_guard	Bandit Guard
+npc_tunneldweller	Tunnel Dweller
+npc_tunneldwellerspawned	Tunnel Dweller (Spawned)
+npc_underwaterdweller	Underwater Dweller
+npcplayertest	NPC Player (Test)
+polarbear	Polar Bear
+bear	Bear
+bear_tutorial	Bear (Tutorial)
+boar	Boar
+chicken	Chicken
+chicken.tutorial	Chicken (Tutorial)
+stag	Stag
+wolf	Wolf
+wolf2	Wolf
+ridablehorse	Horse
+ridablehorse2	Horse
+simpleshark	Shark
+shark_unused	Shark (Unused)
+zombie	Zombie
+scarecrow	Scarecrow
+scarecrow_dungeon	Scarecrow (Dungeon)
+scarecrow_dungeonnoroam	Scarecrow (Dungeon, Stationary)
+gingerbread_dungeon	Gingerbread Man (Dungeon)
+gingerbread_meleedungeon	Gingerbread Man (Melee Dungeon)
+frankensteinpet	Frankenstein Pet
+apartment_vendor	Apartment Vendor
+bandit_conversationalist	Bandit Conversationalist
+bandit_shopkeeper	Bandit Shopkeeper
+bandit_shopkeeper_sitting	Bandit Shopkeeper (Sitting)
+boat_shopkeeper	Boat Shopkeeper
+stables_shopkeeper	Stables Shopkeeper
+waterwell_shopkeeper	Water Well Shopkeeper
+missionprovider_bandit_a	Bandit Mission Provider A
+missionprovider_floatingcity_a	Floating City Mission Provider A
+missionprovider_test	Mission Provider (Test)
+missionprovider_tutorial	Mission Provider (Tutorial)
+apartment_security	Apartment Security
+farm_access_guard	Farm Access Guard

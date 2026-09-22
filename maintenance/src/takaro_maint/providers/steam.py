@@ -109,6 +109,9 @@ class _Watch:
                 f"the Steam watch block of {where} declares 'watch.os' = {watch.get('os')!r}; "
                 "it must be linux, windows or macos"
             )
+        #: What this game needs said about a new build before anyone treats it as supported.
+        #: Declared in `catalog/<game>/game.json`; empty means the generic sentence below.
+        self.readiness_note = str(watch.get("readinessNote") or "")
         self.depots = [str(depot) for depot in watch.get("depots") or []]
         if not self.depots:
             raise UsageError(f"the Steam watch block of {where} declares no 'watch.depots'; a build is its depots")
@@ -288,6 +291,7 @@ class SteamProvider(Provider):
             "history": "heads-only",
             "observationLimit": OBSERVATION_LIMIT,
             "listing": {"command": (f"steamcmd +login anonymous +app_info_update 1 +app_info_print {watch.app} +quit")},
+            **({"readinessNote": watch.readiness_note} if watch.readiness_note else {}),
         }
 
     def observe(self, source: dict[str, Any]) -> ProviderResult:
@@ -517,10 +521,17 @@ class SteamProvider(Provider):
                     f"| Steam change number | {facts.get('changeNumber', dash)} |",
                 ],
             ),
-            "readinessLines": [
-                "This game has no framework layer: the connector compiles against the server assemblies "
-                "fetched by `takaro-maint steam references`. Nothing upstream is waited for."
-            ],
+            # A game whose connector needs more than a recompile says so in its watch block,
+            # and that is what the issue carries. The generic sentence is the default, not
+            # the only thing a maintainer is ever told.
+            "readinessLines": (
+                [str(facts["readinessNote"])]
+                if facts.get("readinessNote")
+                else [
+                    "This game has no framework layer: the connector compiles against the server assemblies "
+                    "fetched by `takaro-maint steam references`. Nothing upstream is waited for."
+                ]
+            ),
             "nextSteps": steps,
         }
 

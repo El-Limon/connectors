@@ -261,10 +261,15 @@ def _pin(args: Any) -> int:
 
     published = _metadata(spec, branch, observed, cache) if metadata else None
     buildid = int(published["buildid"]) if published is not None else args.buildid
-    snippet = _snippet(spec, observed, buildid, recorded)
+    snippet = _snippet(spec, observed, buildid, recorded, branch=branch)
     stale = _stale_files(spec, observed, recorded)
     written = None
     if args.write:
+        if branch != spec.branch and args.depot:
+            # A record pins one branch for all of its depots, and the depots this run did
+            # not read keep the manifests of the branch they were pinned to. Writing a new
+            # branch label over them would claim a head none of them was observed on.
+            raise UsageError("a record pins one branch; re-pin every depot when changing branch")
         if stale:
             raise ConflictError(
                 "these declared files changed in the new manifest and no hash was recorded for them: "
@@ -344,12 +349,23 @@ def _snippet(
     observed: dict[str, dict[str, Any]],
     buildid: int | None,
     recorded: dict[str, dict[str, Any]],
+    *,
+    branch: str,
 ) -> dict[str, Any]:
-    """The ``inputs.<name>`` object this pin would write."""
+    """The ``inputs.<name>`` object this pin would write.
+
+    ``--depot`` narrows what was *observed*, never what the record holds: a depot this run
+    did not read keeps the row it is pinned to, or a `--write` of a single-depot re-pin
+    would silently drop every other depot from the install.
+    """
     depots = {
-        depot: {"manifest": entry["manifest"], "size": entry["size"], "files": entry["files"]}
-        for depot, entry in sorted(observed.items())
+        **{depot: dict(row) for depot, row in spec.depots.items()},
+        **{
+            depot: {"manifest": entry["manifest"], "size": entry["size"], "files": entry["files"]}
+            for depot, entry in observed.items()
+        },
     }
+    depots = {depot: depots[depot] for depot in sorted(depots)}
     files = {path: dict(entry) for path, entry in sorted(spec.files.items())}
     for path, entry in recorded.items():
         files[path] = dict(entry)
@@ -358,7 +374,7 @@ def _snippet(
         "source": "steam",
         "hashOrigin": "self-recorded",
         "app": spec.app,
-        "branch": spec.branch,
+        "branch": branch,
         "buildid": int(buildid) if buildid is not None else spec.buildid,
         "os": spec.os_,
         "arch": spec.arch,

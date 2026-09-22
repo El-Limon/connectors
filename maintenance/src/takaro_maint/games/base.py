@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from ..exit_codes import ConflictError
 
 
 @dataclass
@@ -54,13 +57,81 @@ class GameAdapter(Protocol):
         """Paths under the install dir that an install must never replace."""
         ...
 
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
+        """This game's own install, or ``None`` to let the generic one run."""
+        ...
+
+    def after_deploy(self, dest: Path, component: dict[str, Any], artifact: Path) -> None:
+        """Anything the artifact needs once it is in place -- unpacking it, say."""
+        ...
+
+    def container_mounts(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
+        """The ``-v`` arguments a verification run's server container needs."""
+        ...
+
+    def container_options(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
+        """Extra ``docker run`` options, appended after the runner's own."""
+        ...
+
+    def container_command(self, resolved: dict[str, Any], data_dir: Path) -> list[str] | None:
+        """Arguments after the image reference, or ``None`` for the image's own Cmd."""
+        ...
+
+
+class BaseAdapter:
+    """The defaults every adapter inherits, so the call sites can be plain method calls.
+
+    These used to be looked up with ``getattr(adapter, "container_options", None)``, which
+    meant a hook a game spelled differently -- or one a refactor renamed -- was silently
+    never called: Conan's ``container_options`` was declared and never reached a
+    ``docker run``. Subclassing makes every hook a real method with a checked signature.
+    """
+
+    def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
+        """``None``: this game installs through the generic Steam/catalog path."""
+        return None
+
+    def after_deploy(self, dest: Path, component: dict[str, Any], artifact: Path) -> None:
+        """Nothing: the artifact is loaded as it lands."""
+        return None
+
+    def container_mounts(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
+        return [f"{data_dir}:/data"]
+
+    def container_options(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
+        return []
+
+    def container_command(self, resolved: dict[str, Any], data_dir: Path) -> list[str] | None:
+        """``None``: the image's own Cmd is what this server starts with."""
+        return None
+
+
+def open_zip(artifact: Path) -> zipfile.ZipFile:
+    """``zipfile.ZipFile``, with a non-zip artifact as a deploy conflict rather than a crash.
+
+    The manifest's sha256 says the bytes are the ones that were built; it says nothing
+    about them being a zip. A `BadZipFile` escaping an `after_deploy` is a traceback and
+    exit 1, which reads as a bug in the tool rather than a bad artifact.
+    """
+    try:
+        return zipfile.ZipFile(artifact)
+    except zipfile.BadZipFile as exc:
+        raise ConflictError(f"{artifact.name} is not a zip archive; nothing was extracted ({exc})") from exc
+
 
 def common_env(resolved: dict[str, Any], prefix: str) -> dict[str, str]:
-    """The keys every game exposes, before its own additions."""
-    return {
+    """The keys every game exposes, before its own additions.
+
+    ``_JAVA`` only exists for a target that names a JVM: ``str(None)`` would have written
+    the literal ``JAVA=None`` into the env file the rig sources.
+    """
+    env = {
         f"{prefix}_TARGET": str(resolved["id"]),
         f"{prefix}_FINGERPRINT": str(resolved["fingerprint"]),
         f"{prefix}_FP16": str(resolved["fp16"]),
         f"{prefix}_IMAGE": str(resolved["containerRef"]),
-        f"{prefix}_JAVA": str(resolved["runtime"]["java"]),
     }
+    java = resolved["runtime"].get("java")
+    if java is not None:
+        env[f"{prefix}_JAVA"] = str(int(java))
+    return env

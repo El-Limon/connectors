@@ -11,10 +11,9 @@
 # The stubs here stand in for takaro-maint and curl. sha256sum, zip extraction and the JSON
 # read are real, because those are the checks being tested.
 #
-# Before #161 this file also covered downloading and repairing a SteamCMD tarball and
-# falling back from the Linux depot to the Windows one. Both are gone: the references come
-# from a pinned manifest through a pinned DepotDownloader, and there is no fallback -- a
-# pinned build that Steam no longer serves is a re-pin, not a retry somewhere else.
+# There is no SteamCMD tarball and no depot fallback here: the references come from a
+# pinned manifest through a pinned DepotDownloader, and a pinned build Steam does not
+# serve is a re-pin, not a retry somewhere else.
 set -uo pipefail
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"

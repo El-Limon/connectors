@@ -44,12 +44,13 @@ Limits this provider states rather than papers over
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 import urllib.error
 from dataclasses import replace
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 from .. import channels, net, observations, readiness
 from ..exit_codes import UpstreamUnavailable, UsageError
@@ -98,10 +99,12 @@ def _sort_key(tag: str) -> list[tuple[int, int, str]]:
     """Numeric-aware ordering of a dotted/dashed tag, newest last.
 
     ``6.1.0`` sorts after ``6.0.0`` and after ``6.0.0-pre3`` because a numeric part
-    compares as a number and a word compares after every number of the same position.
-    Nothing here decides that one *release* is newer than another — only that, inside one
-    channel whose tags share a grammar, this is the order the registry's own version
-    numbers give.
+    compares as a number and a word compares *before* every number of the same position:
+    a suffix is a prerelease of the version it hangs off, so ``6.1.0`` has to beat
+    ``6.1.0-pre3`` while ``6.1.0.1`` still beats ``6.1.0``. A terminator closes every key
+    so the shorter of two otherwise-equal tags is the smaller one. Nothing here decides
+    that one *release* is newer than another — only that, inside one channel whose tags
+    share a grammar, this is the order the registry's own version numbers give.
     """
     key: list[tuple[int, int, str]] = []
     for part in re.split(r"[.-]", tag):
@@ -109,10 +112,24 @@ def _sort_key(tag: str) -> list[tuple[int, int, str]]:
         # does not while the whole word is compared as a string.
         for token in re.findall(r"\d+|\D+", part):
             if token.isdigit():
-                key.append((0, int(token), ""))
+                key.append((2, int(token), ""))
             else:
-                key.append((1, 0, token))
+                key.append((0, 0, token))
+    key.append((1, 0, ""))
     return key
+
+
+def _refuse_a_hostile_realm(realm: str) -> None:
+    """A token realm has to be an https URL to a named host, or it is not followed at all."""
+    parsed = urlparse(realm)
+    host = parsed.hostname or ""
+    literal = True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        literal = False
+    if parsed.scheme != "https" or not host or parsed.username or parsed.password or host == "localhost" or literal:
+        raise UpstreamUnavailable(f"the registry's bearer realm {realm!r} is not an https URL to a named host")
 
 
 class OciRegistryProvider(Provider):
@@ -141,11 +158,21 @@ class OciRegistryProvider(Provider):
         return {match.group("key"): match.group("value") for match in _CHALLENGE_RE.finditer(str(header))}
 
     def _authorize(self, challenge: dict[str, str]) -> str:
-        """Exchange an anonymous bearer challenge for a token. The token is never printed."""
+        """Exchange an anonymous bearer challenge for a token. The token is never printed.
+
+        The realm comes from a ``WWW-Authenticate`` header, which is to say from whoever
+        answered the request -- so it is a URL an attacker controls. It used to be followed
+        as given, which is a fetch of ``file:///etc/passwd`` or of a cloud metadata service
+        for the price of one hostile 401, and the rest of the challenge was pasted into the
+        query string unencoded, so a value carrying ``&`` or ``=`` rewrote it.
+        """
         realm = challenge.get("realm")
         if not realm:
             raise UpstreamUnavailable("the registry's bearer challenge names no realm")
-        query = "&".join(f"{key}={value}" for key, value in sorted(challenge.items()) if key != "realm" and value)
+        _refuse_a_hostile_realm(realm)
+        query = urlencode(
+            sorted((key, value) for key, value in challenge.items() if key != "realm" and value), safe=":/"
+        )
         url = f"{realm}?{query}" if query else realm
         try:
             body, _ = self._open(url, {"Accept": "application/json"})
@@ -285,7 +312,8 @@ class OciRegistryProvider(Provider):
             for tag in matching:
                 document, digest, body, url = self._manifest(base, repository, tag)
                 platform_digest = self._platform_digest(document, digest, want, url)
-                rev = f"{tag}.{digest.split(':', 1)[1][:8]}"
+                # An OCI tag may carry `_`, which the observation schema's `rev` does not.
+                rev = observations.safe_rev(f"{tag}.{digest.split(':', 1)[1][:8]}")
                 facts: dict[str, Any] = {
                     "tag": tag,
                     "digest": digest,

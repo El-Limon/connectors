@@ -220,6 +220,12 @@ def test_scan_covers_the_pinned_head_and_files_a_moved_one(
     issue = PROVIDER.presentation(head, "Enshrouded")
     assert issue is not None
     assert issue["title"] == "Enshrouded public: build 23999999 needs a target"
+    # `watch.readinessNote` was config nothing read: an Enshrouded build moving under the
+    # pinned code signatures is exactly the case the generic sentence gets wrong.
+    note = json.loads((repo / "catalog" / GAME / "game.json").read_text())["sources"]["steam"]["watch"]["readinessNote"]
+    assert head.facts["readinessNote"] == note
+    assert issue["readinessLines"] == [note]
+    assert "no framework layer" not in " ".join(issue["readinessLines"])
 
 
 def _served(root: Path) -> dict[str, Any]:
@@ -534,8 +540,9 @@ def test_deploy_places_the_dll_and_the_sidecar_folder_and_refuses_escapes(
     # The unpack stages beside the live folder and swaps; no staging is left behind.
     assert not [p.name for p in unpacked.parent.iterdir() if p.name.startswith(".")]
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    # The known core gap: `deploy` records only the last role it placed.
-    assert ledger["artifact"]["role"] == "sidecar"
+    by_role = {row["role"]: row["path"] for row in ledger["artifacts"]}
+    assert by_role["server-plugin"].endswith(PLUGIN_ZIP)
+    assert by_role["sidecar"].endswith(SIDECAR_ZIP)
 
     for broken in ({"escape": True}, {"no_dll": True}):
         shutil.rmtree(dest / "takaro" / "plugin")
@@ -631,7 +638,7 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
     from takaro_maint import paths
     from takaro_maint.exit_codes import ConflictError
     from takaro_maint.games.enshrouded import plugin_token
-    from takaro_maint.verify.runner import RunOptions, check_ids
+    from takaro_maint.verify.runner import RunOptions, check_ids, game_hooks
 
     class Target:
         record = _record()
@@ -649,21 +656,23 @@ def test_verify_hooks_prepare_the_run_and_match_the_recorded_lines(tmp_path: Pat
 
     # A bare `verify --game enshrouded` runs this target's own checks and nothing else: the
     # base protocol ladder watches the game container for a connector that is in the sidecar.
-    assert run.options.only == ["build", *Target.record["verification"]["separate"]]
-    assert set(hooks.CHECK_IDS) < set(run.options.only)
-    assert "startup" in run.options.only
-    for base in ("connector-load", "identify", "heartbeat", "players", "catalog-items", "console", "shutdown"):
-        assert base not in run.options.only
-    # One RunOptions is shared by every target of a command; narrowing replaces, never mutates.
-    shared = RunOptions(artifacts=tmp_path, out=tmp_path, run_id="test")
-    other = Run()
-    other.options = shared
-    hooks.before_boot(other, takaro_env)
-    assert shared.only is None and other.options.only is not None
-    # An explicit --checks is taken literally, including a check this game cannot pass.
-    named = Run(only=["stop"])
-    hooks.before_boot(named, takaro_env)
-    assert named.options.only == ["stop"]
+    # The runner narrows the selection now, so what these hooks owe is the declaration.
+    declared = game_hooks("enshrouded")
+    assert set(declared.unsupported_checks) == {
+        "connector-load",
+        "identify",
+        "heartbeat",
+        "players",
+        "catalog-items",
+        "catalog-entities",
+        "console",
+        "shutdown",
+    }
+    selected = [check for check in check_ids("enshrouded") if check not in declared.unsupported_checks]
+    # The record and the hooks cannot drift: what a bare run selects is what the target says
+    # it verifies separately, plus the two rows every game climbs.
+    assert selected == ["build", "startup", *hooks.CHECK_IDS]
+    assert selected == ["build", *Target.record["verification"]["separate"]]
 
     assert written == tmp_path / "takaro" / "plugin.json"
     assert oct(written.stat().st_mode)[-3:] == "600"
@@ -943,3 +952,88 @@ def test_compat_record_carries_both_roles_and_the_steam_pin(run: Any, repo: Path
     assert (out / "takaro-enshrouded-plugin.zip").read_bytes() == (out / PLUGIN_ZIP).read_bytes()
     assert (out / "takaro-enshrouded-sidecar.zip").read_bytes() == (out / SIDECAR_ZIP).read_bytes()
     assert (out / "SHA256SUMS").is_file()
+
+
+# ------------------------------------------------------- the catalogue check, directly
+
+
+class _CatalogFake:
+    """Only what `_check_catalog` reaches for: one canned answer per action."""
+
+    def __init__(self, answers: dict[str, Any]) -> None:
+        self.answers = answers
+
+    async def request(self, action: str, params: Any, timeout: float | None = None) -> Any:
+        del params, timeout
+        return self.answers[action]
+
+
+def _catalog(answers: dict[str, Any]) -> Any:
+    import asyncio
+
+    return asyncio.run(hooks._check_catalog(None, _CatalogFake(answers)))
+
+
+def _derived_answers() -> dict[str, Any]:
+    """What the mod answers after names.cpp: items keep their baked name, the rest derive."""
+    return {
+        "listItems": [{"code": "Sword_Bronze", "name": "Sword Bronze"}],
+        "listEntities": [
+            {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+            {"code": "Animal_Baby_T1_Goat", "name": "Baby Goat (Tier 1)"},
+            {"code": "1_Player_AG2", "name": "Player"},
+        ],
+        "listLocations": [
+            {"code": "8kMapLabel_deepforest_Town_07_Whitewind", "name": "Whitewind"},
+            {"code": "Prop_OpenWorld_SavePoint", "name": "Open World Save Point"},
+        ],
+    }
+
+
+def test_the_catalog_check_passes_on_derived_display_names() -> None:
+    result = _catalog(_derived_answers())
+
+    assert result.status == "pass", result.detail["problems"]
+    assert result.detail["counts"] == {"listItems": 1, "listEntities": 3, "listLocations": 2}
+
+
+def test_the_catalog_check_fails_on_a_formatted_dev_code() -> None:
+    """`1 Player AG2` is what the old underscore-opening derivation put in front of an operator."""
+    answers = _derived_answers()
+    answers["listEntities"] = [
+        {"code": "Enemy_Skeleton_Heavy", "name": "Skeleton Heavy"},
+        {"code": "1_Player_AG2", "name": "1 Player AG2"},
+    ]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "1 of 2" in problems
+    assert "1_Player_AG2 -> 1 Player AG2" in problems
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Cat Black AG2", "Baby T1 Goat", "Placement Helper Pet Cat", "Skeleton_Heavy", "8k Map Label Whitewind"],
+)
+def test_every_predicate_the_corpus_test_asserts_is_asserted_on_the_live_answer(name: str) -> None:
+    """The C++ test proves the shipped table; this proves the server did not regress past it."""
+    answers = _derived_answers()
+    answers["listLocations"] = [{"code": "Some_Template_Code", "name": name}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail", name
+    assert "listLocations" in " ".join(result.detail["problems"])
+
+
+def test_an_item_name_that_is_still_a_dev_code_is_named() -> None:
+    answers = _derived_answers()
+    answers["listItems"] = [{"code": "Sword_Bronze", "name": "Sword_Bronze"}]
+
+    result = _catalog(answers)
+
+    assert result.status == "fail"
+    problems = " ".join(result.detail["problems"])
+    assert "names are the code itself" in problems

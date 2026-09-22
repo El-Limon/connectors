@@ -580,7 +580,7 @@ namespace Oxide.Plugins
                 arr.Add(new JObject
                 {
                     ["code"] = shortName,
-                    ["name"] = Humanize(shortName),
+                    ["name"] = EntityNames.EntityDisplayName(shortName),
                     ["description"] = ""
                 });
             }
@@ -588,27 +588,182 @@ namespace Oxide.Plugins
             return arr;
         }
 
-        // Entity prefabs have no localised display name the way items do — `bear`,
-        // `scientistnpc_heavy`, `wolf2` is all the server knows them by. Takaro's
-        // catalogue is read by humans, so the short name is turned into one here rather
-        // than shipped raw; the untouched short name stays in `code`.
-        private static string Humanize(string shortName)
+        // What a console command looks like in the log: the verb, and how many arguments
+        // came with it. `console: help` is unchanged; `say <anything>` never appears.
+        private static string CommandSummary(string command)
         {
-            if (string.IsNullOrEmpty(shortName)) return shortName;
-
-            var parts = shortName.Split(new[] { '_', '-', '.' }, StringSplitOptions.RemoveEmptyEntries);
-            var words = new List<string>(parts.Length);
-            foreach (var part in parts)
-            {
-                if (part.Equals("npc", StringComparison.OrdinalIgnoreCase))
-                {
-                    words.Add("NPC");
-                    continue;
-                }
-                words.Add(char.ToUpperInvariant(part[0]) + part.Substring(1));
-            }
-            return words.Count == 0 ? shortName : string.Join(" ", words);
+            var parts = (command ?? "").Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return "";
+            return parts.Length == 1 ? parts[0] : parts[0] + " (" + (parts.Length - 1) + " args)";
         }
+
+        // takaro:names-begin
+        // Entity prefabs have no localised display name the way items do -- `bear`,
+        // `scientistnpc_heavy`, `wolf2` is all the server knows them by. Opening the
+        // separators and capitalising, which is what this used to do, put "Scientistnpc
+        // Heavy" and "Missionprovider Floatingcity A" in the one field Takaro shows a
+        // human: a formatted dev code, not a name.
+        //
+        // The table is the prefab list a real server returned; anything outside it goes
+        // through the rules below it. Nothing in this region touches Rust, Carbon or
+        // Unity, and the markers are what `tests/names/run.sh` lifts out to compile and
+        // run it on its own -- the behaviour is proven there, not grepped for.
+        private static class EntityNames
+        {
+            private static readonly Dictionary<string, string> Table =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "scientistnpc_arena", "Arena Scientist" },
+                    { "scientistnpc_bradley", "Bradley Scientist" },
+                    { "scientistnpc_bradley_heavy", "Bradley Heavy Scientist" },
+                    { "scientistnpc_cargo", "Cargo Ship Scientist" },
+                    { "scientistnpc_cargo_turret_any", "Cargo Ship Turret Scientist" },
+                    { "scientistnpc_cargo_turret_lr300", "Cargo Ship Turret Scientist (LR-300)" },
+                    { "scientistnpc_ch47_gunner", "Chinook Gunner Scientist" },
+                    { "scientistnpc_excavator", "Excavator Scientist" },
+                    { "scientistnpc_full_any", "Scientist" },
+                    { "scientistnpc_full_lr300", "Scientist (LR-300)" },
+                    { "scientistnpc_full_mp5", "Scientist (MP5)" },
+                    { "scientistnpc_full_pistol", "Scientist (Pistol)" },
+                    { "scientistnpc_full_shotgun", "Scientist (Shotgun)" },
+                    { "scientistnpc_heavy", "Heavy Scientist" },
+                    { "scientistnpc_junkpile_pistol", "Junkpile Scientist" },
+                    { "scientistnpc_oilrig", "Oil Rig Scientist" },
+                    { "scientistnpc_outbreak", "Outbreak Scientist" },
+                    { "scientistnpc_patrol", "Patrol Scientist" },
+                    { "scientistnpc_patrol_arctic", "Arctic Patrol Scientist" },
+                    { "scientistnpc_peacekeeper", "Peacekeeper Scientist" },
+                    { "scientistnpc_ptboat", "Patrol Boat Scientist" },
+                    { "scientistnpc_rhib", "RHIB Scientist" },
+                    { "scientistnpc_roam", "Roaming Scientist" },
+                    { "scientistnpc_roam_nvg_variant", "Roaming Scientist (Night Vision)" },
+                    { "scientistnpc_roamtethered", "Tethered Roaming Scientist" },
+                    { "npc_bandit_guard", "Bandit Guard" },
+                    { "npc_tunneldweller", "Tunnel Dweller" },
+                    { "npc_tunneldwellerspawned", "Tunnel Dweller (Spawned)" },
+                    { "npc_underwaterdweller", "Underwater Dweller" },
+                    { "npcplayertest", "NPC Player (Test)" },
+                    { "polarbear", "Polar Bear" },
+                    { "bear", "Bear" },
+                    { "bear_tutorial", "Bear (Tutorial)" },
+                    { "boar", "Boar" },
+                    { "chicken", "Chicken" },
+                    { "chicken.tutorial", "Chicken (Tutorial)" },
+                    { "stag", "Stag" },
+                    { "wolf", "Wolf" },
+                    { "wolf2", "Wolf" },
+                    { "ridablehorse", "Horse" },
+                    { "ridablehorse2", "Horse" },
+                    { "simpleshark", "Shark" },
+                    { "shark_unused", "Shark (Unused)" },
+                    { "zombie", "Zombie" },
+                    { "scarecrow", "Scarecrow" },
+                    { "scarecrow_dungeon", "Scarecrow (Dungeon)" },
+                    { "scarecrow_dungeonnoroam", "Scarecrow (Dungeon, Stationary)" },
+                    { "gingerbread_dungeon", "Gingerbread Man (Dungeon)" },
+                    { "gingerbread_meleedungeon", "Gingerbread Man (Melee Dungeon)" },
+                    { "frankensteinpet", "Frankenstein Pet" },
+                    { "apartment_vendor", "Apartment Vendor" },
+                    { "bandit_conversationalist", "Bandit Conversationalist" },
+                    { "bandit_shopkeeper", "Bandit Shopkeeper" },
+                    { "bandit_shopkeeper_sitting", "Bandit Shopkeeper (Sitting)" },
+                    { "boat_shopkeeper", "Boat Shopkeeper" },
+                    { "stables_shopkeeper", "Stables Shopkeeper" },
+                    { "waterwell_shopkeeper", "Water Well Shopkeeper" }
+                };
+
+            // Prefab words that are several words glued together, or an abbreviation that
+            // capitalising alone would mangle into `Lr300`, `Ch47`, `Mp5`.
+            private static readonly Dictionary<string, string> Glued =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "scientistnpc", "Scientist" },
+                    { "tunneldweller", "Tunnel Dweller" },
+                    { "underwaterdweller", "Underwater Dweller" },
+                    { "polarbear", "Polar Bear" },
+                    { "ridablehorse", "Horse" },
+                    { "simpleshark", "Shark" },
+                    { "waterwell", "Water Well" },
+                    { "missionprovider", "Mission Provider" },
+                    { "meleedungeon", "Melee Dungeon" },
+                    { "dungeonnoroam", "Dungeon, Stationary" },
+                    { "floatingcity", "Floating City" },
+                    { "lr300", "LR-300" },
+                    { "mp5", "MP5" },
+                    { "rhib", "RHIB" },
+                    { "ch47", "CH-47" },
+                    { "nvg", "Night Vision" },
+                    { "ptboat", "Patrol Boat" },
+                    { "oilrig", "Oil Rig" },
+                    { "npc", "NPC" }
+                };
+
+            // Not what the thing is but which copy of it, so these become a parenthesised
+            // suffix rather than a word in the middle of the name.
+            private static readonly Dictionary<string, string> Variants =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "tutorial", "Tutorial" },
+                    { "unused", "Unused" },
+                    { "test", "Test" },
+                    { "spawned", "Spawned" }
+                };
+
+            private static readonly char[] Separators = { '_', '-', '.' };
+
+            public static string EntityDisplayName(string shortName)
+            {
+                if (string.IsNullOrEmpty(shortName)) return shortName;
+
+                string known;
+                if (Table.TryGetValue(shortName, out known)) return known;
+
+                var parts = shortName.Split(Separators, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0) return shortName;
+
+                // `missionprovider_bandit_a` is the bandit camp's mission provider, variant
+                // A: the role belongs between the place and the variant, not at the front.
+                var provider = parts[0].Equals("missionprovider", StringComparison.OrdinalIgnoreCase);
+                var words = new List<string>(parts.Length);
+                var suffixes = new List<string>();
+
+                for (var i = provider ? 1 : 0; i < parts.Length; i++)
+                {
+                    string variant;
+                    if (Variants.TryGetValue(parts[i], out variant))
+                    {
+                        suffixes.Add(variant);
+                        continue;
+                    }
+                    words.Add(Word(parts[i]));
+                }
+                if (provider) words.Insert(words.Count > 0 ? 1 : 0, "Mission Provider");
+
+                var name = string.Join(" ", words.ToArray());
+                if (suffixes.Count > 0) name += " (" + string.Join(", ", suffixes.ToArray()) + ")";
+                return name.Length == 0 ? shortName : name;
+            }
+
+            // One prefab word. A lone letter is a variant label (`_a`, `_b`); a trailing
+            // copy number is dropped, because `wolf2` is the same animal as `wolf`.
+            private static string Word(string part)
+            {
+                string glued;
+                if (Glued.TryGetValue(part, out glued)) return glued;
+                if (part.Length == 1) return part.ToUpperInvariant();
+
+                var end = part.Length;
+                while (end > 0 && char.IsDigit(part[end - 1])) end--;
+                if (end > 0 && end < part.Length && char.IsLetter(part[end - 1]))
+                {
+                    var stem = part.Substring(0, end);
+                    if (Glued.TryGetValue(stem, out glued)) return glued;
+                    part = stem;
+                }
+                return char.ToUpperInvariant(part[0]) + part.Substring(1);
+            }
+        }
+        // takaro:names-end
 
         private JToken HandleListLocations()
         {
@@ -641,8 +796,10 @@ namespace Oxide.Plugins
             // Rust's console prints nothing for most commands it is handed (`say` among
             // them), so this line is the only record an operator has of what Takaro ran on
             // their server -- and the only thing outside the connector that shows a console
-            // round trip happened at all.
-            LogInfo($"console: {command}");
+            // round trip happened at all. Only the verb goes in it: the arguments are
+            // whatever Takaro was asked to run, up to and including a password an admin
+            // typed, and this log is read by anyone who can read the server console.
+            LogInfo($"console: {CommandSummary(command)}");
             try
             {
                 var result = ConsoleSystem.Run(ConsoleSystem.Option.Server, command);

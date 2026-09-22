@@ -86,6 +86,51 @@ def test_steam_pin_reports_the_head_and_flags_a_changed_manifest(run: Any, repo:
     assert "-manifest-only" in fake.argv_log(dd_log)[0]
 
 
+def test_a_stale_listing_left_in_the_output_directory_is_never_this_run_s_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dd_log: Path
+) -> None:
+    """A listing that was already there is a leftover, and reporting it re-pins the old build."""
+    from takaro_maint.exit_codes import UpstreamUnavailable
+    from takaro_maint.steam import depotdownloader as dd
+
+    for name, value in fake.environment(tmp_path, dd_log, FAKE_DD_ROOT=str(fake.DEPOTS)).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("FAKE_DD_NO_LISTING", "1")
+
+    out = tmp_path / "out"
+    stale = out / "depots" / fake.DEPOT / fake.PINNED_MANIFEST
+    stale.mkdir(parents=True)
+    (stale / f"manifest_{fake.DEPOT}_{fake.PINNED_MANIFEST}.txt").write_text("stale\n", encoding="utf-8")
+
+    with pytest.raises(UpstreamUnavailable) as caught:
+        dd.manifest_only(
+            fake.APP,
+            fake.DEPOT,
+            "public",
+            manifest=None,
+            os_="linux",
+            arch="amd64",
+            out=out,
+            cache=tmp_path / "cache",
+            log=tmp_path / "dd.log",
+        )
+
+    assert fake.DEPOT in caught.value.message
+
+
+def test_steam_pin_fails_rather_than_re_pinning_what_it_could_not_read(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = fake.read_target(repo)
+    monkeypatch.setenv("FAKE_DD_NO_LISTING", "1")
+
+    code, payload, _ = run("steam", "pin", "--game", GAME, "--target", TARGET, "--write", repo=repo)
+
+    assert code == 4, payload
+    assert fake.DEPOT in payload["error"]
+    assert fake.read_target(repo) == before, "a failed read leaves the record exactly as it was"
+
+
 def test_steam_pin_refuses_to_write_hashes_it_has_not_recorded(run: Any, repo: Path, dd_log: Path) -> None:
     code, payload, _ = run("steam", "pin", "--game", GAME, "--target", TARGET, "--write", repo=repo)
 
@@ -116,6 +161,126 @@ def test_steam_pin_writes_only_the_input_it_re_pinned(run: Any, repo: Path, dd_l
     assert {key: value for key, value in after.items() if key != "inputs"} == {
         key: value for key, value in before.items() if key != "inputs"
     }
+
+
+SECOND_DEPOT = "294423"
+#: The head `latest_experimental` publishes for the depot this target pins.
+EXPERIMENTAL_MANIFEST = "3000000000000000001"
+
+
+def add_second_depot(repo: Path) -> dict[str, Any]:
+    """A second pinned depot the fixtures serve nothing for, so `--depot` has to narrow."""
+    record = fake.read_target(repo)
+    record["inputs"]["server"]["depots"][SECOND_DEPOT] = {
+        "manifest": "2500000000000000002",
+        "size": 4096,
+        "files": 3,
+    }
+    fake.write_target(repo, record)
+    return record
+
+
+def test_steam_pin_write_keeps_the_depots_it_did_not_read(run: Any, repo: Path, dd_log: Path) -> None:
+    """`--depot` narrows what is observed, never what the record holds.
+
+    The snippet was built from the observation alone, so re-pinning one depot of a
+    multi-depot target wrote a record with only that depot in it -- the install would
+    then fetch a fraction of the game and the declared files of the dropped depots
+    would have nothing to come from.
+    """
+    before = add_second_depot(repo)
+    record_args: list[str] = []
+    for path in before["inputs"]["server"]["files"]:
+        record_args += ["--record-files", path]
+
+    code, payload, err = run(
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--depot",
+        fake.DEPOT,
+        "--buildid",
+        "25000001",
+        "--write",
+        *record_args,
+        repo=repo,
+    )
+
+    assert code == 0, f"{err}\n{payload}"
+    assert payload["snippet"]["depots"][SECOND_DEPOT] == before["inputs"]["server"]["depots"][SECOND_DEPOT]
+    after = fake.read_target(repo)["inputs"]["server"]["depots"]
+    assert after[fake.DEPOT]["manifest"] == fake.HEAD_MANIFEST
+    assert after[SECOND_DEPOT] == before["inputs"]["server"]["depots"][SECOND_DEPOT]
+
+
+def test_steam_pin_write_records_the_branch_it_read(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--branch X --write` wrote the branch the record already held, not X."""
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {fake.DEPOT: EXPERIMENTAL_MANIFEST}}}),
+    )
+    before = fake.read_target(repo)
+    record_args: list[str] = []
+    for path in before["inputs"]["server"]["files"]:
+        record_args += ["--record-files", path]
+
+    code, payload, err = run(
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--branch",
+        "latest_experimental",
+        "--buildid",
+        "25200000",
+        "--write",
+        *record_args,
+        repo=repo,
+    )
+
+    assert code == 0, f"{err}\n{payload}"
+    assert payload["branch"] == "latest_experimental" == payload["snippet"]["branch"]
+    after = fake.read_target(repo)["inputs"]["server"]
+    assert after["branch"] == "latest_experimental"
+    assert after["buildid"] == 25200000
+    assert after["depots"][fake.DEPOT]["manifest"] == EXPERIMENTAL_MANIFEST
+
+
+def test_steam_pin_refuses_a_depot_subset_on_a_different_branch(
+    run: Any, repo: Path, dd_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record pins one branch, so a subset re-pin cannot relabel the depots it skipped."""
+    monkeypatch.setenv(
+        "FAKE_DD_BRANCHES",
+        json.dumps({"latest_experimental": {"depots": {fake.DEPOT: EXPERIMENTAL_MANIFEST}}}),
+    )
+    before = add_second_depot(repo)
+
+    code, payload, _ = run(
+        "steam",
+        "pin",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--branch",
+        "latest_experimental",
+        "--depot",
+        fake.DEPOT,
+        "--write",
+        repo=repo,
+    )
+
+    assert code == 2, payload
+    assert "re-pin every depot when changing branch" in payload["error"]
+    assert fake.read_target(repo)["inputs"]["server"] == before["inputs"]["server"]
 
 
 def test_steam_pin_reports_an_unavailable_manifest_as_upstream(
@@ -298,7 +463,7 @@ def test_deploy_unpacks_the_mod_folder_and_removes_older_zips(
     assert VERSION in (dest / "Mods" / "Takaro" / "ModInfo.xml").read_text()
     assert not (dest / "Mods" / "takaro-7d2d-mod-linux-3.2.0.b10-0.1.5.zip").exists()
     ledger = json.loads((dest / ".takaro" / "installed-target.json").read_text())
-    assert ledger["artifact"]["path"] == f"Mods/{ZIP_NAME}"
+    assert ledger["artifacts"][0]["path"] == f"Mods/{ZIP_NAME}"
 
 
 def test_a_zip_that_escapes_the_mod_folder_is_refused(run: Any, repo: Path, dd_log: Path, tmp_path: Path) -> None:
@@ -315,6 +480,34 @@ def test_a_zip_that_escapes_the_mod_folder_is_refused(run: Any, repo: Path, dd_l
     assert code == 7, payload
     assert not (dest / "Mods" / "Takaro").exists()
     assert not (tmp_path / "escaped.txt").exists()
+
+
+@pytest.mark.parametrize("body", [b"not a zip at all", b"PK\x03\x04truncated"])
+def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_mod_alone(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, body: bytes
+) -> None:
+    """The manifest's sha256 says the bytes are the built ones, not that they are a zip."""
+    dest = tmp_path / "ServerFiles"
+    _installed(run, repo, dest)
+    directory = tmp_path / "dist"
+    _mod_zip(directory / ZIP_NAME)
+    manifest = _manifest_for(run, repo, directory, directory / ZIP_NAME)
+    assert (
+        run("deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(manifest), repo=repo)[0]
+        == 0
+    )
+    before = (dest / "Mods" / "Takaro" / "ModInfo.xml").read_text()
+
+    (directory / ZIP_NAME).write_bytes(body)
+    broken = _manifest_for(run, repo, directory, directory / ZIP_NAME)
+    code, payload, _ = run(
+        "deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(broken), repo=repo
+    )
+
+    assert code == 7, payload
+    assert "is not a zip archive" in json.dumps(payload)
+    assert (dest / "Mods" / "Takaro" / "ModInfo.xml").read_text() == before
+    assert not list((dest / "Mods").glob(".Takaro.staging*")), "no staging directory is left behind"
 
 
 # -- verification hooks ------------------------------------------------------------------

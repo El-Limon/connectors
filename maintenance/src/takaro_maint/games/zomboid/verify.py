@@ -29,6 +29,7 @@ from typing import Any
 
 from ... import net, output
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
 from ...verify.runner import docker_command
 from . import GAME_JAR, STABLE_JAR, TARGET_CHECK_PREFIX
 
@@ -36,6 +37,17 @@ CHECK_IDS = ("agent-load", "pinned-install", "hooks-bound", "catalog", "rcon", "
 
 # What the Project Zomboid dedicated server prints when it is up.
 READY_LINE = re.compile(r"\*\*\* SERVER STARTED \*\*\*\*")
+
+#: Base checks this connector cannot satisfy, and the check that stands in for each.
+#: A run that names no ``--checks`` excludes these rather than failing them.
+UNSUPPORTED_CHECKS = {
+    "connector-load": ("the load line is a Minecraft connector's; `agent-load` asserts the javaagent attached"),
+    "catalog-items": ("spot-checks a Minecraft item id; `catalog` spot-checks a Zomboid one"),
+    "catalog-entities": ("spot-checks a Minecraft entity id; `catalog` covers Zomboid's entities"),
+    "console": ("the base console check drives a Minecraft command; `rcon` drives a Zomboid one"),
+    "shutdown": ("asserts an exit code this server's teardown does not give; `stop` asserts the shutdown"),
+}
+
 
 JAVA_TOOL_OPTIONS_LINE = re.compile(r"Picked up JAVA_TOOL_OPTIONS:.*-javaagent:.*" + re.escape(STABLE_JAR))
 HOOKS_INSTALLED_LINE = re.compile(r"\[Takaro\] premain: hooks installed")
@@ -564,3 +576,14 @@ def _rehash(data_dir: Path, ledger_inputs: list[dict[str, Any]]) -> tuple[list[s
         else:
             intact.append(entry["path"])
     return intact, changed
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    ready_line=READY_LINE,
+    check_ids=CHECK_IDS,
+    unsupported_checks=UNSUPPORTED_CHECKS,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    scan_runtime_identity=scan_runtime_identity,
+)

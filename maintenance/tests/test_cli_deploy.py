@@ -86,9 +86,9 @@ def test_deploy_places_the_artifact_and_records_it(run: Any, wired: Any, install
     jar = installed / "mods/takaro-minecraft-mod-fabric-26.2-0.1.1.jar"
     assert jar.is_file()
     ledger = json.loads((installed / ".takaro/installed-target.json").read_text())
-    assert ledger["artifact"]["path"] == "mods/takaro-minecraft-mod-fabric-26.2-0.1.1.jar"
-    assert ledger["artifact"]["connectorVersion"] == "0.1.1"
-    assert ledger["artifact"]["sha256"] == sha256(jar.read_bytes())
+    assert ledger["artifacts"][0]["path"] == "mods/takaro-minecraft-mod-fabric-26.2-0.1.1.jar"
+    assert ledger["artifacts"][0]["connectorVersion"] == "0.1.1"
+    assert ledger["artifacts"][0]["sha256"] == sha256(jar.read_bytes())
 
 
 def test_an_older_takaro_jar_is_removed(run: Any, wired: Any, installed: Path, tmp_path: Path) -> None:

@@ -26,6 +26,10 @@ _ESCAPES = {'"': '"', "\\": "\\", "n": "\n", "t": "\t", "r": "\r"}
 _WHITESPACE = " \t\r\n"
 _DELIMITERS = ' \t\r\n"{}'
 
+#: How deep a document may nest. app_info uses about six levels; this is a guard against
+#: a hostile or corrupt answer, not a limit anyone legitimate can reach.
+MAX_DEPTH = 64
+
 #: ``AppID : 294420, change number : 39026857/39026857, last change : Mon Sep 21 12:53:46 2026``
 #: — printed before the block, and the only place the change number appears.
 _HEADER_RE = re.compile(
@@ -97,18 +101,26 @@ class _Reader:
             self.pos += 1
         return text[start : self.pos]
 
-    def pair(self) -> tuple[str, str | Document]:
+    def pair(self, depth: int = 0) -> tuple[str, str | Document]:
         key = self.token("a key")
         char = self.peek()
         if char is None or char == "}":
             raise VdfError(f"key {key!r} has no value")
         if char == "{":
             self.pos += 1
-            return key, self.block(key)
+            return key, self.block(key, depth + 1)
         return key, self.token(f"the value of {key!r}")
 
-    def block(self, key: str) -> Document:
-        """Everything up to the matching ``}``. The last of two duplicate keys wins."""
+    def block(self, key: str, depth: int = 1) -> Document:
+        """Everything up to the matching ``}``. The last of two duplicate keys wins.
+
+        The nesting is bounded: this recurses once per level, and a document deep enough
+        to exhaust the interpreter's stack used to come back as a `RecursionError` that
+        escaped the parser entirely -- a traceback and exit 1 rather than a failed source.
+        Nothing Steam publishes is anywhere near this deep.
+        """
+        if depth > MAX_DEPTH:
+            raise VdfError(f"nesting deeper than {MAX_DEPTH} levels at key {key!r}")
         found: Document = {}
         while True:
             char = self.peek()
@@ -117,7 +129,7 @@ class _Reader:
             if char == "}":
                 self.pos += 1
                 return found
-            name, value = self.pair()
+            name, value = self.pair(depth)
             found[name] = value
 
     def document(self) -> Document:

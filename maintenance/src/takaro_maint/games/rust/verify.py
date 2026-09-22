@@ -13,28 +13,39 @@ names.
 ``connector-load``, ``catalog-items``, ``catalog-entities`` and the base ``shutdown`` are
 never selected by default: the first looks for a target-check line only the Minecraft
 connector writes, the two catalogue checks spot-check Minecraft names, and ``shutdown``
-gates on an exit code that Rust's Unity teardown does not give. :func:`default_checks` is
-what keeps them out, from the target record's own ``verification.separate``. The coverage
-boundary this run proves is in games/rust/README.md.
+gates on an exit code that Rust's Unity teardown does not give. :data:`UNSUPPORTED_CHECKS`
+is what keeps them out; the runner applies it to every game. The coverage boundary this run
+proves is in games/rust/README.md.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ... import output
-from ...install.ledger import read_ledger
+from ...install.ledger import artifacts_of, read_ledger
 from ...verify import checks, checks_lifecycle
+from ...verify.hooks import GameHooks
+
+PLUGIN_ROLE = "plugin"
 
 CHECK_IDS = ("carbon-compile", "items", "entities", "action", "reconnect", "stop")
 
 #: "Server startup complete" is the last line of a successful boot; everything before it
 #: can appear on a boot that then dies.
 READY_LINE = re.compile(r"Server startup complete")
+
+#: Base checks this connector cannot satisfy, and the check that stands in for each.
+#: A run that names no ``--checks`` excludes these rather than failing them.
+UNSUPPORTED_CHECKS = {
+    "connector-load": ("the load line is a Minecraft connector's; `carbon-compile` asserts Carbon loaded the plugin"),
+    "catalog-items": ("spot-checks a Minecraft item id; `items` spot-checks a Rust one"),
+    "catalog-entities": ("spot-checks a Minecraft entity id; `entities` spot-checks a Rust one"),
+    "shutdown": ("asserts an exit code this Unity teardown does not give; `stop` asserts the shutdown"),
+}
+
 LOADED_LINE = re.compile(r"Loaded plugin TakaroConnector v(?P<version>[^ ]+) by Takaro \[(?P<ms>[0-9]+)ms\]")
 COMPILE_FAILED = re.compile(r"Failed compiling '?TakaroConnector|error CS[0-9]{4}")
 PROTOCOL_LINE = re.compile(r"^Protocol:\s*[0-9][0-9.]*")
@@ -62,7 +73,32 @@ ACTION_BUDGET = 30.0
 QUIT_BUDGET = 120.0
 
 ITEM_SPOT = ("rifle.ak", "Assault Rifle")
-ENTITY_SPOT = ("bear", "Bear")
+ENTITY_SPOT = ("scientistnpc_heavy", "Heavy Scientist")
+
+#: A prefab short name that survived into the display name: `Scientistnpc Heavy` is what
+#: capitalising `scientistnpc_heavy` gives, and it is what an operator used to read.
+_GLUED_NPC = re.compile(r"[a-z]npc\b", re.I)
+#: `Cargo Turret Lr300`, `Wolf2`: a raw variant number or a mangled abbreviation.
+_RAW_VARIANT = re.compile(r"[A-Za-z]\d+$")
+
+
+def _prefab_name_problems(entries: list[Any]) -> list[str]:
+    """The two ways a Rust prefab name goes wrong that the shared rules cannot see.
+
+    The shared check refuses a name equal to its code and a translation key; neither
+    catches `Scientistnpc Heavy`. These names are the whole point of the catalogue, so
+    they are asserted against the live answer rather than by trusting the curated table
+    in `TakaroConnector.cs` to have stayed curated.
+    """
+    offenders = [
+        f"{entry.get('code')} -> {entry.get('name')}"
+        for entry in entries
+        if isinstance(entry, dict)
+        and (_GLUED_NPC.search(str(entry.get("name", ""))) or _RAW_VARIANT.search(str(entry.get("name", ""))))
+    ]
+    if not offenders:
+        return []
+    return [f"{len(offenders)} of {len(entries)} names are formatted prefab codes, e.g. {', '.join(offenders[:3])}"]
 
 
 def scan_runtime_identity(adapter: Any, log_file: Path) -> dict[str, Any]:
@@ -101,47 +137,13 @@ def _deployed_version(run: Any) -> str | None:
     ledger = read_ledger(run.data_dir)
     if ledger is None:
         return None
-    artifact = ledger.data.get("artifact") or {}
-    version = artifact.get("connectorVersion")
+    # Rust has one component role; its row is the plugin's.
+    rows = [row for row in artifacts_of(ledger.data) if row.get("role") == PLUGIN_ROLE]
+    version = rows[0].get("connectorVersion") if rows else None
     return plugin_version(str(version)) if version else None
 
 
 # --------------------------------------------------------------------------- local hooks
-
-
-def default_checks(run: Any) -> list[str] | None:
-    """What a bare ``takaro-maint verify --game rust`` runs, from the target record.
-
-    ``verification.separate`` names the checks this target proves on its own -- ``startup``
-    plus every id in :data:`CHECK_IDS` -- and this is what consumes it. The generic ladder
-    also carries four checks a Rust run cannot pass (``connector-load``, ``catalog-items``,
-    ``catalog-entities`` and the base ``shutdown``, which the adapter's own ``stop``
-    replaces), so they are never selected by default; ``build`` reads the artifacts and not
-    the server, so it always is. ``None`` means "select everything", which is what a target
-    that declares no ``separate`` list asks for.
-    """
-    record = run.target.record.get("verification") or {}
-    separate = [str(check) for check in record.get("separate") or ()]
-    if not separate:
-        return None
-    return ["build", *separate]
-
-
-def _select_default_checks(run: Any) -> None:
-    """Narrow this run's selection when the caller named no ``--checks``.
-
-    An explicit ``--checks`` is left exactly as it was written, including a selection that
-    asks for a check this game cannot pass: naming it is asking for it.
-    """
-    if run.options.only is not None:
-        return
-    selection = default_checks(run)
-    if selection is None:
-        return
-    # `replace` rather than a field assignment: one RunOptions is shared by every target of
-    # the command, and one target's default must not narrow the next one's.
-    run.options = replace(run.options, only=selection)
-    output.info("checks: " + ", ".join(selection) + " (this target's own set; --checks narrows it further)")
 
 
 def before_boot(run: Any, takaro_env: dict[str, str]) -> None:
@@ -152,14 +154,16 @@ def before_boot(run: Any, takaro_env: dict[str, str]) -> None:
     the connector reads its Takaro credentials from the container's environment.
     """
     del takaro_env
-    _select_default_checks(run)
 
 
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
     for check_id, coroutine in (
         ("carbon-compile", lambda: _check_carbon_compile(run, alive)),
         ("items", lambda: checks.check_catalog(fake, "listItems", "items", ITEM_SPOT)),
-        ("entities", lambda: checks.check_catalog(fake, "listEntities", "entities", ENTITY_SPOT)),
+        (
+            "entities",
+            lambda: checks.check_catalog(fake, "listEntities", "entities", ENTITY_SPOT, _prefab_name_problems),
+        ),
         ("action", lambda: _check_action(run, fake, alive)),
         ("reconnect", lambda: checks_lifecycle.check_reconnect(run, fake, alive)),
     ):
@@ -305,3 +309,15 @@ def _where(run: Any, line: int | None) -> dict[str, Any]:
     if line is not None:
         where["line"] = line
     return where
+
+
+#: What this game contributes to a verification run; the runner reads nothing else.
+HOOKS = GameHooks(
+    ready_line=READY_LINE,
+    check_ids=CHECK_IDS,
+    unsupported_checks=UNSUPPORTED_CHECKS,
+    before_boot=before_boot,
+    after_protocol=after_protocol,
+    after_shutdown=after_shutdown,
+    scan_runtime_identity=scan_runtime_identity,
+)

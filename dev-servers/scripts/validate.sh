@@ -28,7 +28,9 @@ export VEIN_DEV_WORLD_PASSWORD="${VEIN_DEV_WORLD_PASSWORD:-validate-placeholder}
 ds_info "Validating compose files against ${ENV_FILE##*/}"
 rc=0
 ports_tmp="$(mktemp)"
-trap 'rm -f "$ports_tmp"' EXIT
+# This script's own EXIT trap replaces common.sh's, so it runs that cleanup too --
+# otherwise a scratch directory registered while validating would survive the run.
+trap 'rm -f "$ports_tmp"; ds_cleanup_scratch' EXIT
 
 for file in "${DS_COMPOSE_DIR}"/*.yml; do
     name="$(basename "$file")"

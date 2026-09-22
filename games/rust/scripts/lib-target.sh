@@ -2,36 +2,24 @@
 # The catalog target every Rust script builds against.
 #
 # Source it, do not run it. `rust_resolve_target [target-id]` exports the RUST_* keys
-# `takaro-maint targets resolve` produces, so no script here hard-codes a game build, a
-# Carbon release, an image digest, a dependency URL or an artifact name.
+# `takaro-maint targets resolve` produces, so no script here hard-codes a game build, a Carbon release,
+# an image digest, a dependency URL or an artifact name.
+#
+# The resolution itself is `scripts/lib/target.sh`, shared by every game; these are the
+# Rust names for it, so nothing that sources this file has to change.
+
+# shellcheck source=../../../scripts/lib/target.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/../../../scripts/lib/target.sh"
 
 rust_repo_root() {
-    (cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+    takaro_repo_root
 }
 
 rust_resolve_target() {
-    local target="${1:-}" repo_root env_file key value
-    repo_root="$(rust_repo_root)"
-    TAKARO_MAINT="${TAKARO_MAINT:-${repo_root}/maintenance/bin/takaro-maint}"
-    env_file="$(mktemp)"
-    local -a args=(targets resolve --game rust --format env --prefix RUST --out "$env_file")
-    [ -n "$target" ] && args+=(--target "$target")
-    if ! "$TAKARO_MAINT" "${args[@]}" >/dev/null; then
-        rm -f "$env_file"
-        echo "could not resolve the Rust catalog target ${target:-(the default)}" >&2
-        return 2
-    fi
-    # Parsed, never sourced: nothing generated is executed.
-    while IFS='=' read -r key value; do
-        case "$key" in
-            RUST_*) export "${key}=${value}" ;;
-        esac
-    done < "$env_file"
-    rm -f "$env_file"
-    export TAKARO_MAINT
+    takaro_resolve_target rust RUST "${1:-}"
 }
 
-# The one flag every Rust script takes. Exports TARGET (empty = the game's default target).
+# Rust's own flags: the shared grammar plus `--force`, which its setup script takes.
 rust_parse_target_flag() {
     TARGET=""
     export TARGET
