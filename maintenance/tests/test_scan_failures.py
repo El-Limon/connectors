@@ -25,6 +25,7 @@ def test_an_unreachable_manifest_exits_four_with_the_checkpoint_retained(
         code, _, stderr = harness.scan(run, "--bootstrap", "--publish")
         assert code == 0, stderr
         seen_before = sorted(harness.checkpoint_ids())
+        last_success_before = harness.dashboard_state()["lastSuccess"]
 
         support.add_release(harness.upstream, "26.4", release_time="2026-12-01T10:00:00+00:00")
         support.mirror_manifest(harness.upstream)
@@ -45,7 +46,9 @@ def test_an_unreachable_manifest_exits_four_with_the_checkpoint_retained(
         # The failed source kept exactly what it had; the healthy one moved on.
         assert sorted(harness.checkpoint_ids()) == seen_before
         assert "26.4" in harness.checkpoint_ids(second)
-        assert state["lastSuccess"] is None or state["lastSuccess"] == state["sources"][second]["lastSuccess"]
+        # A partial run is not a successful whole scan, even when another source advances.
+        # Compare the stored value instead of timestamps produced in the same second.
+        assert state["lastSuccess"] == last_success_before
         assert len(harness.support_issues()) == 2
 
 
