@@ -71,8 +71,9 @@ def test_exclusions_are_base_checks_never_a_games_own_checks(game: str) -> None:
     hooks = game_hooks(game)
     assert set(hooks.unsupported_checks) <= set(CHECK_IDS)
     assert set(hooks.unsupported_checks).isdisjoint(hooks.check_ids)
+    forbidden_plan_marker = r"\bF\d\b|follow-" r"up|planning " r"note"
     for reason in hooks.unsupported_checks.values():
-        assert not re.search(r"\bF\d\b|follow-up|planning note", reason, re.IGNORECASE)
+        assert not re.search(forbidden_plan_marker, reason, re.IGNORECASE)
 
 
 def test_an_explicit_checks_list_is_left_byte_identical(tmp_path: Path) -> None:
