@@ -1,0 +1,119 @@
+name: Maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "read-only prints the plan; publish writes issues and the dashboard"
+        type: choice
+        options: [read-only, publish]
+        default: read-only
+      sources:
+        description: "watched source ids to scan (space separated; empty = all)"
+        type: string
+        default: ""
+      game:
+        description: "restrict to one catalog game (empty = all)"
+        type: string
+        default: ""
+      bootstrap:
+        description: "initialise sources that have no checkpoint yet"
+        type: boolean
+        default: false
+      repo:
+        description: "tracker repository owner/name (empty = this repository)"
+        type: string
+        default: ""
+  schedule:
+    - cron: '17 */6 * * *'
+
+# One publisher at a time, never cancelled: the dashboard is compare-and-swap and a cancelled
+# run would leave issues filed without their checkpoint.
+concurrency:
+  group: maintenance-publisher
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      HAS_APP: ${{ secrets.TAKARO_CI_APP_ID != '' }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Decide what this run does
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          mode="${MODE:-read-only}"
+          if [ "$EVENT" = schedule ]; then
+            if grep -qxE 'publish_schedule: *enabled' maintenance/config/schedule.yaml; then
+              mode=publish
+            else
+              echo "::notice::scheduled publication is disabled by maintenance/config/schedule.yaml; nothing to do"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      # Acts as the CI App where its secrets exist; a fork or mirror falls back to the workflow
+      # token. The command only ever sees GH_TOKEN.
+      - name: Generate token
+        id: app-token
+        if: steps.decide.outputs.skip == 'false' && env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.TAKARO_CI_APP_ID }}
+          private-key: ${{ secrets.TAKARO_CI_APP_PRIV_KEY }}
+
+      - name: Build the tool container
+        if: steps.decide.outputs.skip == 'false'
+        run: docker build --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" -t takaro-maint:ci -f maintenance/Dockerfile maintenance
+
+      - name: Run maintenance
+        if: steps.decide.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          MODE: ${{ steps.decide.outputs.mode }}
+          SOURCES: ${{ inputs.sources }}
+          GAME: ${{ inputs.game }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          TRACKER_REPO: ${{ inputs.repo || github.repository }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/maint-out" "$RUNNER_TEMP/maint-steam"
+          args=(run --repo "$TRACKER_REPO" --out /out/result.json)
+          [ "$MODE" = publish ] && args+=(--publish)
+          [ "$BOOTSTRAP" = true ] && args+=(--bootstrap)
+          [ -n "$GAME" ] && args+=(--game "$GAME")
+          for source in $SOURCES; do args+=(--source "$source"); done
+          # Only the steam/ part of the cache is mounted, so the baked DepotDownloader stays
+          # visible and the steamcmd logs land where the diagnostics step can keep them.
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            -v "$RUNNER_TEMP/maint-out:/out" \
+            -v "$RUNNER_TEMP/maint-steam:/home/maint/.cache/takaro-maint/steam" \
+            -e GH_TOKEN \
+            takaro-maint:ci "${args[@]}" 2> >(tee "$RUNNER_TEMP/maint-out/stderr.log" >&2)
+
+      - name: Keep diagnostics
+        if: always() && steps.decide.outputs.skip == 'false'
+        run: |
+          mkdir -p "$RUNNER_TEMP/maint-diag"
+          cp -r "$RUNNER_TEMP/maint-out/." "$RUNNER_TEMP/maint-diag/" 2>/dev/null || true
+          if [ -d "$RUNNER_TEMP/maint-steam/logs" ]; then cp -r "$RUNNER_TEMP/maint-steam/logs" "$RUNNER_TEMP/maint-diag/steam-logs"; fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.decide.outputs.skip == 'false'
+        with:
+          name: maintenance-${{ github.run_id }}
+          path: ${{ runner.temp }}/maint-diag
+          retention-days: 14
+          if-no-files-found: ignore
