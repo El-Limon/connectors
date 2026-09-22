@@ -13,6 +13,7 @@ are about what a maintainer, the rig and CI observe.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -29,6 +30,7 @@ import fake_depotdownloader as fake
 import fake_steamcmd
 from fake_github import FakeGitHub
 from fake_upstream import FakeUpstream
+from fake_verify import CannedSocket, FakeRun
 from takaro_maint.games import adapter_for
 from takaro_maint.games.rust import verify as hooks
 from takaro_maint.install.ledger import read_ledger
@@ -45,6 +47,49 @@ MANAGED = "RustDedicated_Data/Managed"
 BUILD_SCRIPT = "games/rust/scripts/build-release.sh"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_every_rust_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = FakeRun(tmp_path)
+    fake = CannedSocket({"sendMessage": {"success": True}, "shutdown": {}}, identify_count=1)
+    loaded = "Loaded plugin TakaroConnector v1.2.3 by Takaro [42ms]"
+    monkeypatch.setattr(hooks, "_deployed_version", lambda run: "1.2.3")
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, loaded))
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+
+    assert asyncio.run(hooks._check_carbon_compile(run, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, fake)).status == "pass"
+
+    async def passed_catalog(*args: Any, **kwargs: Any) -> Any:
+        del kwargs
+        return hooks.checks.CheckResult(str(args[2]), "pass", 0, {"problems": []})
+
+    async def passed_reconnect(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return hooks.checks.CheckResult("reconnect", "pass", 0, {"problems": []})
+
+    monkeypatch.setattr(hooks.checks, "check_catalog", passed_catalog)
+    monkeypatch.setattr(hooks.checks_lifecycle, "check_reconnect", passed_reconnect)
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", wanted=set())
+    failed_run.container = None
+    failed = CannedSocket({"sendMessage": RuntimeError("no action"), "shutdown": RuntimeError("closed")})
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: (1, "error CS1000"))
+
+    assert asyncio.run(hooks._check_carbon_compile(failed_run, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_stop(failed_run, failed)).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == {*hooks.CHECK_IDS, "stop"}
+
+
 FIXTURES = Path(__file__).parent / "fixtures" / "games" / "rust"
 DEPOTS = FIXTURES / "depots"
 CARBON_TARBALL = FIXTURES / "carbon" / "Carbon.Linux.Release.tar.gz"

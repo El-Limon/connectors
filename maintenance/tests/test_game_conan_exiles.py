@@ -9,6 +9,7 @@ proven install carries it and watched by nobody because it belongs to another ap
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -22,12 +23,86 @@ import pytest
 
 import fake_depotdownloader as fake
 import fake_steamcmd
+from fake_verify import CannedSocket, FakeContainer, FakeRun
 from takaro_maint.games import adapter_for
 from takaro_maint.games.conan_exiles import verify as hooks
 from takaro_maint.publish.manifest import artifact_row, write_manifest, write_meta
 from takaro_maint.steam import steamcmd
 
 GAME = "conan-exiles"
+
+
+def test_every_conan_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = type("Target", (), {"id": TARGET, "fp16": "0123456789abcdef", "record": {"revision": "1"}})()
+    run = FakeRun(tmp_path, target=target)
+    bridge_log = run.out / "bridge.log"
+    bridge = FakeContainer(bridge_log)
+    run.bridge = bridge
+    fake = CannedSocket(
+        {
+            "testReachability": {"connectable": True},
+            "getPlayers": [],
+            "executeConsoleCommand": {"success": True, "rawResult": "No players"},
+            "sendMessage": {"success": False, "error": "helper absent"},
+        },
+        identify_count=1,
+    )
+    stamp = f"Takaro target: {TARGET} (0123456789abcdef) revision 1 connector 1.0.0"
+    monkeypatch.setattr(hooks, "start_bridge", lambda *args, **kwargs: bridge)
+    monkeypatch.setattr(hooks, "_retain_server_logs", lambda run: None)
+    monkeypatch.setattr(hooks, "_wait_for_rcon_command", lambda *args, **kwargs: ["help", "listplayers"])
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "Identified with Takaro"))
+    monkeypatch.setattr(hooks.checks, "find_line", lambda path, pattern: (1, stamp))
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert asyncio.run(hooks._check_identify(run, fake, bridge, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_reachability(run, fake, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_players(run, fake, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_console(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, bridge.alive)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, bridge.alive))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", target=target, wanted=set())
+    failed = CannedSocket(
+        {
+            "testReachability": None,
+            "getPlayers": {"bad": True},
+            "executeConsoleCommand": None,
+            "sendMessage": {"success": True},
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks, "_wait_for_rcon_command", lambda *args, **kwargs: [])
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+
+    assert asyncio.run(hooks._check_identify(failed_run, failed, bridge, bridge.alive)).status == "fail"
+    assert asyncio.run(hooks._check_reachability(failed_run, failed, bridge.alive)).status == "fail"
+    assert asyncio.run(hooks._check_players(failed_run, failed, bridge.alive)).status == "fail"
+    assert asyncio.run(hooks._check_console(failed_run, failed)).status == "fail"
+    failed_run.bridge = bridge
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, bridge.alive)).status == "fail"
+    failed_run.bridge = None
+    assert asyncio.run(hooks._check_stop(failed_run, [{"path": "missing"}])).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, bridge.alive))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert set(check for check, _ in failed_run.skips) == set(hooks.CHECK_IDS)
+
+
 TARGET = "linux-25356024"
 APP = 443030
 CONTENT_DEPOT = "443032"

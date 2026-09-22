@@ -12,6 +12,7 @@ point and a re-serialised fixture would not have the same one.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -29,6 +30,8 @@ import pytest
 from conftest import REPO_ROOT
 from fake_github import FakeGitHub
 from fake_upstream import FakeUpstream
+from fake_verify import CannedSocket
+from fake_verify import FakeRun as VerifyRun
 from takaro_maint import net, readiness
 from takaro_maint.games import adapter_for
 from takaro_maint.games.terraria import verify as hooks
@@ -64,6 +67,81 @@ INDEX_DIGESTS = {
 }
 PLATFORM_DIGEST = "sha256:29f877e073490b0f12977fa09bab8b910708a6e9e2dd38eabe76ec6d577d2e4d"
 CONFIG_DIGEST = "sha256:0a40c4aa2c47ae237c311a89ab9cc8ce23ccea0ce165fcd8f4d69fa5d24ac448"
+
+
+def test_every_terraria_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    items = [{"code": str(index), "name": f"Item {index}"} for index in range(hooks.CATALOGUE_MINIMUM)]
+    items[9] = {"code": "9", "name": "Wood"}
+    run = VerifyRun(tmp_path)
+    run.resolved = {
+        "containerRef": "image@sha256:" + "a" * 64,
+        "build": {
+            "references": ["/tshock/TShockAPI.dll"],
+            "deps": {"TShockAPI.dll": {"sha256": "b" * 64}},
+        },
+    }
+    fake = CannedSocket(
+        {
+            "listItems": items,
+            "listEntities": [],
+            "sendMessage": {"success": True},
+            "testReachability": {"connectable": True},
+        },
+        identify_count=1,
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "matched"))
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(hooks, "_hash_in_container", lambda *args: "b" * 64)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert asyncio.run(hooks._check_handshake(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_items(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_entities(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_references(run)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, lambda: True)).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = VerifyRun(tmp_path / "failed", wanted=set())
+    failed_run.resolved = run.resolved
+    failed = CannedSocket(
+        {
+            "listItems": RuntimeError("no items"),
+            "listEntities": ["unexpected"],
+            "sendMessage": {"success": False},
+            "testReachability": None,
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(hooks, "_hash_in_container", lambda *args: None)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "cannot chown"),
+    )
+
+    assert asyncio.run(hooks._check_handshake(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_items(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_entities(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_references(failed_run)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, lambda: False)).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == set(hooks.CHECK_IDS)
 
 
 # -- the repository copy ------------------------------------------------------------------

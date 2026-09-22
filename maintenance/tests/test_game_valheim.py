@@ -21,6 +21,7 @@ import pytest
 
 import fake_depotdownloader as fake
 from fake_upstream import FakeUpstream
+from fake_verify import CannedSocket, FakeRun
 from takaro_maint.games import adapter_for
 from takaro_maint.games.valheim import verify as hooks
 from takaro_maint.providers import provider_for
@@ -46,6 +47,76 @@ DEPOTS = VALHEIM_FIXTURES / "depots"
 PACK_SOURCE = VALHEIM_FIXTURES / "bepinex-pack"
 THUNDERSTORE_DOCUMENT = FIXTURES / "providers" / "thunderstore" / "bepinexpack-valheim.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_every_valheim_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = FakeRun(tmp_path)
+    fake = CannedSocket(
+        {
+            "listItems": [{"code": "SwordBronze", "name": "Bronze Sword"}],
+            "listEntities": [{"code": "Greydwarf_Elite", "name": "Greydwarf Brute"}],
+            "executeConsoleCommand": {"success": True},
+            "testReachability": {"connectable": True},
+            "shutdown": {},
+        },
+        identify_count=1,
+    )
+    monkeypatch.setattr(
+        hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "listItems returned 1 item prefab(s)")
+    )
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: (1, "Loading [Takaro Valheim 1.0.0]"))
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert asyncio.run(hooks._check_handshake(run, fake, lambda: True)).status == "pass"
+    assert (
+        asyncio.run(hooks._check_catalogue(run, fake, lambda: True, "listItems", "items", "SwordBronze")).status
+        == "pass"
+    )
+    assert asyncio.run(hooks._check_action(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, fake, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", wanted=set())
+    failed_run.container = None
+    failed = CannedSocket(
+        {
+            "listItems": [],
+            "executeConsoleCommand": {"success": False},
+            "testReachability": None,
+            "shutdown": RuntimeError("closed"),
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+
+    assert asyncio.run(hooks._check_handshake(failed_run, failed, lambda: False)).status == "fail"
+    assert (
+        asyncio.run(hooks._check_catalogue(failed_run, failed, lambda: False, "listItems", "items", "x")).status
+        == "fail"
+    )
+    assert asyncio.run(hooks._check_action(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_stop(failed_run, failed, [{"path": "missing"}])).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == {*hooks.CHECK_IDS, "stop"}
+
+
 BUILD_SCRIPT = "games/valheim/scripts/build-release.sh"
 
 

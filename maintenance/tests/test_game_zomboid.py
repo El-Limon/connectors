@@ -9,6 +9,7 @@ module carries its own repository copy and re-pinner for the Zomboid record.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ from typing import Any
 import pytest
 
 import fake_depotdownloader as fake
+from fake_verify import CannedSocket, FakeRun
 from takaro_maint.games import adapter_for
 from takaro_maint.games.zomboid import verify as hooks
 from takaro_maint.publish.manifest import artifact_row, write_manifest, write_meta
@@ -45,6 +47,102 @@ PINNED = {
 # The common depot has moved on; the other two have not.
 HEAD = {**PINNED, "380871": "1900000000000000002"}
 DECLARED = ("java/projectzomboid.jar", "ProjectZomboid64", "start-server.sh", "jre64/release")
+
+
+def test_every_zomboid_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    digest = "a" * 64
+    target = type(
+        "Target",
+        (),
+        {
+            "id": TARGET,
+            "fingerprint": "b" * 64,
+            "fp16": "b" * 16,
+            "record": {"inputs": {"server": {"files": {GAME_JAR: {"sha256": digest}}}}},
+        },
+    )()
+    run = FakeRun(tmp_path, target=target)
+    marker = f"takaro-verify-{run.options.run_id}-action"
+    target_check = {
+        "result": "ok",
+        "target": TARGET,
+        "fingerprint": target.fingerprint,
+        "expected": {"gameJarSha256": digest},
+        "runtime": {"gameJarSha256": digest},
+    }
+    lines = [
+        "Picked up JAVA_TOOL_OPTIONS: -javaagent:TakaroConnector.jar",
+        "[Takaro] premain: hooks installed",
+        "[Takaro] target-check: " + json.dumps(target_check),
+        "takaro-maint: SteamCMD is disabled",
+        *[f"[Takaro] listener: transformed {name}" for name in hooks.HOOKED_CLASSES],
+        *[f"[Takaro] listener: transformed {name}" for name in hooks.LATE_HOOKED_CLASSES],
+        "[Takaro] HOOK CONFIRMED: tick",
+        "Identified successfully",
+        "Identified successfully",
+        marker,
+        "SERVER SHUTDOWN",
+    ]
+    run.server_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    fake = CannedSocket(
+        {
+            "listItems": [{"code": "Base.Axe", "name": "Firefighter Axe"}],
+            "listEntities": [{"code": "Zombie", "name": "Zombie"}],
+            "executeConsoleCommand": {"success": True, "rawResult": "Players connected (0)"},
+            "sendMessage": {"success": True},
+            "listBans": [],
+            "testReachability": {"connectable": True},
+            "shutdown": {},
+        },
+        identify_count=1,
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(
+        hooks.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", "")
+    )
+    monkeypatch.setattr(hooks, "_reclaim", lambda run: None)
+
+    assert asyncio.run(hooks._check_agent_load(run, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_pinned_install(run)).status == "pass"
+    assert asyncio.run(hooks._check_hooks_bound(run, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_catalog(fake)).status == "pass"
+    assert asyncio.run(hooks._check_rcon(fake)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, lambda: True)).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, fake, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, lambda: True))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    failed_run = FakeRun(tmp_path / "failed", target=target, wanted=set())
+    failed_run.container = None
+    failed = CannedSocket(
+        {
+            "listItems": [],
+            "listEntities": RuntimeError("no catalog"),
+            "executeConsoleCommand": None,
+            "sendMessage": RuntimeError("no action"),
+            "listBans": ["someone"],
+            "testReachability": None,
+            "shutdown": RuntimeError("closed"),
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    assert asyncio.run(hooks._check_agent_load(failed_run, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_pinned_install(failed_run)).status == "fail"
+    assert asyncio.run(hooks._check_hooks_bound(failed_run, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_catalog(failed)).status == "fail"
+    assert asyncio.run(hooks._check_rcon(failed)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, lambda: False)).status == "fail"
+    assert asyncio.run(hooks._check_stop(failed_run, failed, [{"path": "missing"}])).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    assert {check for check, _ in failed_run.skips} == {*hooks.CHECK_IDS, "stop"}
 
 
 # --------------------------------------------------------------------------- the repository copy

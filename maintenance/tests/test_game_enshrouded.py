@@ -28,6 +28,7 @@ import pytest
 
 import fake_depotdownloader as fake_dd
 import fake_steamcmd
+from fake_verify import CannedSocket, FakeContainer, FakeRun
 from takaro_maint.catalog import ids
 from takaro_maint.games import adapter_for
 from takaro_maint.games.enshrouded import verify as hooks
@@ -660,6 +661,102 @@ def test_action_requires_an_explicit_success_answer(tmp_path: Path) -> None:
         failed = asyncio.run(hooks._check_action(Run(), Fake(answer)))
         assert failed.status == "fail"
         assert repr(answer) in " ".join(failed.detail["problems"])
+
+
+def test_every_enshrouded_verification_body_has_pass_and_failure_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _record()
+    target = type("Target", (), {"id": TARGET, "fp16": "0123456789abcdef", "record": record})()
+    run = FakeRun(tmp_path, target=target)
+    run.resolved = _degraded_resolved()
+    sidecar = FakeContainer(run.out / "sidecar.log")
+    answers = _derived_answers()
+    fake = CannedSocket(
+        {
+            **answers,
+            "testReachability": {"connectable": True, "reason": None},
+            "getPlayers": [],
+            "executeConsoleCommand": {"success": True, "rawResult": f"game build {record['revision']}"},
+            "sendMessage": {"success": True},
+            "shutdown": {},
+        },
+        identify_count=1,
+    )
+    fake.events = [{"type": "log", "data": {"msg": "Start Saving"}}]
+    monkeypatch.setattr(hooks, "start_sidecar", lambda *args, **kwargs: sidecar)
+    monkeypatch.setattr(hooks, "_sidecar_health", lambda name: {"takaroIdentified": True})
+    monkeypatch.setattr(
+        hooks,
+        "_check_plugin_health",
+        lambda *args: hooks.checks.CheckResult("plugin-health", "pass", 0, {"problems": []}),
+    )
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: (1, "matched"))
+    monkeypatch.setattr(hooks.checks, "find_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+    monkeypatch.setattr(hooks, "_remove_images", lambda run: None)
+
+    assert asyncio.run(hooks._check_identify(run, fake, sidecar, sidecar.alive)).status == "pass"
+    assert asyncio.run(hooks._check_players(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_catalog(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_console(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_action(run, fake)).status == "pass"
+    assert asyncio.run(hooks._check_reconnect(run, fake, sidecar, sidecar.alive)).status == "pass"
+    assert asyncio.run(hooks._check_event(run, fake, "shutdown requested")).status == "pass"
+    assert asyncio.run(hooks._check_stop(run, [])).status == "pass"
+    asyncio.run(hooks.after_protocol(run, fake, sidecar.alive))
+    asyncio.run(hooks.after_shutdown(run, fake, run.ws_url, []))
+
+    plugin_dir = run.data_dir / "takaro" / "plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / hooks.PLUGIN_DLL).write_bytes(b"release")
+    built = tmp_path / "degraded.dll"
+    built.write_bytes(b"degraded")
+    monkeypatch.setattr(hooks, "_build_degraded", lambda *args, **kwargs: built)
+    monkeypatch.setattr(hooks, "_plugin_health", lambda *args: _health("plugin-health-degraded.json"))
+    degraded_fake = CannedSocket(
+        {"testReachability": {"connectable": True, "reason": "degraded teleport"}}, identify_count=1
+    )
+    assert asyncio.run(hooks._check_negative(run, degraded_fake, run.ws_url, "")).status == "pass"
+    asyncio.run(hooks.negative(run, degraded_fake, run.ws_url, {}))
+
+    failed_run = FakeRun(tmp_path / "failed", target=target, wanted=set())
+    failed = CannedSocket(
+        {
+            "testReachability": None,
+            "getPlayers": ["unexpected"],
+            "executeConsoleCommand": {"success": False},
+            "sendMessage": {"success": False},
+        },
+        reconnects=False,
+    )
+    monkeypatch.setattr(hooks, "_sidecar_health", lambda name: {"takaroIdentified": False})
+    monkeypatch.setattr(hooks.checks, "wait_for_line", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hooks.checks_lifecycle, "identify_within", lambda *args, **kwargs: asyncio.sleep(0, result=None)
+    )
+    monkeypatch.setattr(hooks.checks_lifecycle, "wait_for_count", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(hooks, "EVENT_BUDGET", 0.0)
+    assert asyncio.run(hooks._check_identify(failed_run, failed, sidecar, sidecar.alive)).status == "fail"
+    assert asyncio.run(hooks._check_players(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_console(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_action(failed_run, failed)).status == "fail"
+    assert asyncio.run(hooks._check_reconnect(failed_run, failed, sidecar, sidecar.alive)).status == "fail"
+    assert asyncio.run(hooks._check_event(failed_run, failed, "no shutdown")).status == "fail"
+    failed_run.container = None
+    assert asyncio.run(hooks._check_stop(failed_run, [{"path": "missing"}])).status == "fail"
+    monkeypatch.setattr(hooks, "_build_degraded", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("build")))
+    assert asyncio.run(hooks._check_negative(failed_run, failed, failed_run.ws_url, "")).status == "fail"
+    asyncio.run(hooks.after_protocol(failed_run, failed, lambda: False))
+    asyncio.run(hooks.after_shutdown(failed_run, failed, failed_run.ws_url, []))
+    asyncio.run(hooks.negative(failed_run, failed, failed_run.ws_url, {}))
+    assert {check for check, _ in failed_run.skips} == {*hooks.CHECK_IDS, "negative-degraded-hooks"}
 
 
 def _degraded_resolved() -> dict[str, Any]:
