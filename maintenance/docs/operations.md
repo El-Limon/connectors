@@ -18,11 +18,23 @@ just maint-container run --repo gettakaro/connectors
 gh workflow run maintenance.yml -f mode=read-only -f sources="mojang-meta"
 ```
 
-`just maint-container` expands to the `docker run` the workflow uses:
+`just maint-container` is the same `docker run` the workflow performs — the checkout mounted
+at `/repo`, and credentials forwarded by name only:
 
 ```
-docker run --rm -v "$PWD:/repo" -e GH_TOKEN takaro-maint:local run --repo gettakaro/connectors
+docker run --rm -v "$PWD:/repo" \
+    -e GH_TOKEN -e TAKARO_MAINT_REPO -e TAKARO_MAINT_GITHUB_API_URL \
+    takaro-maint:local run --repo gettakaro/connectors
 ```
+
+`-e NAME` without a value forwards the variable only when it is set, and never puts its value
+on a command line. The recipe also forwards every
+`TAKARO_MAINT_STEAM_BRANCH_PASSWORD__*` it finds in the environment.
+
+`gh workflow run` needs the workflow to exist on the repository's **default branch** — GitHub
+registers a `workflow_dispatch` trigger from there and nowhere else. Until `maintenance.yml`
+is on `main`, dispatching it from a feature branch answers `HTTP 404`, however the `--ref` is
+spelled.
 
 `run` is `scan` and then `reconcile` in one process and one report. **It is read-only unless
 `--publish` is given** — without that flag it reads the tracker, prints what it would file, and
