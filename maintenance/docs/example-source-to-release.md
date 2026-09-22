@@ -82,7 +82,7 @@ would close the issue before anything shipped. It adds two things:
 Then, in order:
 
 ```
-takaro-maint catalog record-hash --game minecraft --target fabric-26.3 --field loader
+takaro-maint catalog record-hash --game minecraft --target fabric-26.3 --field inputs.loader.sha256
 takaro-maint catalog validate --online                 # 0
 takaro-maint install --game minecraft --target fabric-26.3 --dest <dir>
 takaro-maint build   --game minecraft --target fabric-26.3 --version <v> --out <dir>
