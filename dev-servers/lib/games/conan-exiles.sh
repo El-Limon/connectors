@@ -39,8 +39,7 @@ install_conan_exiles() {
 deploy_conan_exiles() {
     local target tmp
     target="$(ds_target conan-exiles)"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    ds_scratch_dir tmp
 
     ds_info "Building the Conan Exiles sidecar for ${target} (Node in the pinned image)..."
     ds_maint build --game conan-exiles --target "$target" \

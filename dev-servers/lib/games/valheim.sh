@@ -39,8 +39,7 @@ install_valheim() {
 deploy_valheim() {
     local target tmp
     target="$(ds_target valheim)"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    ds_scratch_dir tmp
 
     ds_info "Building both Valheim roles for ${target} (.NET SDK in the pinned image)..."
     # --toolchain container is what the build really does (the script re-execs into the

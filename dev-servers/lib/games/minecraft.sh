@@ -48,8 +48,7 @@ deploy_minecraft() {
         if ds_have java && java -version 2>&1 | grep -qE '"(2[5-9]|[3-9][0-9])'; then
             toolchain=host
         fi
-        tmp="$(mktemp -d)"
-        trap 'rm -rf "$tmp"' RETURN
+        ds_scratch_dir tmp
         ds_info "Building Minecraft target ${target} (${toolchain} toolchain)..."
         ds_maint build --game minecraft --target "$target" \
             --version "$("${REPO_ROOT}/scripts/dev-version.sh" minecraft)" \

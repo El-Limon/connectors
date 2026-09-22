@@ -39,8 +39,7 @@ install_7d2d() {
 deploy_7d2d() {
     local target tmp
     target="$(ds_target 7d2d)"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    ds_scratch_dir tmp
 
     ds_info "Building the 7D2D mod for ${target} (Mono/MSBuild in the pinned image)..."
     ds_maint build --game 7d2d --target "$target" \

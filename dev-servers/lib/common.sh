@@ -99,6 +99,29 @@ ds_warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 ds_info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 ds_ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
+# ── Scratch directories ──────────────────────────────────────────────────────
+# A directory a step needs until the script exits. Registered here rather than with a
+# per-function `trap ... RETURN`: bash runs a RETURN trap again when the *caller* returns,
+# in a scope where the function's `local` is gone, and under `set -u` that killed the
+# script after the work had already succeeded. The path is handed back through a nameref
+# rather than stdout, because a command substitution runs in a subshell whose registration
+# the parent would never see.
+DS_SCRATCH_DIRS=()
+
+# ds_scratch_dir <varname> — make a temporary directory and name it in <varname>.
+ds_scratch_dir() {
+    local -n ds_scratch_out="$1"
+    ds_scratch_out="$(mktemp -d)"
+    DS_SCRATCH_DIRS+=("$ds_scratch_out")
+}
+
+ds_cleanup_scratch() {
+    local d
+    for d in "${DS_SCRATCH_DIRS[@]+"${DS_SCRATCH_DIRS[@]}"}"; do rm -rf "$d"; done
+    DS_SCRATCH_DIRS=()
+}
+trap ds_cleanup_scratch EXIT
+
 ds_validate_game() {
     ds_is_game "$1" || ds_die "unknown game '$1'. Known: $(ds_game_ids | tr '\n' ' ')"
 }

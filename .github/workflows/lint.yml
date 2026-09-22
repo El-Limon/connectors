@@ -128,6 +128,7 @@ jobs:
           bash maintenance/tests/test_publish_release.sh
           bash maintenance/tests/test_cleanup_pr_builds.sh
           bash maintenance/tests/test_dev_servers_target.sh
+          bash maintenance/tests/test_dev_servers_deploy.sh
 
   connector-metadata:
     runs-on: ubuntu-latest

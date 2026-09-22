@@ -35,8 +35,7 @@ install_zomboid() {
 deploy_zomboid() {
     local target tmp
     target="$(ds_target zomboid)"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    ds_scratch_dir tmp
 
     # Gradle always runs in the target's pinned JDK image, so there is no host-JDK branch.
     ds_info "Building the Zomboid agent for ${target} (Gradle in the pinned JDK image)..."
