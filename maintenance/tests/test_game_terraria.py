@@ -1137,9 +1137,13 @@ def test_dev_servers_terraria_rig_parses_and_resolves() -> None:
     assert bash(". dev-servers/lib/common.sh; ds_target_prefix terraria").strip() == "TERRARIA"
     assert bash(". dev-servers/lib/common.sh; ds_target_dest terraria").strip().endswith("/terraria")
     assert bash(". dev-servers/lib/common.sh; ds_success_pattern_terraria").strip() == "Identified successfully"
-    # The registry row is shared across games: assert it, never rewrite it from here.
     registry = bash(". dev-servers/lib/common.sh; ds_registry")
-    assert "terraria|terraria.yml|-|terraria|1|1|plugin|" in registry
+    assert "terraria|terraria.yml|-|terraria terraria-bridge|1|1|plugin|" in registry
+    assert bash(". dev-servers/lib/common.sh; ds_services terraria").split() == ["terraria", "terraria-bridge"]
+    assert bash(". dev-servers/lib/common.sh; ds_startable_services terraria").split() == [
+        "terraria",
+        "terraria-bridge",
+    ]
 
 
 def test_the_terraria_compose_file_runs_the_bridge_in_the_server_namespace() -> None:

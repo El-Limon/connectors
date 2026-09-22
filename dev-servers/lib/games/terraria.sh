@@ -10,7 +10,7 @@
 # compose file reads the image and the bridge runtime from _data/.targets/terraria.env, so
 # the rig, CI and a release all run the same bytes.
 
-ds_register 10 'terraria|terraria.yml|-|terraria|1|1|plugin|TShock server + Takaro events plugin (Takaro connects over TShock REST)|terraria'
+ds_register 10 'terraria|terraria.yml|-|terraria terraria-bridge|1|1|plugin|TShock server + Takaro events plugin (Takaro connects over TShock REST)|terraria'
 
 install_terraria() {
     local target dest

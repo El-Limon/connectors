@@ -6,6 +6,9 @@
 
 ds_register 120 'conan-exiles|conan-exiles.yml|-|conan-exiles conan-bridge|12|6|sidecar|Conan Exiles + Takaro TypeScript sidecar|conan-exiles'
 
+# The rig id contains a hyphen that is part of the catalog game id.
+ds_target_game_conan_exiles() { printf 'conan-exiles'; }
+
 # The compose file mounts the install at /conan from here, and that is what the ledger
 # describes; the rendered bridge config lives beside it under bridge/.
 ds_target_dest_conan_exiles() { printf '%s/server' "$(ds_data_dir conan-exiles)"; }

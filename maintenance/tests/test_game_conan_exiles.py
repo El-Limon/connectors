@@ -988,6 +988,7 @@ def test_dev_servers_conan_functions_dispatch() -> None:
         assert completed.returncode == 0, f"{script.name}: {completed.stderr}"
 
     assert bash(". dev-servers/lib/common.sh; ds_target_prefix conan-exiles").strip() == "CONAN_EXILES"
+    assert bash(". dev-servers/lib/common.sh; ds_target_game conan-exiles").strip() == "conan-exiles"
     assert bash(". dev-servers/lib/common.sh; ds_target_dest conan-exiles").strip().endswith("/conan-exiles/server")
     for step in ("install", "deploy"):
         found = bash(f'. dev-servers/lib/common.sh; declare -F "{step}_conan_exiles" >/dev/null && echo yes')

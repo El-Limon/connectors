@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,35 @@ def test_the_repository_catalog_is_valid(run: Any) -> None:
     assert code == 0, payload
     assert payload["ok"] is True
     assert payload["failures"] == []
+
+
+def test_every_catalog_dev_server_claim_has_a_registered_rig() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    script = """
+        . dev-servers/lib/common.sh
+        for rig in $(ds_game_ids); do
+            printf '%s|%s|%s\\n' "$rig" "$(ds_target_game "$rig")" "$(basename "$(ds_compose_file "$rig")")"
+        done
+    """
+    completed = subprocess.run(["bash", "-c", script], cwd=repo, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    rigs = {
+        rig: {"game": game, "compose": compose}
+        for rig, game, compose in (line.split("|", 2) for line in completed.stdout.splitlines())
+    }
+
+    for game_file in sorted((repo / "catalog").glob("*/game.json")):
+        game = json.loads(game_file.read_text(encoding="utf-8"))
+        dev = game.get("devServers") or {}
+        if compose := dev.get("composeFile"):
+            assert (repo / "dev-servers" / "compose" / compose).is_file(), game_file
+            assert any(row["game"] == game["id"] and row["compose"] == compose for row in rigs.values()), game_file
+
+    for target_file in sorted((repo / "catalog").glob("*/targets/*.json")):
+        target = json.loads(target_file.read_text(encoding="utf-8"))
+        if rig := (target.get("devServers") or {}).get("gameId"):
+            assert rig in rigs, target_file
+            assert rigs[rig]["game"] == target_file.parents[1].name, target_file
 
 
 def test_id_must_match_platform_revision_and_file_name(run: Any, catalog_copy: Path) -> None:
