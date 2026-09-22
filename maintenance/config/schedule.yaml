@@ -1,5 +1,6 @@
 # Read by .github/workflows/maintenance.yml on every scheduled run. Tracked so that enabling
 # scheduled publication is a reviewed change on main, not a repository setting.
-# Values: disabled | enabled. The rollout ticket flips it after the rollout is proven.
-publish_schedule: disabled
+# Values: disabled | enabled. The rollout ticket flipped it after the rollout was proven; flip it back
+# to pause publication (docs/recovery.md).
+publish_schedule: enabled
 cron: "17 */6 * * *"
