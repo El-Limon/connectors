@@ -80,6 +80,8 @@ def _deploy(args: Any) -> int:
         # permissions, a kill) must leave the previously deployed connector in place rather than
         # a directory with no connector at all and a ledger that still describes the old one.
         staged = install_dir / (row["file"] + ".tmp")
+        artifact = install_dir / row["file"]
+        previous = install_dir / (row["file"] + ".previous")
         try:
             shutil.copy2(source, staged)
             with staged.open("rb") as handle:
@@ -87,13 +89,27 @@ def _deploy(args: Any) -> int:
         except BaseException:
             staged.unlink(missing_ok=True)
             raise
-        os.replace(staged, install_dir / row["file"])
+        if previous.exists() or previous.is_symlink():
+            staged.unlink(missing_ok=True)
+            raise ConflictError(f"refusing to overwrite deploy recovery file {previous}")
+        retired = artifact.exists() or artifact.is_symlink()
+        if retired:
+            os.replace(artifact, previous)
+        try:
+            os.replace(staged, artifact)
+            # A game whose artifact is not loaded as it lands -- an archive the server expects
+            # unpacked, say -- unpacks it here, once the file itself is in place.
+            adapter_for(target.game).after_deploy(dest, component, artifact)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            artifact.unlink(missing_ok=True)
+            if retired:
+                os.replace(previous, artifact)
+            raise
+        previous.unlink(missing_ok=True)
         for existing in superseded:
             existing.unlink()
             removed.append(f"{component['installDir']}/{existing.name}")
-        # A game whose artifact is not loaded as it lands -- an archive the server expects
-        # unpacked, say -- unpacks it here, once the file itself is in place.
-        adapter_for(target.game).after_deploy(dest, component, install_dir / row["file"])
         relative = f"{component['installDir']}/{row['file']}"
         deployed.append({"role": role, "path": relative, "sha256": row["sha256"]})
         output.info(f"deployed {relative} ({row['sha256'][:16]}…)")

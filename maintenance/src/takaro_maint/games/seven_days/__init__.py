@@ -18,7 +18,7 @@ from typing import Any
 from ... import output, paths
 from ...exit_codes import OK, BuildFailed, ConflictError
 from ...steam import install as steam_install
-from ..base import BaseAdapter, BuildResult, common_env, open_zip
+from ..base import BaseAdapter, BuildResult, common_env, open_zip, replace_directory
 
 GAME_ID = "7d2d"
 REFERENCES_ROOT = "games/7d2d/_data/7dtd-binaries"
@@ -222,7 +222,8 @@ class SevenDaysAdapter(BaseAdapter):
         shutil.rmtree(stage, ignore_errors=True)
         try:
             with open_zip(artifact) as archive:
-                for name in archive.namelist():
+                names = archive.namelist()
+                for name in names:
                     relative = name.rstrip("/")
                     if not relative:
                         continue
@@ -232,9 +233,14 @@ class SevenDaysAdapter(BaseAdapter):
                             "nothing was extracted"
                         )
                     paths.safe_relative(relative, field="artifact zip entry")
+                required = (f"{MOD_FOLDER}/ModInfo.xml", f"{MOD_FOLDER}/Takaro.dll")
+                missing = [name for name in required if name not in names]
+                if missing:
+                    raise ConflictError(
+                        f"{artifact.name} is missing {', '.join(missing)}; the installed mod is untouched"
+                    )
                 archive.extractall(stage)
-            shutil.rmtree(folder, ignore_errors=True)
-            os.replace(stage / MOD_FOLDER, folder)
+            replace_directory(stage / MOD_FOLDER, folder, subject=f"{MOD_FOLDER}/")
         finally:
             shutil.rmtree(stage, ignore_errors=True)
         for stale in sorted(install_dir.glob("takaro-7d2d-mod-*.zip")):

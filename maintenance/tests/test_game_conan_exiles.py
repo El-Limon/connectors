@@ -734,6 +734,72 @@ def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_bridge_and_its_config
     assert not list((dest / INSTALL_DIR).glob(".TakaroConanExiles.staging*"))
 
 
+def test_a_valid_zip_missing_the_bridge_tree_leaves_the_deployed_bridge_alone(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path
+) -> None:
+    """A valid zip is not necessarily a complete release; validate it before the swap."""
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    directory = tmp_path / "dist"
+    bridge_zip(directory / ZIP_NAME)
+    assert deploy(run, repo, dest, manifest_for(run, repo, directory, directory / ZIP_NAME))[0] == 0
+    live = dest / INSTALL_DIR / BRIDGE_FOLDER / "dist" / "index.js"
+    before = live.read_bytes()
+    installed_archive = dest / INSTALL_DIR / ZIP_NAME
+    archive_before = installed_archive.read_bytes()
+
+    with zipfile.ZipFile(directory / ZIP_NAME, "w"):
+        pass
+    code, payload, _ = deploy(run, repo, dest, manifest_for(run, repo, directory, directory / ZIP_NAME))
+
+    assert code == 7, payload
+    assert "is missing" in payload["error"]
+    assert live.read_bytes() == before
+    assert installed_archive.read_bytes() == archive_before
+
+
+def test_a_failed_final_directory_swap_restores_the_deployed_bridge(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    directory = tmp_path / "dist"
+    bridge_zip(directory / ZIP_NAME)
+    manifest = manifest_for(run, repo, directory, directory / ZIP_NAME)
+    assert deploy(run, repo, dest, manifest)[0] == 0
+    unpacked = dest / INSTALL_DIR / BRIDGE_FOLDER
+    before = sorted(
+        (path.relative_to(unpacked).as_posix(), path.read_bytes()) for path in unpacked.rglob("*") if path.is_file()
+    )
+    installed_archive = dest / INSTALL_DIR / ZIP_NAME
+    archive_before = installed_archive.read_bytes()
+
+    real_replace = os.replace
+    refused = False
+
+    def refuse_incoming_tree(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal refused
+        if not refused and Path(dst) == unpacked and Path(src).parent.name == ".TakaroConanExiles.staging":
+            refused = True
+            raise OSError(28, "No space left on device")
+        real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refuse_incoming_tree)
+
+    code, _, _ = deploy(run, repo, dest, manifest)
+
+    assert code != 0
+    assert refused
+    assert (
+        sorted(
+            (path.relative_to(unpacked).as_posix(), path.read_bytes()) for path in unpacked.rglob("*") if path.is_file()
+        )
+        == before
+    )
+    assert installed_archive.read_bytes() == archive_before
+    assert not (unpacked.parent / f".{BRIDGE_FOLDER}.previous").exists()
+
+
 def test_deploy_keeps_the_operators_config_and_drops_the_previous_release(
     run: Any, repo: Path, dd_log: Path, tmp_path: Path
 ) -> None:

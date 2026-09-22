@@ -167,6 +167,7 @@ def _install(args: Any) -> int:
     before = tree_hash(dest)
     dest.mkdir(parents=True, exist_ok=True)
     ledger_inputs: list[dict[str, Any]] = []
+    world_moves: list[tuple[Path, Path]] = []
     try:
         with StagedInstall(dest=dest, fp16=target.fp16, preserve=preserve) as staging:
             for plan in plans:
@@ -190,7 +191,9 @@ def _install(args: Any) -> int:
                 destination = dest / moved_world
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 for world in worlds:
-                    shutil.move(str(world), str(destination / world.name))
+                    moved = destination / world.name
+                    shutil.move(str(world), str(moved))
+                    world_moves.append((world, moved))
                 output.info(f"moved {len(worlds)} world director(y|ies) to {moved_world}")
 
             placed = staging.commit()
@@ -198,6 +201,10 @@ def _install(args: Any) -> int:
             # byte-identical to what it was.
             removed = _remove_superseded(dest, superseded)
     except BaseException:
+        for original, moved in reversed(world_moves):
+            if moved.exists() and not original.exists():
+                original.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(moved), str(original))
         after = tree_hash(dest)
         if after != before:
             output.warn(f"{dest} changed during a failed install")

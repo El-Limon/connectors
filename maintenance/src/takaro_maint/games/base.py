@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +119,42 @@ def open_zip(artifact: Path) -> zipfile.ZipFile:
         return zipfile.ZipFile(artifact)
     except zipfile.BadZipFile as exc:
         raise ConflictError(f"{artifact.name} is not a zip archive; nothing was extracted ({exc})") from exc
+
+
+def replace_directory(staged: Path, destination: Path, *, subject: str) -> None:
+    """Replace one live directory, restoring it if the final rename fails.
+
+    Extraction happens before this function is called.  A well-formed zip can still be
+    structurally incomplete, though, so the staged root is checked before the live tree
+    moves.  Once it does move, it remains beside the destination until the incoming tree
+    is live; any failed second rename puts it back.
+    """
+    if not staged.is_dir():
+        raise ConflictError(f"the artifact unpacked without {subject}; the installed {subject} is untouched")
+
+    previous = destination.with_name(f".{destination.name}.previous")
+    if previous.exists() or previous.is_symlink():
+        raise ConflictError(
+            f"cannot replace {subject}: recovery directory {previous} already exists; "
+            "the installed connector is untouched"
+        )
+
+    replaced = destination.exists() or destination.is_symlink()
+    if replaced:
+        os.replace(destination, previous)
+    try:
+        os.replace(staged, destination)
+    except BaseException:
+        if replaced:
+            try:
+                os.replace(previous, destination)
+            except OSError as restore_error:
+                raise ConflictError(
+                    f"could not install or restore {subject}; the previous tree remains at {previous} ({restore_error})"
+                ) from restore_error
+        raise
+    if replaced:
+        shutil.rmtree(previous)
 
 
 def common_env(resolved: dict[str, Any], prefix: str) -> dict[str, str]:
