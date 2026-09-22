@@ -867,7 +867,7 @@ def test_compat_record_carries_the_steam_and_carbon_pins(run: Any, repo: Path, t
     assert code == 0, f"{err}\n{payload}"
     record = json.loads((out / f"takaro-{GAME}-{VERSION}.compat.json").read_text())
     entry = record["targets"][TARGET]
-    assert entry["verification"]["required"] == "build"
+    assert entry["verification"]["required"] == "contract"
     assert entry["verification"]["executed"] is None
     server_url = entry["inputs"]["server"]["url"]
     assert server_url.startswith("steam://app/258550/branch/public/build/25353106/")
