@@ -36,8 +36,8 @@ from ...verify.runner import docker_command
 
 CHECK_IDS = ("handshake", "items", "entities", "action", "reconnect", "stop")
 
-#: The server registers with Steam once the world is up; this is the marker every previous
-#: live run has used to say "the server is serving".
+#: The server registers with Steam once the world is up, so this line is what "the server
+#: is serving" looks like in the log.
 READY_LINE = re.compile(r"Game server connected")
 
 #: Base checks this connector cannot satisfy, and the check that stands in for each.

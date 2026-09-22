@@ -165,7 +165,7 @@ def test_catalog_validate_accepts_the_terraria_target(run: Any) -> None:
 
 
 def test_a_stable_image_tag_is_refused(run: Any, repo: Path) -> None:
-    """`stable` is the tag this connector used to run. Pinning it again has to fail."""
+    """A floating tag such as `stable` is never a pin: validation has to refuse it."""
     record = read_target(repo)
     record["runtime"]["container"]["tag"] = "stable"
     write_target(repo, record)
@@ -1137,7 +1137,7 @@ def test_dev_servers_terraria_rig_parses_and_resolves() -> None:
     assert bash(". dev-servers/lib/common.sh; ds_target_prefix terraria").strip() == "TERRARIA"
     assert bash(". dev-servers/lib/common.sh; ds_target_dest terraria").strip().endswith("/terraria")
     assert bash(". dev-servers/lib/common.sh; ds_success_pattern_terraria").strip() == "Identified successfully"
-    # The shared registry row is #157's fixture, not this game's to rewrite.
+    # The registry row is shared across games: assert it, never rewrite it from here.
     registry = bash(". dev-servers/lib/common.sh; ds_registry")
     assert "terraria|terraria.yml|-|terraria|1|1|plugin|" in registry
 
@@ -1202,7 +1202,7 @@ def test_the_workflow_delegates_to_connector_release_without_runtime_ci() -> Non
     assert "uses: ./.github/workflows/connector-release.yml" in body
     assert "connector: terraria" in body
     assert "runtime: false" in body
-    # The old hand-rolled package job is gone: nothing here sets up .NET or names the assets.
+    # The workflow packages nothing itself: it sets up no .NET and names no assets.
     assert "setup-dotnet" not in body
     assert "--mode legacy" not in body
     assert "catalog/terraria/**" in body

@@ -912,7 +912,7 @@ def test_dev_servers_rust_rig_is_target_driven() -> None:
     assert "/takaro/start.sh" in compose
     assert "build:" not in compose
 
-    # AC3: nothing tracked reaches for the branch head or the moving Carbon alias. The
+    # Nothing tracked reaches for the branch head or the moving Carbon alias. The
     # prose that explains the pin lives in DEVELOPMENT.md, which is excluded.
     audited = subprocess.run(
         [

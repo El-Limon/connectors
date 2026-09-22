@@ -102,8 +102,8 @@ ds_ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 # ── Scratch directories ──────────────────────────────────────────────────────
 # A directory a step needs until the script exits. Registered here rather than with a
 # per-function `trap ... RETURN`: bash runs a RETURN trap again when the *caller* returns,
-# in a scope where the function's `local` is gone, and under `set -u` that killed the
-# script after the work had already succeeded. The path is handed back through a nameref
+# in a scope where the function's `local` is gone, and under `set -u` that kills the
+# script after the work has already succeeded. The path is handed back through a nameref
 # rather than stdout, because a command substitution runs in a subshell whose registration
 # the parent would never see.
 DS_SCRATCH_DIRS=()

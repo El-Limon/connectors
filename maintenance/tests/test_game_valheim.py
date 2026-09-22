@@ -813,7 +813,7 @@ def test_verify_hooks_render_config_and_use_the_valheim_lines(tmp_path: Path) ->
 
 
 def test_the_hook_patterns_match_the_lines_the_server_really_writes() -> None:
-    # Captured from an isolated run on this exact pin (issue #161 evidence).
+    # Captured from an isolated run on this exact pin.
     assert hooks.READY_LINE.search("09/21/2026 17:52:48: Game server connected")
     assert hooks.HANDSHAKE_LINE.search("[Info   :Takaro Valheim] Takaro Valheim identified as gameServerId=3f0c..")
     loaded = hooks.LOADED_LINE.search("[Info   :   BepInEx] Loading [Takaro Valheim 3.0.3]")

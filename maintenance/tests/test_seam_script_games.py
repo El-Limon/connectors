@@ -316,7 +316,7 @@ def test_a_java_version_below_the_floor_is_still_rejected(run: Any, stub_game: P
 
 
 def test_an_unknown_build_system_is_rejected(run: Any, stub_game: Path) -> None:
-    """The target schema no longer spells out the build systems, so this is the only gate."""
+    """The target schema does not enumerate the build systems, so this is the only gate."""
     record = _target_record()
     record["build"]["system"] = "not-a-real-system"
     write_target(stub_game, record)

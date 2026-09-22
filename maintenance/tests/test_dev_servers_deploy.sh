@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # dev-servers deploy steps: a successful deploy has to return, not kill the script.
 #
-# Each catalog-driven game used to make its scratch directory with `local tmp` plus a
-# `trap 'rm -rf "$tmp"' RETURN`. Bash runs a RETURN trap again when the *caller* returns
-# -- here `ds_dispatch` -- in a scope where the function's `local` is gone, so under
-# `set -u` the trap expanded an unbound `$tmp` and the script died with status 1 after the
-# deploy had already succeeded. `ds_scratch_dir` registers the directory for the script's
-# own EXIT instead.
+# A scratch directory made with `local tmp` and a `trap 'rm -rf "$tmp"' RETURN` kills the
+# deploy that succeeded: bash runs a RETURN trap again when the *caller* returns -- here
+# `ds_dispatch` -- in a scope where the function's `local` is gone, so under `set -u` the
+# trap expands an unbound `$tmp` and the script dies with status 1 after the deploy is
+# done. `ds_scratch_dir` registers the directory for the script's own EXIT instead.
 #
 # Every case runs `ds_dispatch deploy <game>` followed by `echo after` in a
 # `bash -euo pipefail` child with the tool and reporting helpers stubbed, and asserts that

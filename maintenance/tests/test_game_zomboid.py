@@ -607,7 +607,7 @@ def test_the_catalogue_rule_states_the_limit_instead_of_pretending_there_is_none
     assert detail["unnamed"]["examples"][0].startswith("Base.Wound_")
     assert detail["spotCheck"]["actual"] == "Firefighter Axe"
 
-    # Every row reported by its own id: the display-name lookup is gone, not the game's.
+    # Every row named by its own id: the display-name lookup is broken, not the game's catalogue.
     broken = [{"code": row["code"], "name": row["code"]} for row in [*named, spot]]
     problems, _ = hooks._catalogue_problems(broken, "items", ("Base.Axe", "Firefighter Axe"))
     assert any("display-name lookup looks broken" in problem for problem in problems)

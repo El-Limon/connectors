@@ -171,7 +171,7 @@ def _check_build_system(result: ValidationResult, target: Target) -> None:
         return
     schema_name = f"build-systems/{system}.schema.json"
     if not schema.has_schema(schema_name):
-        # The target schema no longer spells out the build systems, so this is the only
+        # The target schema does not enumerate the build systems, so this is the only
         # gate on them: an unknown system must fail here rather than pass unchecked.
         result.add(
             "build-system-schema",

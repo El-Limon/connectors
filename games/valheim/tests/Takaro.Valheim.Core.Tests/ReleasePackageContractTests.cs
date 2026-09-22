@@ -61,8 +61,8 @@ public sealed class ReleasePackageContractTests
         var workflow = ReadRepositoryFile(".github/workflows/valheim.yml");
         var game = ReadRepositoryFile("catalog/valheim/game.json");
 
-        // The release script no longer spells either archive name: it takes both from the
-        // resolved target, one key per role, so a re-pin renames the artifacts on its own.
+        // The release script spells neither archive name: it takes both from the resolved
+        // target, one key per role, so a re-pin renames the artifacts on its own.
         StringAssert.Contains(release, "VALHEIM_ARTIFACT_SERVER_PLUGIN");
         StringAssert.Contains(release, "VALHEIM_ARTIFACT_CLIENT_COMPANION");
         Assert.IsFalse(

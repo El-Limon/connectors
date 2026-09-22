@@ -586,10 +586,9 @@ public sealed class PluginScaffoldContractTests
         var workflow = ReadRepositoryFile(".github/workflows/valheim.yml");
         var shared = ReadRepositoryFile(".github/workflows/connector-release.yml");
 
-        // The old cache keyed one fixed _data/server directory, so every server build shared
-        // one cache and a re-pin could restore another build's assemblies. The inputs now
-        // live under their target's fingerprint and the shared release workflow caches on
-        // exactly that.
+        // Inputs live under their target's fingerprint, so a re-pin can never be served
+        // another build's assemblies from cache. A cache keyed on a fixed directory would
+        // share one entry across every server build.
         foreach (var gone in new[] { "_data/server", "valheim-build-deps" })
         {
             Assert.IsFalse(workflow.Contains(gone, StringComparison.Ordinal), gone);
