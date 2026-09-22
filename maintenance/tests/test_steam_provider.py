@@ -568,7 +568,8 @@ def test_bootstrap_files_the_uncovered_public_head(run: Any, tracker: Any, steam
 
     body = tracker.body()
     assert body.splitlines()[0] == (
-        f"<!-- takaro-maint: kind=support provider=steam component=7d2d branch=public rev={expected} -->"
+        "<!-- takaro-maint: kind=support provider=steam component=7d2d app=294420 "
+        f"branch=public buildid=25100000 rev={expected} -->"
     )
     assert "| Build id | 25100000 |" in body
     assert f"| Depot 294422 manifest | `{SECOND_MANIFEST}`" in body

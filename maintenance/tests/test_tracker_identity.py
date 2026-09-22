@@ -8,6 +8,7 @@ the marker" and "a human deleted the block" are cheaper to state than to stage.
 from __future__ import annotations
 
 import test_scan_support as support
+from takaro_maint.providers.base import Observation
 from takaro_maint.tracker import identity, issues
 
 MARKER = {"kind": "support", "provider": "mojang", "component": "minecraft", "branch": "release", "rev": "26.3"}
@@ -53,6 +54,27 @@ def test_canonical_identity_leaves_the_kind_to_the_marker() -> None:
 
     assert observation.identity == "provider=mojang component=minecraft branch=release rev=26.3"
     assert identity.support_marker(observation) == MARKER
+
+
+def test_steam_support_marker_carries_catalog_join_keys() -> None:
+    observation = Observation(
+        provider="steam",
+        component="enshrouded",
+        branch="public",
+        rev="23178631.abc123+public",
+        kind="game",
+        identity="steam-observation",
+        facts={"app": 2278520, "buildid": 23178631},
+    )
+
+    marker = identity.support_marker(observation)
+
+    assert marker["app"] == "2278520"
+    assert marker["buildid"] == "23178631"
+    assert identity.render_marker(marker) == (
+        "<!-- takaro-maint: kind=support provider=steam component=enshrouded app=2278520 "
+        "branch=public buildid=23178631 rev=23178631.abc123+public -->"
+    )
 
 
 def test_render_body_keeps_text_outside_the_owned_block() -> None:

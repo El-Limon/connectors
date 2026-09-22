@@ -548,6 +548,29 @@ def test_identity_steam_matches_app_branch_buildid() -> None:
     assert lifecycle.matching_targets(STEAM_MARKER, [other_branch], game_id="enshrouded", ref="main") == []
 
 
+def test_identity_steam_matches_compound_revision_and_legacy_marker() -> None:
+    record = _record(
+        id="win-19783520",
+        game="enshrouded",
+        platform="win",
+        revision="1.2.3",
+        inputs={"server": {"kind": "steam-depots", "app": "2278520", "branch": "public", "buildid": "19783520"}},
+    )
+    current = {
+        **STEAM_MARKER,
+        "buildid": "19783520",
+        "rev": "19783520.0123456789abcdef+public",
+    }
+    legacy = {key: value for key, value in current.items() if key not in {"app", "buildid"}}
+
+    assert [t.id for t in lifecycle.matching_targets(current, [record], game_id="enshrouded", ref="main")] == [
+        "win-19783520"
+    ]
+    assert [t.id for t in lifecycle.matching_targets(legacy, [record], game_id="enshrouded", ref="main")] == [
+        "win-19783520"
+    ]
+
+
 def _paper(revision: str = "26.3", *, game_version: str | None = None) -> dict[str, Any]:
     return _record(
         id=f"paper-{revision}",
