@@ -516,9 +516,10 @@ ROLLOUT_DOCS = {
     ),
 }
 
-PRIVATE = re.compile(
-    r"/home/|/srv/|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|takaro-maintenance-sandbox"
-)
+#: A published document must carry no author's path, no identifier from a private system, and no
+#: repository other than this one -- the trackers a rollout is proved against are private.
+PRIVATE = re.compile(r"/home/|/srv/|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+FOREIGN_REPO = re.compile(r"github\.com/(?!gettakaro/connectors)[\w.-]+/[\w.-]+")
 
 
 def test_the_docs_index_lists_the_rollout_documents() -> None:
@@ -539,5 +540,5 @@ def test_the_docs_index_lists_the_rollout_documents() -> None:
         text = path.read_text(encoding="utf-8")
         for heading in headings:
             assert heading in text, f"{name} has no {heading!r} section"
-        leaked = [line for line in text.splitlines() if PRIVATE.search(line)]
-        assert leaked == [], f"{name} leaks a private path, host or id:\n" + "\n".join(leaked)
+        leaked = [line for line in text.splitlines() if PRIVATE.search(line) or FOREIGN_REPO.search(line)]
+        assert leaked == [], f"{name} leaks a private path, id or repository:\n" + "\n".join(leaked)
