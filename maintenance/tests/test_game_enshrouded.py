@@ -797,7 +797,10 @@ def test_every_container_selector_is_pinned_and_never_schedules_updates() -> Non
         assert froms and all(base == sidecar_runtime for base in froms), f"{relative}: {froms}"
 
     builder = (REPO_ROOT / "games/enshrouded/Dockerfile.builder").read_text(encoding="utf-8")
-    assert f"FROM {toolchain}\n" in builder
+    assert "ARG TOOLCHAIN\nFROM ${TOOLCHAIN}\n" in builder
+    assert toolchain not in builder
+    build_script = (REPO_ROOT / "games/enshrouded/scripts/lib-target.sh").read_text(encoding="utf-8")
+    assert '--build-arg "TOOLCHAIN=${ENSHROUDED_TOOLCHAIN:?resolve the target first}"' in build_script
     zig = record["build"]["deps"]["zig"]
     assert f"ARG ZIG_URL={zig['resolvedCoordinate']}\n" in builder
     assert f"ARG ZIG_SHA256={zig['sha256']}\n" in builder

@@ -13,6 +13,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.builder
+      args:
+        TOOLCHAIN: "${SEVEND2D_TOOLCHAIN:?run scripts/setup-environment.sh first}"
     volumes:
       - ./:/app
       - ./_data/7dtd-binaries/${SEVEND2D_FP16:?run scripts/setup-environment.sh first}:/app/_data/7dtd-binaries
@@ -29,6 +31,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.builder
+      args:
+        TOOLCHAIN: "${SEVEND2D_TOOLCHAIN:?run scripts/setup-environment.sh first}"
     environment:
       SEVEND2D_FINGERPRINT: "${SEVEND2D_FINGERPRINT:?run scripts/setup-environment.sh first}"
       SEVEND2D_DEP_WEBSOCKET_SHARP_URL: "${SEVEND2D_DEP_WEBSOCKET_SHARP_URL:?}"

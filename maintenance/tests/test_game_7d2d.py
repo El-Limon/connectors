@@ -26,6 +26,7 @@ GAME = "7d2d"
 VERSION = "0.1.6-dev.abc1234"
 ZIP_NAME = f"takaro-7d2d-mod-{TARGET}-{VERSION}.zip"
 MANAGED = "7DaysToDieServer_Data/Managed"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -71,6 +72,15 @@ def test_targets_resolve_env_for_7d2d(run: Any) -> None:
     assert env["SEVEND2D_REFERENCES_DIR"].endswith(payload["fp16"])
     assert not any(key.endswith("_JAVA") for key in env)
     assert payload["resolvedUrls"]["server"].startswith("steam://app/294420/branch/public/")
+
+
+def test_builder_uses_the_resolved_toolchain() -> None:
+    dockerfile = (REPO_ROOT / "games/7d2d/Dockerfile.builder").read_text(encoding="utf-8")
+    compose = (REPO_ROOT / "games/7d2d/docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "ARG TOOLCHAIN\nFROM ${TOOLCHAIN}\n" in dockerfile
+    assert "mono:6.12.0.182-slim@sha256:" not in dockerfile
+    assert compose.count('TOOLCHAIN: "${SEVEND2D_TOOLCHAIN:?run scripts/setup-environment.sh first}"') == 2
 
 
 # -- steam pin ---------------------------------------------------------------------------
@@ -643,12 +653,11 @@ def test_compat_record_carries_the_steam_pin(run: Any, repo: Path, tmp_path: Pat
 
 # -- the dev-servers split ---------------------------------------------------------------
 
-DS_ROOT = Path(__file__).resolve().parents[2] / "dev-servers"
+DS_ROOT = REPO_ROOT / "dev-servers"
 REGISTRY_FIXTURE = Path(__file__).parent / "fixtures" / "games" / "7d2d" / "dev-servers-registry.expected"
 
-# The one deliberate behaviour change in this PR: 7D2D's deployed artifact now depends on
-# its catalog target, so the target record is part of its source fingerprint. Everything
-# else in the registry has to come out of the split byte for byte.
+# 7D2D's deployed artifact depends on its catalog target, so the target record is part of
+# its source fingerprint. Everything else in the registry comes out of the split byte for byte.
 SEVEND2D_SOURCES = "games/7d2d/mod/src games/7d2d/mod/Takaro.csproj games/7d2d/mod/ModInfo.xml games/7d2d/version.txt"
 
 

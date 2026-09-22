@@ -3,7 +3,7 @@
 #
 # Source it, do not run it. `enshrouded_resolve_target [target-id]` exports the ENSHROUDED_* keys
 # `takaro-maint targets resolve` produces, so no script here hard-codes a game build, a
-# an image digest, a dependency URL or an artifact name.
+# zig/Node toolchain, an image digest, a dependency URL or an artifact name.
 #
 # The resolution itself is `scripts/lib/target.sh`, shared by every game; these are the
 # Enshrouded names for it, so nothing that sources this file has to change.
@@ -32,6 +32,7 @@ enshrouded_builder_image() {
     BUILDER_IMAGE="takaro-enshrouded-builder:${ENSHROUDED_FP16:?resolve the target first}"
     docker build -q \
         -f "${project_root}/Dockerfile.builder" \
+        --build-arg "TOOLCHAIN=${ENSHROUDED_TOOLCHAIN:?resolve the target first}" \
         --build-arg "ZIG_URL=${ENSHROUDED_DEP_ZIG_URL:?}" \
         --build-arg "ZIG_SHA256=${ENSHROUDED_DEP_ZIG_SHA256:?}" \
         -t "${BUILDER_IMAGE}" \

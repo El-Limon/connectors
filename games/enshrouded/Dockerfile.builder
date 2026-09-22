@@ -3,8 +3,9 @@
 # The plugin is cross-compiled for Windows with zig and the sidecar is compiled with the
 # Node toolchain, so one image carries both and neither build depends on what the host has
 # installed. The base and the zig tarball are the catalog target's `build.toolchain` and
-# `build.deps.zig`; a test asserts these literals still equal the record.
-FROM node:22-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9
+# `build.deps.zig`; the build script passes both from the resolved record.
+ARG TOOLCHAIN
+FROM ${TOOLCHAIN}
 
 # zip is what packages the release archives, xz-utils unpacks zig, git answers the build
 # script's revision questions. The base image has none of them.

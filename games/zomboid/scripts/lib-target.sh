@@ -3,7 +3,7 @@
 #
 # Source it, do not run it. `zomboid_resolve_target [target-id]` exports the ZOMBOID_* keys
 # `takaro-maint targets resolve` produces, so no script here hard-codes a game build, a
-# an image digest, a dependency URL or an artifact name.
+# JDK, an image digest, a dependency URL or an artifact name.
 #
 # The resolution itself is `scripts/lib/target.sh`, shared by every game; these are the
 # Zomboid names for it, so nothing that sources this file has to change.
