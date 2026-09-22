@@ -49,6 +49,14 @@ UNSUPPORTED_CHECKS = {
     "catalog-entities": ("spot-checks a Minecraft entity id; `entities` spot-checks a Valheim one"),
     "console": ("the base console check drives a Minecraft command; `action` drives a Valheim one"),
     "shutdown": ("asserts an exit code this server's teardown does not give; `stop` asserts the shutdown"),
+    "items": (
+        "the server plugin returns translation keys, not display names (README, warning row); "
+        "run `--checks items,entities` to see the failure; follow-up F2"
+    ),
+    "entities": (
+        "the server plugin returns translation keys, not display names (README, warning row); "
+        "run `--checks items,entities` to see the failure; follow-up F2"
+    ),
 }
 
 HANDSHAKE_LINE = re.compile(r"Takaro Valheim identified as gameServerId=")
@@ -156,9 +164,19 @@ def _catalogue_problems(entries: Any, request: str) -> list[str]:
     return problems
 
 
-def _looks_like_a_dev_name(name: str) -> bool:
+#: A prefab code that is not already a word a player would read: it joins words without a
+#: space (``SwordBronze``) or with an underscore (``Greydwarf_Elite``). A single plain word
+#: like ``Boar`` is excluded, because for those the code really is the display name.
+_COMPOUND_CODE = re.compile(r"_|(?<=[a-z0-9])[A-Z]")
+
+
+def _looks_like_a_dev_name(name: str, code: str | None = None) -> bool:
     """A localisation key or a class name rather than something a player would read."""
-    return name.startswith("$") or bool(re.match(r"^(item|enemy|piece|location)_", name))
+    if name.startswith("$") or re.match(r"^(item|enemy|piece|location)_", name):
+        return True
+    # Handing the code straight back is not a translation, unless the code happens to be
+    # the word itself: `Boar` is what a player reads, `SwordBronze` is not.
+    return code is not None and name == code and bool(_COMPOUND_CODE.search(code))
 
 
 def _named(entries: Any, code: str) -> str | None:
@@ -234,8 +252,19 @@ async def _check_catalogue(
         except Exception as exc:  # noqa: BLE001 - reported as a check failure
             problems.append(f"{request} failed: {exc}")
         problems += _catalogue_problems(entries, request)
-        names = [str(entry.get("name")) for entry in entries or [] if isinstance(entry, dict)]
-        human = bool(names) and not any(_looks_like_a_dev_name(name) for name in names)
+        rows = [entry for entry in entries or [] if isinstance(entry, dict)]
+        names = [str(entry.get("name")) for entry in rows]
+        offenders = [
+            f"{entry.get('code')} -> {entry.get('name')}"
+            for entry in rows
+            if _looks_like_a_dev_name(str(entry.get("name")), str(entry.get("code")))
+        ]
+        human = bool(names) and not offenders
+        if offenders:
+            problems.append(
+                f"{check_id}: {len(offenders)} of {len(names)} names are translation keys or class names, "
+                f"e.g. {', '.join(offenders[:3])}"
+            )
         logged = None
         if check_id == "items" and not problems:
             # The response comes back over the websocket; the line reaches server.log only
@@ -261,8 +290,6 @@ async def _check_catalogue(
             "count": len(entries) if isinstance(entries, list) else None,
             "loggedCount": logged,
             "spotCheck": {"code": spot, "name": _named(entries, spot)},
-            # Recorded, never asserted: what this server returns is the finding, and the
-            # README and the target notes say which of the two it is today.
             "humanNames": human,
             "problems": problems,
         },
