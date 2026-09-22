@@ -281,11 +281,31 @@ def test_a_separate_verification_claim_must_name_a_real_check(run: Any, catalog_
 
 
 def test_online_validation_passes_against_matching_upstream(run: Any, wired: Any) -> None:
+    """Whole-catalog online validation covers exactly the targets ``wired.served`` declares."""
     code, payload, _ = run("catalog", "validate", "--online", repo=wired.root)
 
     assert code == 0, payload
     ids = {check["id"] for check in payload["checks"]}
     assert {"online-manifest", "online-hash"} <= ids
+
+
+def test_the_wired_fixture_serves_exactly_the_targets_it_says(wired: Any) -> None:
+    assert wired.served == ("fabric-26.1.2", "fabric-26.2")
+    assert wired.unserved == {
+        "carbon-25353106": "no repinner for platform 'carbon'",
+        "linux-1.0.15": "no repinner for platform 'linux'",
+        "linux-25356024": "no repinner for platform 'linux'",
+        "linux-3.2.0.b10": "no repinner for platform 'linux'",
+        "linux-42.20.4": "no repinner for platform 'linux'",
+        "neoforge-1.21.11": "no repinner for platform 'neoforge'",
+        "paper-1.21.11": "no repinner for platform 'paper'",
+        "proton-1024233": "no repinner for platform 'proton'",
+        "tshock-v6.1.0": "no repinner for platform 'tshock'",
+    }
+    remaining = sorted(
+        json.loads(path.read_text(encoding="utf-8"))["id"] for path in (wired.root / "catalog").glob("*/targets/*.json")
+    )
+    assert remaining == list(wired.served)
 
 
 def test_online_validation_reports_a_changed_upstream_hash(run: Any, wired: Any) -> None:
