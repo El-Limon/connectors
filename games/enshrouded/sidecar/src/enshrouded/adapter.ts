@@ -93,7 +93,7 @@ export class EnshroudedAdapter {
         const recipient = asRecord(opts.recipient);
         const recipientId = str(recipient.gameId) ?? str(recipient.steamId) ?? str(args.recipientGameId);
         await this.plugin.sendMessage(text, recipientId ? await this.resolvePluginId(recipientId) : undefined);
-        return {};
+        return { success: true };
       }
       case 'teleportPlayer': {
         const pluginId = await this.resolvePluginId(playerId(args));
