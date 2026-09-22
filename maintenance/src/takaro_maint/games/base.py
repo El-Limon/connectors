@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from ..exit_codes import ConflictError
 
 
 @dataclass
@@ -101,6 +104,19 @@ class BaseAdapter:
     def container_command(self, resolved: dict[str, Any], data_dir: Path) -> list[str] | None:
         """``None``: the image's own Cmd is what this server starts with."""
         return None
+
+
+def open_zip(artifact: Path) -> zipfile.ZipFile:
+    """``zipfile.ZipFile``, with a non-zip artifact as a deploy conflict rather than a crash.
+
+    The manifest's sha256 says the bytes are the ones that were built; it says nothing
+    about them being a zip. A `BadZipFile` escaping an `after_deploy` is a traceback and
+    exit 1, which reads as a bug in the tool rather than a bad artifact.
+    """
+    try:
+        return zipfile.ZipFile(artifact)
+    except zipfile.BadZipFile as exc:
+        raise ConflictError(f"{artifact.name} is not a zip archive; nothing was extracted ({exc})") from exc
 
 
 def common_env(resolved: dict[str, Any], prefix: str) -> dict[str, str]:

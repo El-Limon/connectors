@@ -1491,6 +1491,34 @@ def test_an_archive_without_what_the_server_loads_is_refused(
     assert not landed.exists()
 
 
+@pytest.mark.parametrize("role", ["plugin", "bridge"])
+@pytest.mark.parametrize("body", [b"not a zip at all", b"PK\x03\x04truncated"])
+def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_connector_alone(
+    run: Any, pinned: Any, tmp_path: Path, role: str, body: bytes
+) -> None:
+    """The manifest's sha256 says the bytes are the built ones, not that they are a zip."""
+    dest = tmp_path / "terraria"
+    installed(run, pinned, dest)
+    directory = tmp_path / "dist"
+    plugin_zip(directory)
+    bridge_zip(directory)
+    assert deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))[0] == 0
+    landed = (
+        dest / "plugins" / "TakaroTerrariaEvents.dll"
+        if role == "plugin"
+        else dest / "bridge" / "TakaroTerrariaBridge" / "dist" / "index.js"
+    )
+    before = landed.read_bytes()
+
+    (directory / (PLUGIN_ZIP if role == "plugin" else BRIDGE_ZIP)).write_bytes(body)
+    code, payload, _ = deploy(run, pinned.root, dest, manifest_for(run, pinned.root, directory))
+
+    assert code == 7, payload
+    assert "is not a zip archive" in json.dumps(payload)
+    assert landed.read_bytes() == before
+    assert not list(dest.glob(".*.staging*"))
+
+
 def test_prerelease_tags_sort_by_number_not_by_string() -> None:
     """A suffix is a prerelease of the version it hangs off, so it sorts before it."""
     from takaro_maint.providers.oci_registry import _sort_key

@@ -22,13 +22,12 @@ import os
 import re
 import shutil
 import subprocess
-import zipfile
 from pathlib import Path
 from typing import Any
 
 from ... import output, paths
 from ...exit_codes import BuildFailed, ConflictError
-from ..base import BaseAdapter, BuildResult, common_env
+from ..base import BaseAdapter, BuildResult, common_env, open_zip
 
 GAME_ID = "terraria"
 REFERENCES_ROOT = "games/terraria/_data/refs"
@@ -207,7 +206,7 @@ class TerrariaAdapter(BaseAdapter):
 
     def _entries(self, artifact: Path, folder: str, required: tuple[str, ...]) -> list[str]:
         """Every zip entry, checked before anything is extracted: inside ``folder``, and complete."""
-        with zipfile.ZipFile(artifact) as archive:
+        with open_zip(artifact) as archive:
             names = archive.namelist()
         entries: list[str] = []
         for name in names:
@@ -232,7 +231,7 @@ class TerrariaAdapter(BaseAdapter):
         self._entries(artifact, PLUGIN_FOLDER, (PLUGIN_DLL,))
         target = install_dir / PLUGIN_DLL
         staged = install_dir / (PLUGIN_DLL + ".tmp")
-        with zipfile.ZipFile(artifact) as archive, archive.open(f"{PLUGIN_FOLDER}/{PLUGIN_DLL}") as source:
+        with open_zip(artifact) as archive, archive.open(f"{PLUGIN_FOLDER}/{PLUGIN_DLL}") as source:
             staged.write_bytes(source.read())
         os.replace(staged, target)
         for stale in sorted(install_dir.glob("takaro-terraria-plugin-*.zip")):
@@ -249,7 +248,7 @@ class TerrariaAdapter(BaseAdapter):
         stage = install_dir / BRIDGE_STAGE
         shutil.rmtree(stage, ignore_errors=True)
         try:
-            with zipfile.ZipFile(artifact) as archive:
+            with open_zip(artifact) as archive:
                 archive.extractall(stage)
             shutil.rmtree(folder, ignore_errors=True)
             os.replace(stage / BRIDGE_FOLDER, folder)

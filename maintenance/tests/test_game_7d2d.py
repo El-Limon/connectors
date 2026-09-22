@@ -482,6 +482,34 @@ def test_a_zip_that_escapes_the_mod_folder_is_refused(run: Any, repo: Path, dd_l
     assert not (tmp_path / "escaped.txt").exists()
 
 
+@pytest.mark.parametrize("body", [b"not a zip at all", b"PK\x03\x04truncated"])
+def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_mod_alone(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, body: bytes
+) -> None:
+    """The manifest's sha256 says the bytes are the built ones, not that they are a zip."""
+    dest = tmp_path / "ServerFiles"
+    _installed(run, repo, dest)
+    directory = tmp_path / "dist"
+    _mod_zip(directory / ZIP_NAME)
+    manifest = _manifest_for(run, repo, directory, directory / ZIP_NAME)
+    assert (
+        run("deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(manifest), repo=repo)[0]
+        == 0
+    )
+    before = (dest / "Mods" / "Takaro" / "ModInfo.xml").read_text()
+
+    (directory / ZIP_NAME).write_bytes(body)
+    broken = _manifest_for(run, repo, directory, directory / ZIP_NAME)
+    code, payload, _ = run(
+        "deploy", "--game", GAME, "--target", TARGET, "--dest", str(dest), "--from", str(broken), repo=repo
+    )
+
+    assert code == 7, payload
+    assert "is not a zip archive" in json.dumps(payload)
+    assert (dest / "Mods" / "Takaro" / "ModInfo.xml").read_text() == before
+    assert not list((dest / "Mods").glob(".Takaro.staging*")), "no staging directory is left behind"
+
+
 # -- verification hooks ------------------------------------------------------------------
 
 

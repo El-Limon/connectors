@@ -609,6 +609,42 @@ def test_deploy_unpacks_the_bridge_folder_and_removes_older_zips(
     assert ledger["artifacts"][0]["path"] == f"{INSTALL_DIR}/{ZIP_NAME}"
 
 
+@pytest.mark.parametrize("body", [b"not a zip at all", b"PK\x03\x04truncated"])
+def test_an_artifact_that_is_not_a_zip_leaves_the_deployed_bridge_and_its_config_alone(
+    run: Any, repo: Path, dd_log: Path, tmp_path: Path, body: bytes
+) -> None:
+    """The manifest's sha256 says the bytes are the built ones, not that they are a zip."""
+    dest = tmp_path / "server"
+    assert install(run, repo, dest)[0] == 0
+    directory = tmp_path / "dist"
+    bridge_zip(directory / ZIP_NAME)
+    assert deploy(run, repo, dest, manifest_for(run, repo, directory, directory / ZIP_NAME))[0] == 0
+    unpacked = dest / INSTALL_DIR / BRIDGE_FOLDER
+    config = unpacked / "TakaroConfig.txt"
+    config.write_text("registrationToken=the-operators-own\n")
+    before = sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*"))
+
+    (directory / ZIP_NAME).write_bytes(body)
+    code, payload, _ = run(
+        "deploy",
+        "--game",
+        GAME,
+        "--target",
+        TARGET,
+        "--dest",
+        str(dest),
+        "--from",
+        str(manifest_for(run, repo, directory, directory / ZIP_NAME)),
+        repo=repo,
+    )
+
+    assert code == 7, payload
+    assert "is not a zip archive" in json.dumps(payload)
+    assert config.read_text() == "registrationToken=the-operators-own\n"
+    assert sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*")) == before
+    assert not list((dest / INSTALL_DIR).glob(".TakaroConanExiles.staging*"))
+
+
 def test_deploy_keeps_the_operators_config_and_drops_the_previous_release(
     run: Any, repo: Path, dd_log: Path, tmp_path: Path
 ) -> None:
