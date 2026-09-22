@@ -12,7 +12,8 @@
     "prepare:item-catalog": "node scripts/prepare-item-catalog.mjs",
     "verify:mod-protocol": "node scripts/validate-mod-protocol-live.mjs",
     "verify:live": "node scripts/verify-live.mjs",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test:scripts": "node --test \"../scripts/**/*.test.mjs\""
   },
   "license": "ISC",
   "dependencies": {
