@@ -33,6 +33,13 @@ class GameHooks:
     #: Check ids this game adds to the base ladder.
     check_ids: tuple[str, ...] = ()
 
+    #: Game check ids implemented by ``negative``. They are opt-in for a bare run, but an
+    #: explicit ``--checks`` selection invokes the hook even without the convenience flag.
+    negative_check_ids: tuple[str, ...] = ()
+
+    #: Check ids that only a hosted run can produce.
+    hosted_check_ids: tuple[str, ...] = ()
+
     #: Base check id -> why it cannot pass on this game, and which check stands in for it.
     #: A run that names no ``--checks`` excludes these rather than failing them.
     unsupported_checks: Mapping[str, str] = field(default_factory=dict)

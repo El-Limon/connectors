@@ -1064,6 +1064,7 @@ def _build_degraded(mod: Path, zig: str, signature: str, out: Path, resolved: di
 HOOKS = GameHooks(
     ready_line=READY_LINE,
     check_ids=CHECK_IDS,
+    negative_check_ids=("negative-degraded-hooks",),
     unsupported_checks=UNSUPPORTED_CHECKS,
     before_boot=before_boot,
     after_protocol=after_protocol,

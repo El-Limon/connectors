@@ -78,6 +78,11 @@ def game_hooks(game: str) -> GameHooks:
     if unknown:
         names = ", ".join(sorted(unknown))
         raise UsageError(f"{game} excludes check(s) outside the base verification ladder: {names}")
+    conditional = set(hooks.negative_check_ids) | set(hooks.hosted_check_ids)
+    undeclared = conditional - set(hooks.check_ids)
+    if undeclared:
+        names = ", ".join(sorted(undeclared))
+        raise UsageError(f"{game} marks undeclared verification check(s) as conditional: {names}")
     return hooks
 
 
@@ -232,6 +237,7 @@ class TargetRun:
         self.resolved = resolve(catalog, target)
         self.adapter = adapter_for(target.game)
         self.hooks = game_hooks(target.game)
+        self._checks_explicit = options.only is not None
         self.out = options.out / target.id
         self.out.mkdir(parents=True, exist_ok=True)
         self.server_log = self.out / "server.log"
@@ -418,13 +424,54 @@ class TargetRun:
             return
         self.options = replace(
             self.options,
-            only=[check for check in check_ids(self.target.game) if check not in unsupported],
+            only=[
+                check
+                for check in check_ids(self.target.game)
+                if check not in unsupported and self._wanted_by_mode(check)
+            ],
         )
         for check, reason in sorted(unsupported.items()):
             output.info(f"not running {check}: {reason}")
 
+    def _wanted_by_mode(self, check_id: str) -> bool:
+        """Whether a bare run's mode selects an opt-in check."""
+        if check_id in self.hooks.negative_check_ids:
+            return self.options.negative
+        if check_id in self.hooks.hosted_check_ids:
+            return self.options.takaro == "hosted"
+        return True
+
     def wanted(self, check_id: str) -> bool:
-        return self.options.only is None or check_id in self.options.only
+        if self.options.only is not None:
+            return check_id in self.options.only
+        return self._wanted_by_mode(check_id)
+
+    def selected_check_ids(self) -> tuple[str, ...]:
+        """Checks this invocation promised to run, including a generic negative request."""
+        selected = [check for check in check_ids(self.target.game) if self.wanted(check)]
+        if (
+            self.options.negative
+            and not self._checks_explicit
+            and not self.hooks.negative_check_ids
+            and "negative-wrong-target" not in selected
+        ):
+            selected.append("negative-wrong-target")
+        return tuple(selected)
+
+    def _record_missing_selected_checks(self) -> None:
+        """Turn a hook that forgot a selected check into evidence, never a false pass."""
+        recorded = {result.id for result in self.results}
+        for check_id in self.selected_check_ids():
+            if check_id not in recorded:
+                self.record(
+                    base_checks.CheckResult(
+                        check_id,
+                        "fail",
+                        0,
+                        {"problems": [f"selected check '{check_id}' produced no result"]},
+                    )
+                )
+                recorded.add(check_id)
 
     def record(self, result: base_checks.CheckResult) -> None:
         self.results.append(result)
@@ -565,13 +612,15 @@ class TargetRun:
                 if self.hooks.after_shutdown is not None:
                     await self.hooks.after_shutdown(self, fake, ws_url, ledger_inputs)
 
-                if self.options.negative:
+                negative_selected = any(self.wanted(check_id) for check_id in self.hooks.negative_check_ids)
+                if self.options.negative or negative_selected:
                     if self.hooks.negative is not None:
                         await self.hooks.negative(self, fake, ws_url, manifest)
                     else:
                         self.skip("negative-wrong-target", f"game '{self.target.game}' ships no negative check")
         finally:
             await fake.stop()
+            self._record_missing_selected_checks()
             self.cleanup()
 
         report = build_report(

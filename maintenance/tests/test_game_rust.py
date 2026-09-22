@@ -62,6 +62,13 @@ def test_every_rust_verification_body_has_pass_and_failure_paths(
     assert asyncio.run(hooks._check_carbon_compile(run, lambda: True)).status == "pass"
     assert asyncio.run(hooks._check_action(run, fake, lambda: True)).status == "pass"
     assert asyncio.run(hooks._check_stop(run, fake)).status == "pass"
+    assert run.container is not None
+    run.container.exit_code = -1
+    timed_out = asyncio.run(hooks._check_stop(run, fake))
+    assert timed_out.status == "fail"
+    assert timed_out.detail["exitCode"] == -1
+    assert "still running" in " ".join(timed_out.detail["problems"])
+    run.container.exit_code = 0
 
     async def passed_catalog(*args: Any, **kwargs: Any) -> Any:
         del kwargs
