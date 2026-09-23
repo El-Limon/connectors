@@ -55,7 +55,9 @@ for game in $GAMES; do
   if ! grep -qE "^## What works, what doesn't$" "$README"; then
     echo "Error: ${README} has no \"## What works, what doesn't\" section (see games/README-contract.md)" >&2
     FAILED=1
-  elif ! sed -n "/^## What works, what doesn't\$/,\$p" "$README" | grep -qE '✅|⚠️|❌'; then
+  elif ! awk '/^## What works, what doesn.t$/ { section = 1; next }
+              section && /✅|⚠️|❌/ { found = 1; exit }
+              END { exit !found }' "$README"; then
     echo "Error: ${README} \"What works, what doesn't\" uses none of the ✅/⚠️/❌ legend" >&2
     FAILED=1
   fi

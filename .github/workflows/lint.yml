@@ -68,6 +68,9 @@ jobs:
           for name in "${referenced[@]}"; do
             grep -qE "^${name}=." .env.example || export "${name}=placeholder"
           done
+          # Compose validates host-IP port bindings semantically, so this one fixture must
+          # be an address rather than the generic string used for ordinary interpolation.
+          export EXTERNAL_ADDRESS=127.0.0.1
           for file in compose/*.yml; do
             echo "::group::$file"
             docker compose --env-file .env.example -f "$file" config -q

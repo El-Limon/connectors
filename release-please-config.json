@@ -73,6 +73,14 @@
         { "type": "generic", "path": "mod/src/common.h" }
       ]
     },
+    "games/dune": {
+      "release-type": "simple",
+      "component": "dune",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        { "type": "generic", "path": "mod/src/common.h" }
+      ]
+    },
     "games/vein": {
       "release-type": "simple",
       "component": "vein",

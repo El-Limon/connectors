@@ -46,6 +46,9 @@ jobs:
       enshrouded_released: ${{ steps.rp.outputs['games/enshrouded--release_created'] }}
       enshrouded_tag: ${{ steps.rp.outputs['games/enshrouded--tag_name'] }}
       enshrouded_version: ${{ steps.rp.outputs['games/enshrouded--version'] }}
+      dune_released: ${{ steps.rp.outputs['games/dune--release_created'] }}
+      dune_tag: ${{ steps.rp.outputs['games/dune--tag_name'] }}
+      dune_version: ${{ steps.rp.outputs['games/dune--version'] }}
       vein_released: ${{ steps.rp.outputs['games/vein--release_created'] }}
       vein_tag: ${{ steps.rp.outputs['games/vein--tag_name'] }}
       vein_version: ${{ steps.rp.outputs['games/vein--version'] }}
@@ -176,6 +179,18 @@ jobs:
     with:
       version: ${{ needs.release-please.outputs.dragonwilds_version }}
       tag: ${{ needs.release-please.outputs.dragonwilds_tag }}
+
+  release-dune:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.dune_released == 'true' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/dune.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.release-please.outputs.dune_version }}
+      tag: ${{ needs.release-please.outputs.dune_tag }}
 
   release-vein:
     needs: release-please

@@ -1,0 +1,9 @@
+{
+  "source": "test fixture",
+  "note": "Hand-written by us, NOT derived from any community dataset: the tests must not depend on the generated catalogue (data/items.json is a gitignored build artefact — see data/SOURCES.md). Shapes only: `code` = items.template_id, `name` = the player-facing display name.",
+  "rows": [
+    { "code": "PowerPack2", "name": "Power Pack", "description": "Portable power cell." },
+    { "code": "WaterFlask", "name": "Water Flask", "description": "Holds drinking water." },
+    { "code": "SpiceMelange", "name": "Spice Melange", "description": "Refined spice." }
+  ]
+}

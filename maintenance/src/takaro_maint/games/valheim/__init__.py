@@ -251,7 +251,7 @@ class ValheimAdapter(BaseAdapter):
             **{str(k): str(v) for k, v in resolved["runtime"]["container"].get("env", {}).items()},
             "NAME": "takaro-verify",
             "WORLD": "takaro-verify",
-            "PASSWORD": "harambe",
+            "PASSWORD": "takaro-maint-check",
             "PUID": str(os.getuid()),
             "PGID": str(os.getgid()),
         }

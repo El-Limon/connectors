@@ -1,0 +1,10 @@
+# Toolchain for libtakaro-dune.so.
+# The Dune server image is Ubuntu 24.04.5 with glibc 2.39; the server ELF itself references at most
+# GLIBC_2.27 and links libstdc++ statically. We build on debian:bookworm (glibc 2.36) and link
+# libstdc++/libgcc statically, so the .so needs only GLIBC_<=2.36 - loadable in the 2.39 image, and
+# in anything newer. Building ON 2.39 would be the mistake: it would refuse to load anywhere older.
+FROM debian:bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates make python3 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

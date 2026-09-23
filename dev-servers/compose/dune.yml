@@ -1,0 +1,521 @@
+# DUNE: AWAKENING — TAKARO DEV RIG (disposable).
+#
+# Our own Compose expansion of Funcom's self-hosted "battlegroup", which they ship as an
+# Alpine + k3s VM with four operators expanding one `BattleGroup` custom resource. Nothing
+# is downloaded here: dev-servers/scripts/install.sh pulls Steam tool app 4754530 (linux
+# depot 4754532, anonymously, with DepotDownloader) and `docker load`s the image tarballs
+# out of it.
+#
+#   postgres -> db-init -> {admin-rmq, game-rmq} -> text-router -> director -> gateway -> survival
+#
+# Two circular-ish facts to know before reading further:
+#   * neither broker can authenticate anyone until text-router answers /v0/auth/*, yet
+#     text-router connects to both brokers. ~30 s of auth failures at cold start is normal;
+#     nothing gates on it.
+#   * there is NO rmq-auth-shim in Funcom's design — text-router IS the
+#     rabbitmq_auth_backend_http target. See images/dune/rabbitmq/game.conf.
+#
+# Host ports (everything else stays on the private network):
+#   7817/udp  game          (7777/udp belongs to the private `dragonwilds` project — never touched)
+#   7928/udp  IGW server-to-server (cross-map travel)
+#   31982/tcp game RabbitMQ, AMQPS only — clients and the sidecar reach the world through it
+#   ${EXTERNAL_ADDRESS}:15673/tcp  game RabbitMQ management API — bound to the tailnet
+#                                  address only, because the gateway has to reach the
+#                                  broker at the SAME public address it advertises to FLS.
+#
+# The advertised game port is 7817 end to end: -Port=7817 inside the container, mapped 1:1.
+# Do not "simplify" that to 7817:7777 — the port the process binds is the port FLS and the
+# client are told about.
+name: takaro-dev-dune
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-funcom-env: &funcom-env
+  # The one shared secret every service uses to sign RMQ HTTP auth tokens.
+  RMQ_HTTP_TOKEN_AUTH_SECRET: "${DUNE_RMQ_HTTP_TOKEN_AUTH_SECRET:?required}"
+  # The Funcom self-hosting token (a JWT from account.duneawakening.com). Everything up to
+  # and including text-router boots without it; director/gateway/survival need it to
+  # register the world with FLS, which is what makes it joinable.
+  FuncomLiveServices__ServiceAuthToken: "${DUNE_FLS_SECRET:-}"
+  FuncomLiveServices__DefaultFlsEnvironment: "${DUNE_FLS_ENV:-retail}"
+  WORLD_NAME: "${DUNE_WORLD_NAME:-Takaro Dev Dune}"
+  # MISLEADING NAME, PROVEN BY PROBE: the bg-director uses BATTLEGROUP_DISPLAY_NAME as the
+  # battlegroup **id** — it is the `bgd.<id>.<PCID>.game` broker account it mints and the
+  # `BattlegroupId` it sends to api/Director_InitializeDirector. With the human world name in
+  # here FLS answers 403 "Invalid Authorization to manage SelfHosted Battlegroup: <name>".
+  # The human-readable name reaches FLS through gateway__display_name / gateway__title.
+  BATTLEGROUP_DISPLAY_NAME: "${DUNE_WORLD_UNIQUE_NAME:?required}"
+  BATTLEGROUP_REGION_NAME: "${DUNE_FARM_REGION:-Europe}"
+  # THE battlegroup id FLS authorizes. Funcom's services resolve every setting as
+  # "<Section>__<Option>" (launch option -> /etc/app/conf.d/*.ini -> env var -> service.conf ->
+  # the UE ini hierarchy; see utilities/settings.py get_formatted_setting_keys). The names below
+  # are therefore NOT free-form: `OPT_SERVERNAME` is the python IDENTIFIER of the setting, not
+  # its key, and setting it as an env var does nothing — the gateway then falls back to
+  # "LOCAL-<hostname>-<user>" and FLS answers
+  # 403 "Could not find service authorization information for Battlegroup: LOCAL-GATEWAY-ROOT".
+  OnlineSubsystem__ServerName: "${DUNE_WORLD_UNIQUE_NAME:?required}"
+  # The FLS *region* the battlegroup is registered in. It MUST equal the director's
+  # BATTLEGROUP_REGION_NAME: the gateway's built-in default is "Europe West", and registering
+  # there while the director declares "Europe" makes every director call fail with
+  # "Battlegroup <id> does not exist in region Europe". Funcom's world.sh offers exactly
+  # Asia / Europe / North America / Oceania / South America.
+  OnlineSubsystem__DatacenterId: "${DUNE_FARM_REGION:-Europe}"
+  gateway__display_name: "${DUNE_WORLD_NAME:-Takaro Dev Dune}"
+  gateway__title: "${DUNE_WORLD_NAME:-Takaro Dev Dune}"
+  # Funcom set this on the gateway, the director AND text-router (world-template.yaml).
+  FuncomLiveServices__BattlegroupAuthorizationPreset: BattlegroupInternal
+  HOST_DATACENTER_ID: "${DUNE_FARM_REGION:-Europe}"
+  HOST_DATACENTER_IP_ADDRESS: "${EXTERNAL_ADDRESS:?required}"
+  TZ: Europe/Brussels
+
+x-pg-env: &pg-env
+  DuneDatabaseInterfacePSQL_DatabaseHost: postgres
+  DuneDatabaseInterfacePSQL_DatabasePort: "5432"
+  DuneDatabaseInterfacePSQL_DatabaseUser: dune
+  DuneDatabaseInterfacePSQL_DatabasePassword: "${DUNE_PG_PASSWORD:?required}"
+  DuneDatabaseInterfacePSQL_DatabaseName: "${DUNE_DB_NAME:-dune_sb_1_5_3_0}"
+  Database__address: postgres
+  Database__port: "5432"
+  Database__user: dune
+  Database__password: "${DUNE_PG_PASSWORD:?required}"
+  Database__database: "${DUNE_DB_NAME:-dune_sb_1_5_3_0}"
+
+services:
+  # ── 1. state ───────────────────────────────────────────────────────────────
+  postgres:
+    image: "${DUNE_POSTGRES_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-postgres
+    restart: unless-stopped
+    stop_grace_period: 1m
+    environment:
+      POSTGRES_USER: dune
+      POSTGRES_PASSWORD: "${DUNE_PG_PASSWORD:?required}"
+      # One database, created by the image. The game derives its name from
+      # BaseGame.ini `DatabaseName=dune%_BRANCH%` and the branch in
+      # Config/perforce-keywords.json (sb-1.5.3.0) -> dune_sb_1_5_3_0. The tables live
+      # in schema `dune` inside it, and db-init sets the database search_path.
+      POSTGRES_DB: "${DUNE_DB_NAME:-dune_sb_1_5_3_0}"
+      TZ: Europe/Brussels
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+    volumes:
+      - ../_data/dune-dev/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dune -d ${DUNE_DB_NAME:-dune_sb_1_5_3_0}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    logging: *logging
+
+  # One-shot schema bootstrap, using Funcom's own tooling that ships inside the
+  # db-utils image (/root/PSQL + /root/DuneSandbox/Database, 85 SQL files). `updatedb`
+  # creates the database if missing, imports the schema, sets up the user-data
+  # encryption the FLS-id column depends on, applies pending patches and initialises the
+  # world partitions from a named preset. It is a no-op once the schema is current.
+  db-init:
+    image: "${DUNE_DB_UTILS_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-db-init
+    restart: "no"
+    working_dir: /root/PSQL
+    entrypoint: ["python"]
+    command:
+      - updatedb.py
+      - --unattended
+      - --no-backup
+      - --local-as-remote
+      # Funcom's tooling insists on having a postgres INSTALLATION to hand even when the
+      # target is remote: `ensure_installed()` runs unconditionally and their installer
+      # map only has a 'win32' entry, so on Linux it dies with KeyError: 'linux'.
+      # Pointing it at /usr satisfies the check (it wants bin/psql to run, and an override
+      # path is exempt from the version check) without installing anything: /usr/db does
+      # not exist, so the status stays "NotInitialized", which is all ensure_installed needs.
+      - --postgres-installation
+      - /usr
+      - --host
+      - postgres:5432
+      - --project-database
+      - "${DUNE_DB_NAME:-dune_sb_1_5_3_0}"
+      - --project-user
+      - dune
+      - --project-password
+      - "${DUNE_PG_PASSWORD:?required}"
+      - --admin-user
+      - dune
+      - --admin-password
+      - "${DUNE_PG_PASSWORD:?required}"
+      - --admin-database
+      - postgres
+      - --partition-preset
+      - "${DUNE_PARTITION_PRESET:-basic_battlegroup}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *logging
+
+  # ── 2. brokers ─────────────────────────────────────────────────────────────
+  admin-rmq:
+    image: "${DUNE_RABBITMQ_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-admin-rmq
+    hostname: admin-rmq
+    restart: unless-stopped
+    stop_grace_period: 1m
+    environment:
+      FuncomLiveServices__RmqTlsEnabled: "false"
+      RMQ_HTTP_TOKEN_AUTH_SECRET: "${DUNE_RMQ_HTTP_TOKEN_AUTH_SECRET:?required}"
+      TZ: Europe/Brussels
+    volumes:
+      - ../images/dune/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ../images/dune/rabbitmq/admin.conf:/etc/rabbitmq/conf.d/99-takaro.conf:ro
+      - ../_data/dune-dev/rmq-admin:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *logging
+
+  game-rmq:
+    image: "${DUNE_RABBITMQ_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-game-rmq
+    hostname: game-rmq
+    restart: unless-stopped
+    stop_grace_period: 1m
+    ports:
+      # AMQPS. `listeners.tcp = none` in game.conf: there is no plaintext listener.
+      - "31982:5672/tcp"
+      # Management API, tailnet-bound. The gateway is handed the broker's PUBLIC address
+      # because that is what it advertises to FLS, so it must be able to reach it.
+      - "${EXTERNAL_ADDRESS:?required}:15673:15672/tcp"
+    environment:
+      FuncomLiveServices__RmqTlsEnabled: "true"
+      RMQ_HTTP_TOKEN_AUTH_SECRET: "${DUNE_RMQ_HTTP_TOKEN_AUTH_SECRET:?required}"
+      TZ: Europe/Brussels
+    volumes:
+      - ../images/dune/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ../images/dune/rabbitmq/game.conf:/etc/rabbitmq/conf.d/99-takaro.conf:ro
+      # Self-signed, minted by install.sh with SANs for the tailnet IP, the LAN IP and
+      # the hostname. The triple baked into the image is a Funcom test cert for
+      # *.funcom.com that expired on 2022-04-22.
+      - ../_data/dune-dev/tls:/etc/rabbitmq/takaro-tls:ro
+      - ../_data/dune-dev/rmq-game:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    logging: *logging
+
+  # ── 3. control plane ───────────────────────────────────────────────────────
+  # text-router is also the brokers' HTTP auth backend, so it must start early even
+  # though it needs the brokers itself.
+  text-router:
+    image: "${DUNE_TEXT_ROUTER_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-text-router
+    hostname: text-router
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command:
+      # Two dashes: these are .NET configuration arguments, not UE switches.
+      - --RMQGameHostname
+      - game-rmq
+      - --RMQGamePort
+      - "5672"
+      - --RMQAdminHostname
+      - admin-rmq
+      - --RMQAdminPort
+      - "5672"
+    environment:
+      <<: [*funcom-env, *pg-env]
+      FuncomLiveServices__RmqTlsEnabled: "true"
+      BATTLEGROUP_LANGUAGE: en-US
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *logging
+
+  director:
+    image: "${DUNE_DIRECTOR_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-director
+    hostname: director
+    # The director is reported to terminate on a malformed JSON-RPC envelope rather than
+    # rejecting it, so keep the control plane self-healing. Probe its RPC surface on an
+    # idle rig only.
+    restart: unless-stopped
+    stop_grace_period: 1m
+    command:
+      - --RMQGameHostname
+      - game-rmq
+      - --RMQGamePort
+      - "5672"
+      - --RMQAdminHostname
+      - admin-rmq
+      - --RMQAdminPort
+      - "5672"
+    environment:
+      <<: [*funcom-env, *pg-env]
+      FuncomLiveServices__RmqTlsEnabled: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      admin-rmq:
+        condition: service_started
+      game-rmq:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *logging
+
+  # Registers the world with FLS. Without DUNE_FLS_SECRET this service has nothing to
+  # register and no client can ever find the world.
+  gateway:
+    image: "${DUNE_GATEWAY_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-gateway
+    hostname: gateway
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # The game broker is advertised to FLS at its PUBLIC address, and the gateway
+    # connects there itself, so it gets the host address and the published ports.
+    command:
+      - python
+      - -m
+      - service
+      - -c
+      - /Tools/Battlegroups/GatewayService/service/configs/service.conf
+      - --RMQGameHostname
+      - "${EXTERNAL_ADDRESS:?required}"
+      - --RMQGamePort
+      - "31982"
+      - --RMQGameHttpPort
+      - "15673"
+    environment:
+      <<: [*funcom-env, *pg-env]
+      FuncomLiveServices__RmqTlsEnabled: "true"
+      # `gateway.farm_api_key` in Funcom's model is a separate GUID (the `fls-apikey` key of
+      # server-gateway-secret, a placeholder in their template). FLS authenticates the gateway
+      # with ServiceAuthToken, which is what the successful GatewayDeclareFarmStatus proves.
+      gateway_farm_api_key: "${DUNE_FLS_SECRET:-}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      game-rmq:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: *logging
+
+  # ── 4. the map ─────────────────────────────────────────────────────────────
+  # Survival_1 = Hagga Basin = world partition 1, and it is the default map, so no map
+  # path is passed. Funcom's own limit for this map is 12Gi; 16g leaves headroom for the
+  # plugin lane.
+  survival:
+    build:
+      context: ../images/dune
+      args:
+        DUNE_SERVER_IMAGE: "${DUNE_SERVER_IMAGE:?run dev-servers/scripts/install.sh dune}"
+    image: "takaro-dev-dune:${DUNE_IMAGE_TAG:?run dev-servers/scripts/install.sh dune}"
+    container_name: takaro-dev-dune-survival
+    restart: unless-stopped
+    # UE world saves on shutdown; Funcom allow terminationGracePeriodSeconds 120.
+    stop_grace_period: 4m
+    ports:
+      - "7817:7817/udp"
+      - "7928:7928/udp"
+    environment:
+      TZ: Europe/Brussels
+      EXTERNAL_ADDRESS: "${EXTERNAL_ADDRESS:?required}"
+      DUNE_GAME_PORT: "7817"
+      DUNE_IGW_PORT: "7928"
+      DUNE_PARTITION_INDEX: "1"
+      DUNE_FARM_REGION: "${DUNE_FARM_REGION:-Europe}"
+      DUNE_DATACENTER_ID: "${DUNE_FARM_REGION:-Europe}"
+      WORLD_UNIQUE_NAME: "${DUNE_WORLD_UNIQUE_NAME:?required}"
+      DUNE_SERVER_DISPLAY_NAME: "${DUNE_WORLD_NAME:-Takaro Dev Dune}"
+      # LAN test join password — short on purpose. Admin/GM tokens stay strong.
+      DUNE_SERVER_LOGIN_PASSWORD: "${DUNE_WORLD_PASSWORD:?required}"
+      # The GM command seam: this token must match the sidecar's DUNE_GM_AUTH_TOKEN
+      # exactly, or every command logs "Invalid Auth Token".
+      DUNE_GM_AUTH_TOKEN: "${DUNE_GM_AUTH_TOKEN:?required}"
+      DUNE_NOTIFICATION_SYSTEM_ENABLED: "1"
+      DUNE_FLS_SECRET: "${DUNE_FLS_SECRET:-}"
+      DUNE_FLS_ENV: "${DUNE_FLS_ENV:-retail}"
+      # KickPlayer / ServiceBroadcast / AwardXP are real commands but are NOT in the
+      # allow-list shipped in DedicatedServerGame.ini; the entrypoint appends them to
+      # [AdminSetting.Global] +Allowed_GM_Commands in UserGame.ini.
+      DUNE_EXTRA_GM_COMMANDS: "${DUNE_EXTRA_GM_COMMANDS:-KickPlayer,ServiceBroadcast,AwardXP,SpawnVehicleAt}"
+      DUNE_DB_HOST: postgres:5432
+      DUNE_DB_NAME: "${DUNE_DB_NAME:-dune_sb_1_5_3_0}"
+      DUNE_DB_USER: dune
+      DUNE_DB_PASSWORD: "${DUNE_PG_PASSWORD:?required}"
+      DUNE_RMQ_GAME_HOST: game-rmq
+      DUNE_RMQ_GAME_PORT: "5672"
+      DUNE_RMQ_ADMIN_HOST: admin-rmq
+      DUNE_RMQ_ADMIN_PORT: "5672"
+      DUNE_RMQ_TLS_ENABLED: "true"
+      # Funcom do not pass this to the map process in their own model, but the map server's
+      # broker login is the one thing that never worked token-free on this rig, and this is
+      # the only shared secret in the auth chain it could plausibly need. Harmless either way.
+      RMQ_HTTP_TOKEN_AUTH_SECRET: "${DUNE_RMQ_HTTP_TOKEN_AUTH_SECRET:?required}"
+      # Opt-in only. The DIRECTORY below is mounted read-only (never the .so itself) so
+      # compose still starts before the plugin exists, and the entrypoint refuses to
+      # preload a missing/empty file — an LD_PRELOAD that cannot be opened kills the
+      # process before it prints anything.
+      TAKARO_PLUGIN_SO: "${DUNE_PLUGIN_SO:-}"
+      # The plugin's own loopback HTTP API (127.0.0.1:18890 inside the survival netns). The bearer
+      # token is REQUIRED: with no token every request answers 401, so an unconfigured plugin is
+      # closed, not open. TAKARO_PLUGIN_DEBUG=1 unlocks /debug/* (reflection dumps) — dev rig only.
+      TAKARO_PLUGIN_TOKEN: "${TAKARO_DUNE_PLUGIN_TOKEN:-}"
+      TAKARO_PLUGIN_DEBUG: "${TAKARO_DUNE_PLUGIN_DEBUG:-1}"
+      TAKARO_PLUGIN_PORT: "${TAKARO_DUNE_PLUGIN_PORT:-18890}"
+      # LANE L2. The plugin binds loopback by default, which the SIDECAR CONTAINER cannot reach: it
+      # has its own network namespace (it needs DNS for `postgres` and `game-rmq`). 0.0.0.0 makes the
+      # API reachable at `http://survival:18890` on the private compose network ONLY — the port is
+      # deliberately NOT published to the host, and every route still needs the bearer token.
+      TAKARO_PLUGIN_BIND: "${TAKARO_DUNE_PLUGIN_BIND:-127.0.0.1}"
+      TAKARO_TICK_BUDGET_US: "${TAKARO_DUNE_TICK_BUDGET_US:-500}"
+      DUNE_EXTRA_ARGS: "${DUNE_EXTRA_ARGS:-}"
+    volumes:
+      - ../_data/dune-dev/saved:/home/dune/server/DuneSandbox/Saved
+      - ../_data/dune-plugin:/opt/takaro:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      game-rmq:
+        condition: service_started
+      admin-rmq:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+    logging: *logging
+
+  # ── 5. the connector ───────────────────────────────────────────────────────
+  # Behind the `sidecar` profile: the source tree may not exist yet and `up -d` must not
+  # try to build it.
+  dune-takaro:
+    build:
+      context: "${DUNE_SIDECAR_SRC:-../../games/dune/sidecar}"
+      dockerfile: Dockerfile.dev
+    image: takaro-dune-sidecar:dev
+    container_name: takaro-dev-dune-sidecar
+    restart: unless-stopped
+    profiles: ["sidecar"]
+    environment:
+      TAKARO_WS_URL: "${TAKARO_WS_URL:-wss://connect.takaro.io/}"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_DUNE:-takaro-dev-dune}"
+      TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:?required}"
+      TAKARO_SERVER_NAME: "${DUNE_WORLD_NAME:-Takaro Dev Dune}"
+      # Read-only. The connector performs no DB writes: online rows are overwritten by
+      # the game, so every mutation goes through a GM command instead.
+      DUNE_PG_URL: "postgres://dune:${DUNE_PG_PASSWORD:?required}@postgres:5432/${DUNE_DB_NAME:-dune_sb_1_5_3_0}"
+      DUNE_PG_SCHEMA: dune
+      # The GAME broker, TLS, over the private network.
+      DUNE_RMQ_URL: "amqps://${DUNE_GM_AMQP_USER:-fls}:${DUNE_GM_AMQP_PASS:?required}@game-rmq:5672/"
+      DUNE_RMQ_TLS_INSECURE: "true"
+      DUNE_GM_AUTH_TOKEN: "${DUNE_GM_AUTH_TOKEN:?required}"
+      # `amqp` needs no Docker socket, because images/dune/rabbitmq/game.conf enables the
+      # internal auth backend and install.sh provisions a real `fls` user.
+      DUNE_GM_PUBLISHER: "${DUNE_GM_PUBLISHER:-amqp}"
+      DUNE_GM_AMQP_USER: "${DUNE_GM_AMQP_USER:-fls}"
+      DUNE_GM_AMQP_PASS: "${DUNE_GM_AMQP_PASS:?required}"
+      DUNE_GM_PLAYER_ID_KIND: "${DUNE_GM_PLAYER_ID_KIND:-fls}"
+      DUNE_PLUGIN_URL: "${DUNE_PLUGIN_URL:-}"
+      DUNE_PLUGIN_TOKEN: "${TAKARO_DUNE_PLUGIN_TOKEN:-}"
+      # The `log` gameEvent. The map server's own UE log, mounted read-only. The tailer parses
+      # NOTHING: it redacts (the FLS token and the join password are on the process command line
+      # UE echoes at boot), drops UE's HTTP/streaming/EOS chatter, and starts at end-of-file so a
+      # sidecar restart never replays the log into Takaro's rate-limited `log` channel.
+      DUNE_LOG_FILE: "${DUNE_LOG_FILE:-/gamelogs/Logs/DuneSandbox_PIDX-1.log}"
+      DUNE_LOG_EVENTS: "${DUNE_LOG_EVENTS:-filtered}"
+      # The operator stop hook for `gameserverShutdown`. The sidecar has NO Docker socket by
+      # design; `shutdown-agent` holds it (read-only) and can stop exactly one container. The
+      # hook blocks until the agent confirms the map container really stopped, so a failure is an
+      # error rather than a quiet success. Without it the connector REFUSES `shutdown` and says so.
+      DUNE_SHUTDOWN_CMD: "${DUNE_SHUTDOWN_CMD:-/bin/sh /opt/takaro-shutdown/request-shutdown.sh}"
+      DUNE_SHUTDOWN_NOTICE_SECONDS: "${DUNE_SHUTDOWN_NOTICE_SECONDS:-60}"
+      # The stop hook waits for the map server to finish saving the world; 20 s is nowhere near enough.
+      # The agent allows the survival service its full `stop_grace_period: 4m`, so this must exceed it (L6d:
+      # 120 s produced exit 137 — Docker SIGKILLed the map mid-save).
+      DUNE_EXEC_TIMEOUT_MS: "${DUNE_EXEC_TIMEOUT_MS:-300000}"
+      TAKARO_DATA_DIR: /data
+      SIDECAR_HEALTH_HOST: 0.0.0.0
+      SIDECAR_HEALTH_PORT: "18891"
+      DEBUG: "${DUNE_SIDECAR_DEBUG:-1}"
+    volumes:
+      - ../_data/dune-dev/sidecar:/data
+      # Read-only: the tailer only ever reads, and the map server owns these files.
+      - ../_data/dune-dev/saved:/gamelogs:ro
+      - ../_data/dune-dev/shutdown:/shutdown
+      - ../images/dune/shutdown:/opt/takaro-shutdown:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      game-rmq:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    logging: *logging
+
+  # The operator stop hook for `gameserverShutdown`, kept OUT of the connector on purpose.
+  # Takaro's `shutdown` action has to stop the game server, but nothing inside the battlegroup
+  # halts the map process (Dune's `ServerShutdown` GM command only draws a countdown), and giving
+  # the connector a Docker socket would hand a remote control plane root on the host. So the
+  # socket lives here, read-only, in a container whose entire program is "if a request file
+  # appears, stop and then restart ONE named container". It reads no command from the file.
+  shutdown-agent:
+    build: ../images/dune/shutdown
+    image: takaro-dune-shutdown-agent:dev
+    container_name: takaro-dev-dune-shutdown-agent
+    restart: unless-stopped
+    profiles: ["sidecar"]
+    network_mode: none
+    environment:
+      TARGET: takaro-dev-dune-survival
+      # Emulates the operator's restart policy (compose `restart: unless-stopped` does NOT bring
+      # back a container an operator stopped explicitly).
+      RESTART_AFTER: "${DUNE_SHUTDOWN_RESTART_AFTER:-10}"
+    entrypoint: ["/bin/sh", "/agent/agent.sh"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../_data/dune-dev/shutdown:/shutdown
+      - ../images/dune/shutdown:/agent:ro
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+    logging: *logging
