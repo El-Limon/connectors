@@ -1,4 +1,6 @@
 import { NativeClient, type NativeEntity, type NativeItem, type NativePlayer } from './native/client.js';
+import { BanManager } from './native/banManager.js';
+import { MemoryBanStore } from './native/banStore.js';
 import { asRecord } from './takaro/protocol.js';
 
 export interface TakaroPlayer { gameId: string; name: string; steamId: string; platformId: string }
@@ -106,7 +108,10 @@ function consoleCommand(value: unknown): string {
 }
 
 export class ArkAdapter {
-  constructor(private readonly native: NativeClient) {}
+  private readonly banManager: BanManager;
+  constructor(private readonly native: NativeClient, banManager?: BanManager) {
+    this.banManager = banManager ?? new BanManager(native, new MemoryBanStore());
+  }
 
   async handle(action: string, args: Record<string, unknown>, requestId?: string): Promise<unknown> {
     switch (action) {
@@ -292,14 +297,22 @@ export class ArkAdapter {
               /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ud800-\udfff]/u.test(reason)) {
             throw new Error('kickPlayer reason must be a single line of at most 480 characters');
           }
-        } else if (reason.trim()) {
-          throw new Error(`${action} reason is unsupported by this native route`);
+        } else if (action === 'unbanPlayer' && reason.trim()) {
+          throw new Error('unbanPlayer accepts no reason');
         }
-        if (action === 'banPlayer' && args.expiresAt != null) {
-          throw new Error('Timed bans are unsupported by this native route');
-        }
+        // Takaro owns the managed ban reason. ARK's native ban collection
+        // stores Steam64 only, so the reason is not sent to the game endpoint.
         const nativeAction = action === 'kickPlayer' ? 'kick' : action === 'banPlayer' ? 'ban' : 'unban';
         const id = playerId(args);
+        if (action === 'banPlayer') {
+          await this.banManager.ban(id, args.reason, args.expiresAt, requestId);
+          return {};
+        }
+        if (args.expiresAt != null) throw new Error(`${action} accepts no expiresAt`);
+        if (action === 'unbanPlayer') {
+          await this.banManager.unban(id, requestId);
+          return {};
+        }
         if (action === 'kickPlayer' && reason.trim()) {
           const notice = await this.native.messageTo(id, `Kick reason: ${reason}`, requestId);
           if (!notice || notice.success !== true) throw new Error('Native kick reason notice was not queued');
@@ -315,21 +328,12 @@ export class ArkAdapter {
         if (Object.values(args).some((value) => value !== undefined && value !== null)) {
           throw new Error('listBans accepts no options on this native build');
         }
-        const rows = await this.native.bans(requestId);
-        if (!Array.isArray(rows) || rows.length > 4096) {
-          throw new Error('Native ban collection is unavailable or invalid');
-        }
-        const seen = new Set<string>();
-        return rows.map((raw) => {
-          const id = steam64(raw);
-          if (!id || id !== raw || seen.has(id)) {
-            throw new Error('Native ban collection contains an invalid or duplicate Steam64');
-          }
-          seen.add(id);
-          // The native ban set stores Steam64 only. Its required display-name field
-          // uses the exact ID, as in other Generic adapters; reason is unknown.
+        const rows = await this.banManager.list(requestId);
+        return rows.map(({ id, reason, expiresAt }) => {
+          // Native membership is fresh and authoritative; metadata is persisted
+          // separately so Takaro's sync cannot erase its managed expiry/reason.
           return { player: { gameId: id, name: id, steamId: id, platformId: `steam:${id}` },
-            reason: '', expiresAt: null };
+            reason, expiresAt };
         });
       }
       case 'executeConsoleCommand': {

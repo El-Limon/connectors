@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { BanManager } from './native/banManager.js';
+import { FileBanStore } from './native/banStore.js';
 import { ArkAdapter } from './adapter.js';
 import { loadConfig } from './config.js';
 import { EventPump } from './eventPump.js';
@@ -12,7 +14,8 @@ import type { WsMessage } from './takaro/protocol.js';
 async function main(): Promise<void> {
   const config = loadConfig();
   const native = new NativeClient(config.nativeUrl, config.nativeToken, config.timeoutMs);
-  const adapter = new ArkAdapter(native);
+  const banManager = new BanManager(native, new FileBanStore(config.banMetadataFile));
+  const adapter = new ArkAdapter(native, banManager);
   const takaro = new TakaroWsClient(config.takaroWsUrl, {
     identityToken: config.identityToken,
     registrationToken: config.registrationToken,
@@ -39,15 +42,18 @@ async function main(): Promise<void> {
       nativeBootId: events.currentBootId() ?? null,
       eventCursor: events.cursor(),
       eventScanCursor: events.scanCursor(),
+      banReconciliationReady: banManager.ready(),
       lastConfirmedSendId: takaro.lastConfirmedId(),
     }));
   });
   await new Promise<void>((resolve) => server.listen(config.healthPort, config.healthHost, resolve));
   logger.info(`Sidecar health on http://${config.healthHost}:${config.healthPort}/health`);
+  banManager.start();
   takaro.connect();
 
   const stop = (): void => {
     events.stop();
+    banManager.stop();
     takaro.shutdown();
     server.close();
   };

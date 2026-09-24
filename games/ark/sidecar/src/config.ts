@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 export interface Config {
   takaroWsUrl: string;
   identityToken: string;
@@ -6,6 +8,7 @@ export interface Config {
   nativeUrl: string;
   nativeToken: string;
   cursorFile: string;
+  banMetadataFile: string;
   pollIntervalMs: number;
   timeoutMs: number;
   healthHost: string;
@@ -33,6 +36,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     nativeUrl,
     nativeToken,
     cursorFile: env.TAKARO_CURSOR_FILE || './data/event-cursor.json',
+    banMetadataFile: env.TAKARO_BAN_METADATA_FILE ||
+      path.join(path.dirname(env.TAKARO_CURSOR_FILE || './data/event-cursor.json'), 'ban-metadata.json'),
     pollIntervalMs: int('ARK_POLL_INTERVAL_MS', 1000),
     timeoutMs: int('ARK_NATIVE_TIMEOUT_MS', 10000),
     healthHost: env.SIDECAR_HEALTH_HOST || '127.0.0.1',

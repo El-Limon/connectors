@@ -391,7 +391,7 @@ describe('native transport and narrow actions', () => {
     }
   });
 
-  it('delivers a bounded kick reason before kick, rejects invalid reasons before HTTP, and keeps ban rules', async () => {
+  it('delivers a bounded kick reason, accepts a Takaro-managed permanent ban reason, and rejects invalid actions', async () => {
     const log = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const calls: { input: string; init?: RequestInit }[] = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -403,14 +403,13 @@ describe('native transport and narrow actions', () => {
     for (const reason of [123, 'line\nbreak', 'line\u2028break', '\ud800', 'x'.repeat(481), '🙂'.repeat(300)]) {
       await expect(adapter.handle('kickPlayer', { gameId: steam, reason })).rejects.toThrow('reason');
     }
-    await expect(adapter.handle('banPlayer', { gameId: steam, reason: 'griefing' })).rejects.toThrow('reason');
     await expect(adapter.handle('unbanPlayer', { gameId: steam, reason: 'griefing' })).rejects.toThrow('reason');
-    await expect(adapter.handle('banPlayer', { gameId: steam, expiresAt: '2026-10-01T00:00:00Z' })).rejects.toThrow('Timed bans');
+    await expect(adapter.handle('banPlayer', { gameId: steam, expiresAt: '2001-10-01T00:00:00Z' })).rejects.toThrow('future');
     await expect(adapter.handle('banPlayer', { gameId: 'not-steam' })).rejects.toThrow('Steam64');
     expect(calls).toHaveLength(0);
     const reason = 'ARK kick diagnostic — réglage';
     expect(await adapter.handle('kickPlayer', { gameId: steam, reason })).toEqual({});
-    expect(await adapter.handle('banPlayer', { gameId: steam })).toEqual({});
+    expect(await adapter.handle('banPlayer', { gameId: steam, reason: 'griefing' })).toEqual({});
     await expect(adapter.handle('unbanPlayer', { gameId: steam }, 'moderation-req')).rejects.toThrow('effect unverified');
     expect(calls.map((call) => call.input)).toEqual(['message', 'kick', 'ban', 'unban'].map((action) =>
       `http://127.0.0.1:18891/players/${steam}/${action}`));
@@ -470,7 +469,7 @@ describe('native transport and narrow actions', () => {
     warn.mockRestore();
   });
 
-  it('maps only a validated native Steam64 ban set and rejects unavailable or malformed data', async () => {
+  it('blocks unknown native bans from overwriting Takaro metadata and rejects malformed snapshots', async () => {
     const other = '76561198000000001';
     const calls: { url: string; init?: RequestInit }[] = [];
     let payload: unknown = [steam, other];
@@ -482,10 +481,7 @@ describe('native transport and narrow actions', () => {
     const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
     await expect(adapter.handle('listBans', { search: 'x' })).rejects.toThrow('no options');
     expect(calls).toHaveLength(0);
-    expect(await adapter.handle('listBans', {}, 'ban-list-req')).toEqual([steam, other].map((id) => ({
-      player: { gameId: id, name: id, steamId: id, platformId: `steam:${id}` },
-      reason: '', expiresAt: null,
-    })));
+    await expect(adapter.handle('listBans', {}, 'ban-list-req')).rejects.toThrow('requires migration');
     expect(calls[0]).toEqual({ url: 'http://127.0.0.1:18891/bans',
       init: expect.objectContaining({ method: 'GET', headers: { Authorization: 'Bearer secret' } }) });
     payload = [];
