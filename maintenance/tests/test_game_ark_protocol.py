@@ -9,11 +9,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from takaro_maint import redact
 from takaro_maint.catalog import schema
+from takaro_maint.exit_codes import UpstreamUnavailable
+from takaro_maint.games.ark import ArkAdapter
 from takaro_maint.games.ark import verify as ark_verify
+from takaro_maint.verify import runner as verify_runner
 from takaro_maint.verify.checks import CheckResult
 from takaro_maint.verify.report import GAME_PROTOCOL_CHECKS, build_report, level_for
-from takaro_maint.verify.runner import capture_ark_diagnostics
+from takaro_maint.verify.runner import _command_env_secrets, capture_ark_diagnostics
 
 
 def _rows(status: str = "pass") -> list[dict[str, str]]:
@@ -29,6 +33,59 @@ def test_ark_protocol_level_requires_every_native_semantic_check() -> None:
         assert level_for(missing, "ark") == "startup"
         skipped = [row | {"status": "skip"} if row["id"] == required else row for row in rows]
         assert level_for(skipped, "ark") == "startup"
+
+
+def test_ark_verification_uses_init_and_redacts_derived_native_token(tmp_path: Path) -> None:
+    assert "--init" in ArkAdapter().container_options({}, tmp_path)
+    command = ["docker", "run", "-e", "ARK_NATIVE_TOKEN=ephemeral-native-token", "-e", "LEVEL=TheIsland"]
+    secrets = _command_env_secrets(command)
+    assert "ephemeral-native-token" in secrets
+    logged = redact.redact(" ".join(command), secrets)
+    assert "ephemeral-native-token" not in logged
+    assert "ARK_NATIVE_TOKEN=<redacted>" in logged
+
+
+def test_game_container_error_and_docker_log_redact_native_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command = ["docker", "run", "-e", "ARK_NATIVE_TOKEN=ephemeral-native-token", "image"]
+    container = verify_runner.Container(
+        name="isolated",
+        argv=command,
+        log_file=tmp_path / "server.log",
+        docker_log=tmp_path / "docker.log",
+        secrets=_command_env_secrets(command),
+    )
+    monkeypatch.setattr(
+        verify_runner.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr="bad ephemeral-native-token"),
+    )
+    with pytest.raises(UpstreamUnavailable, match="bad <redacted>"):
+        container.start()
+    assert "ephemeral-native-token" not in (tmp_path / "docker.log").read_text()
+
+
+@pytest.mark.parametrize(
+    ("game_lines", "valid"),
+    [
+        (["game 7 /ark/ShooterGame/Binaries/Linux/ShooterGameServer"], True),
+        (["game 1 /ark/ShooterGame/Binaries/Linux/ShooterGameServer"], False),
+        (["game 7 /ark-base/ShooterGame/Binaries/Linux/ShooterGameServer"], False),
+        (
+            [
+                "game 7 /ark/ShooterGame/Binaries/Linux/ShooterGameServer",
+                "game 8 /ark/ShooterGame/Binaries/Linux/ShooterGameServer",
+            ],
+            False,
+        ),
+        ([], False),
+    ],
+)
+def test_owned_runtime_path_probe_handles_init_pid_and_rejects_ambiguity(game_lines: list[str], valid: bool) -> None:
+    assert "/proc/[0-9]*/exe" in ark_verify._OWNED_PATH_PROBE_SCRIPT
+    assert ark_verify._owned_runtime_paths_valid([*game_lines, "saved /ark/ShooterGame/Saved"]) is valid
+    assert ark_verify._owned_runtime_paths_valid([*game_lines, "saved /ark-base/ShooterGame/Saved"]) is False
 
 
 def test_ark_report_keeps_artifact_and_runner_revisions_separate(tmp_path: Path) -> None:
@@ -400,7 +457,8 @@ def test_ark_shutdown_rejects_unattributed_abort(tmp_path: Path, monkeypatch: py
     assert "native shutdown request completion marker is missing" in run.results[0].detail["problems"]
 
 
-def test_ark_shutdown_rejects_old_engine_exec_exit_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("old_marker", ("engine-exit-handled", "forced-exit-requested"))
+def test_ark_shutdown_rejects_old_exit_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_marker: str) -> None:
     log = tmp_path / "server.log"
     log.write_text("", encoding="utf-8")
     monkeypatch.setattr(ark_verify, "SHUTDOWN_MARKER_TIMEOUT", 0)
@@ -411,7 +469,7 @@ def test_ark_shutdown_rejects_old_engine_exec_exit_marker(tmp_path: Path, monkey
             with log.open("a", encoding="utf-8") as stream:
                 stream.write(
                     "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
-                    "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
+                    f"ARK_NATIVE_SHUTDOWN {old_marker}\n"
                 )
             return {}
 
@@ -451,7 +509,10 @@ def test_ark_shutdown_log_rotation_fails_closed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(("write_save", "expected"), [(True, "pass"), (False, "fail")])
-def test_ark_readonly_shutdown_requires_fresh_owned_save(tmp_path: Path, write_save: bool, expected: str) -> None:
+@pytest.mark.parametrize("read_only", (True, False))
+def test_ark_shutdown_requires_fresh_owned_save(
+    tmp_path: Path, write_save: bool, expected: str, read_only: bool
+) -> None:
     log = tmp_path / "server.log"
     log.write_text("")
     save = tmp_path / "ShooterGame/Saved/SavedArks/TheIsland.ark"
@@ -473,7 +534,7 @@ def test_ark_readonly_shutdown_requires_fresh_owned_save(tmp_path: Path, write_s
         container = SimpleNamespace(wait_for_exit=lambda timeout: 134)
         server_log = log
         data_dir = tmp_path
-        options = SimpleNamespace(ark_readonly_base=tmp_path / "base")
+        options = SimpleNamespace(ark_readonly_base=tmp_path / "base" if read_only else None)
 
         def __init__(self) -> None:
             self.results: list[object] = []
@@ -490,6 +551,141 @@ def test_ark_readonly_shutdown_requires_fresh_owned_save(tmp_path: Path, write_s
     run = FakeRun()
     asyncio.run(ark_verify.after_shutdown(run, FakeTakaro(), "", []))
     assert run.results[0].status == expected, run.results[0].detail
+
+
+def test_owned_save_watch_requires_an_actual_read(tmp_path: Path) -> None:
+    save = tmp_path / "TheIsland.ark"
+    save.write_bytes(b"saved world")
+    watch = ark_verify._OwnedSaveReadWatch(save)
+    try:
+        assert watch.read_evidence()["openedReadClosed"] is False
+        assert save.read_bytes() == b"saved world"
+        assert watch.read_evidence()["openedReadClosed"] is True
+    finally:
+        watch.close()
+
+
+def test_owned_save_watch_rejects_replaced_inode(tmp_path: Path) -> None:
+    save = tmp_path / "TheIsland.ark"
+    save.write_bytes(b"first world")
+    watch = ark_verify._OwnedSaveReadWatch(save)
+    try:
+        save.unlink()
+        save.write_bytes(b"replacement")
+        assert save.read_bytes() == b"replacement"
+        evidence = watch.read_evidence()
+        assert evidence["invalidated"] is True
+        assert evidence["openedReadClosed"] is False
+    finally:
+        watch.close()
+
+
+@pytest.mark.parametrize(
+    ("read_save", "second_boot_id", "second_exit", "read_only", "expected"),
+    [
+        (True, "boot-two", 134, True, "pass"),
+        (True, "boot-two", 134, False, "pass"),
+        (False, "boot-two", 134, True, "fail"),
+        (True, "boot-one", 134, True, "fail"),
+        (True, "boot-two", 139, True, "fail"),
+    ],
+)
+def test_owned_save_reload_requires_same_world_read_new_boot_and_second_native_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    read_save: bool,
+    second_boot_id: str,
+    second_exit: int,
+    read_only: bool,
+    expected: str,
+) -> None:
+    save = tmp_path / "ShooterGame/Saved/SavedArks/TheIsland.ark"
+    save.parent.mkdir(parents=True)
+    save.write_bytes(b"saved world from first boot")
+    reload_log = tmp_path / "server-reload.log"
+    old_sidecar = SimpleNamespace(name="first-sidecar", removed=False)
+
+    def remove_old_sidecar() -> None:
+        old_sidecar.removed = True
+
+    old_sidecar.remove = remove_old_sidecar
+    second = SimpleNamespace(name="second", alive=lambda: True, wait_for_exit=lambda timeout: second_exit)
+
+    class FakeRun:
+        out = tmp_path
+        data_dir = tmp_path
+        target = SimpleNamespace(record={"revision": "21241282"})
+        startup_timeout = 5
+
+        def __init__(self) -> None:
+            self.options = SimpleNamespace(ark_readonly_base=tmp_path / "read-only-base" if read_only else None)
+            self.container = SimpleNamespace(name="first")
+            self.containers = [old_sidecar]
+            self.extra_logs: list[Path] = []
+            self.results = [
+                CheckResult("native-shutdown", "pass", 0, {}),
+                CheckResult("native-health", "pass", 0, {"health": {"bootId": "boot-one"}}),
+            ]
+
+        def boot(self, ws_url: str, *, suffix: str, log_name: str) -> SimpleNamespace:
+            assert ws_url == "ws://isolated/"
+            assert suffix == "-reload" and log_name == "server-reload.log"
+            assert old_sidecar.removed
+            if read_save:
+                assert save.read_bytes() == b"saved world from first boot"
+            reload_log.write_text("ARK_NATIVE_DIAG main-loop-tick count=1\n")
+            self.container = second
+            return second
+
+        def ready_line(self) -> object:
+            return ark_verify.READY_LINE
+
+        def record(self, result: CheckResult) -> None:
+            self.results.append(result)
+
+    class FakeTakaro:
+        identify_count = 1
+
+        async def wait_for_identify(self, timeout: float, *, minimum: int) -> None:
+            assert timeout == 120 and minimum == 2
+            self.identify_count = 2
+
+        async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
+            assert (name, args) == ("shutdown", {})
+            with reload_log.open("a") as stream:
+                stream.write(
+                    "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
+                    "ARK_NATIVE_SHUTDOWN native-exit-requested\n"
+                )
+            return {}
+
+    async def reload_health(container: str, build: str, alive: object) -> dict[str, object]:
+        assert (container, build, alive()) == ("second-sidecar", "21241282", True)
+        return {
+            "status": "ok",
+            "build": build,
+            "bootId": second_boot_id,
+            "capabilities": {"roster": "ok", "items": "ok", "entities": "ok"},
+        }
+
+    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake, **kwargs: SimpleNamespace(name="second-sidecar"))
+    monkeypatch.setattr(ark_verify, "_wait_native_protocol_ready", reload_health)
+    monkeypatch.setattr(
+        ark_verify.checks,
+        "check_startup",
+        lambda *args: CheckResult("startup", "pass", 0, {"readyLine": "main-loop-tick count=1"}),
+    )
+    run = FakeRun()
+    asyncio.run(ark_verify._reload_owned_save(run, FakeTakaro(), "ws://isolated/", []))
+    result = run.results[-1]
+    assert result.id == "owned-save-reload"
+    assert result.status == expected, result.detail
+    if expected == "pass":
+        assert result.detail["readEvidence"]["openedReadClosed"] is True
+        assert result.detail["firstBootId"] == "boot-one"
+        assert result.detail["secondBootId"] == "boot-two"
+        assert result.detail["reloadExitCode"] == 134
+        assert run.extra_logs == [reload_log]
 
 
 @pytest.mark.parametrize(

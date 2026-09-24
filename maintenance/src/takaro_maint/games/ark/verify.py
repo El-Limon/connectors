@@ -9,12 +9,14 @@ empty synthetic data as success. No Minecraft-specific base command is reused.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
@@ -41,6 +43,7 @@ CHECK_IDS = (
     "entities",
     "ark-console",
     "native-shutdown",
+    "owned-save-reload",
     "event",
     "stop",
     "negative-wrong-target",
@@ -49,6 +52,21 @@ READY_LINE = re.compile(r"ARK_NATIVE_DIAG .*main-loop-tick count=1")
 SHUTDOWN_SAVE_LINE = re.compile(r"native-shutdown-synchronous-save-completed-before-ack")
 SHUTDOWN_REQUEST_LINE = re.compile(r"ARK_NATIVE_SHUTDOWN native-exit-requested$")
 SHUTDOWN_MARKER_TIMEOUT = 8.0
+_IN_ACCESS = 0x00000001
+_IN_CLOSE_NOWRITE = 0x00000010
+_IN_OPEN = 0x00000020
+_IN_DELETE_SELF = 0x00000400
+_IN_MOVE_SELF = 0x00000800
+_IN_Q_OVERFLOW = 0x00004000
+_INOTIFY_EVENT = struct.Struct("iIII")
+_OWNED_PATH_PROBE_SCRIPT = (
+    "for exe in /proc/[0-9]*/exe; do "
+    "pid=${exe#/proc/}; pid=${pid%/exe}; "
+    'target=$(readlink -f "$exe" 2>/dev/null) || continue; '
+    'if [ "${target##*/}" = ShooterGameServer ]; then '
+    'printf \'game %s %s\\n\' "$pid" "$target"; fi; '
+    "done; printf 'saved %s\\n' \"$(readlink -f /ark/ShooterGame/Saved)\""
+)
 UNSUPPORTED_CHECKS = {
     "connector-load": "ARK native /health is checked by native-health",
     "identify": "the Generic sidecar identify frame is checked by sidecar-identify",
@@ -76,7 +94,7 @@ def native_token(registration_token: str) -> str:
     return hashlib.sha256(b"takaro-ark-native:" + registration_token.encode()).hexdigest()
 
 
-def start_sidecar(run: Any, fake: Any) -> Container:
+def start_sidecar(run: Any, fake: Any, *, suffix: str = "") -> Container:
     source = run.data_dir / SIDECAR_FOLDER
     required = ("Dockerfile", "dist/index.js", "package-lock.json")
     if any(not (source / name).is_file() for name in required):
@@ -139,7 +157,7 @@ def start_sidecar(run: Any, fake: Any) -> Container:
     container = Container(
         name=name,
         argv=argv,
-        log_file=run.out / "sidecar.log",
+        log_file=run.out / f"sidecar{suffix}.log",
         docker_log=run.docker_log,
         secrets=[takaro["TAKARO_REGISTRATION_TOKEN"], token],
     )
@@ -247,6 +265,68 @@ def _native_protocol_ready(health: dict[str, Any], build: str) -> bool:
     )
 
 
+def _owned_runtime_paths_valid(lines: list[str]) -> bool:
+    games = [line.split(" ", 2) for line in lines if line.startswith("game ")]
+    saved = [line.removeprefix("saved ") for line in lines if line.startswith("saved ")]
+    return (
+        len(games) == 1
+        and len(games[0]) == 3
+        and games[0][1].isdigit()
+        and int(games[0][1]) > 1
+        and games[0][2] == "/ark/ShooterGame/Binaries/Linux/ShooterGameServer"
+        and saved == ["/ark/ShooterGame/Saved"]
+        and len(lines) == 2
+    )
+
+
+class _OwnedSaveReadWatch:
+    """Watch the exact owned save inode while only the second game boot can read it."""
+
+    def __init__(self, save: Path) -> None:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.inotify_init1.argtypes = [ctypes.c_int]
+        libc.inotify_init1.restype = ctypes.c_int
+        libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        libc.inotify_add_watch.restype = ctypes.c_int
+        fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+        self.fd = fd
+        mask = _IN_ACCESS | _IN_OPEN | _IN_CLOSE_NOWRITE | _IN_DELETE_SELF | _IN_MOVE_SELF
+        self.wd = libc.inotify_add_watch(fd, os.fsencode(save), mask)
+        if self.wd < 0:
+            error = ctypes.get_errno()
+            os.close(fd)
+            raise OSError(error, f"cannot watch owned save {save}")
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+    def read_evidence(self) -> dict[str, Any]:
+        masks: list[int] = []
+        while True:
+            try:
+                chunk = os.read(self.fd, 65536)
+            except BlockingIOError:
+                break
+            offset = 0
+            while offset < len(chunk):
+                wd, mask, _, name_length = _INOTIFY_EVENT.unpack_from(chunk, offset)
+                offset += _INOTIFY_EVENT.size + name_length
+                if wd == self.wd or mask & _IN_Q_OVERFLOW:
+                    masks.append(mask)
+        invalid = any(mask & (_IN_DELETE_SELF | _IN_MOVE_SELF | _IN_Q_OVERFLOW) for mask in masks)
+        stage = 0
+        for mask in masks:
+            if stage == 0 and mask & _IN_OPEN:
+                stage = 1
+            elif stage == 1 and mask & _IN_ACCESS:
+                stage = 2
+            elif stage == 2 and mask & _IN_CLOSE_NOWRITE:
+                stage = 3
+        return {"openedReadClosed": stage == 3 and not invalid, "eventMasks": masks, "invalidated": invalid}
+
+
 async def _wait_native_protocol_ready(
     container: str, build: str, alive: Any, *, timeout: float = 60, poll_interval: float = 1
 ) -> dict[str, Any]:
@@ -277,7 +357,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
         except Exception as exc:
             launch_error = str(exc)
     for check_id in CHECK_IDS:
-        if check_id in ("event", "native-shutdown", "stop", "negative-wrong-target"):
+        if check_id in ("event", "native-shutdown", "owned-save-reload", "stop", "negative-wrong-target"):
             continue
         if not run.wanted(check_id):
             run.skip(check_id, "not selected by --checks")
@@ -302,17 +382,14 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                             run.container.name,
                             "bash",
                             "-lc",
-                            "readlink -f /proc/1/exe; readlink -f /ark/ShooterGame/Saved",
+                            _OWNED_PATH_PROBE_SCRIPT,
                         ],
                         capture_output=True,
                         text=True,
                         check=False,
                     )
                     detail["readOnlyPaths"] = paths.stdout.splitlines()
-                    if paths.returncode or paths.stdout.splitlines() != [
-                        "/ark/ShooterGame/Binaries/Linux/ShooterGameServer",
-                        "/ark/ShooterGame/Saved",
-                    ]:
+                    if paths.returncode or not _owned_runtime_paths_valid(paths.stdout.splitlines()):
                         problems.append("ARK process executable or Saved path escapes the owned runtime tree")
                 if not _native_protocol_ready(health, str(run.target.record["revision"])):
                     problems.append("native health did not reach pinned build and zero-player protocol readiness")
@@ -452,8 +529,105 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
         run.record(_result(check_id, problems, started, **detail))
 
 
+async def _reload_owned_save(run: Any, fake: Any, ws_url: str, ledger_inputs: list[dict[str, Any]]) -> None:
+    started = time.monotonic()
+    problems: list[str] = []
+    detail: dict[str, Any] = {}
+    try:
+        first_shutdown = next((row for row in run.results if row.id == "native-shutdown"), None)
+        first_health = next((row for row in run.results if row.id == "native-health"), None)
+        if first_shutdown is None or first_shutdown.status != "pass":
+            raise RuntimeError("owned save reload requires a passing native-shutdown check")
+        if first_health is None or first_health.status != "pass":
+            raise RuntimeError("owned save reload requires a passing first native-health check")
+        first_boot_id = first_health.detail.get("health", {}).get("bootId")
+        if not isinstance(first_boot_id, str) or not first_boot_id:
+            raise RuntimeError("first native boot ID is missing")
+        detail["firstBootId"] = first_boot_id
+        save = run.data_dir / "ShooterGame/Saved/SavedArks/TheIsland.ark"
+        if save.is_symlink() or not save.resolve().is_relative_to(run.data_dir.resolve()):
+            raise RuntimeError("reload save is not contained in the owned runtime tree")
+        before = await asyncio.to_thread(net.hash_file, save)
+        if before["size"] <= 0:
+            raise RuntimeError("owned save is empty before reload")
+        detail["saveBeforeReload"] = {**before, "mtimeNs": save.stat().st_mtime_ns}
+
+        # The old sidecar's network namespace must not supply a stale identify or health.
+        if run.container is None:
+            raise RuntimeError("first game container is missing")
+        old_sidecar_name = f"{run.container.name}-sidecar"
+        old_sidecar = next((item for item in run.containers if item.name == old_sidecar_name), None)
+        if old_sidecar is None:
+            raise RuntimeError("first sidecar container is missing")
+        await asyncio.to_thread(old_sidecar.remove)
+        identified_before = fake.identify_count
+
+        # Hash before arming the watch; no runner code reads this file until the
+        # second game has booted. OPEN+ACCESS+CLOSE_NOWRITE on this exact inode
+        # therefore belongs to the isolated second server's world-load window.
+        watch = _OwnedSaveReadWatch(save)
+        try:
+            run.extra_logs.append(run.out / "server-reload.log")
+            second = await asyncio.to_thread(run.boot, ws_url, suffix="-reload", log_name="server-reload.log")
+            startup = await asyncio.to_thread(
+                checks.check_startup,
+                run.out / "server-reload.log",
+                run.startup_timeout,
+                second.alive,
+                run.options.ark_readonly_base or run.data_dir,
+                ledger_inputs,
+                run.ready_line(),
+            )
+            detail["reloadStartup"] = startup.detail
+            if startup.status != "pass":
+                raise RuntimeError("second game startup failed")
+            second_sidecar = await asyncio.to_thread(start_sidecar, run, fake, suffix="-reload")
+            await fake.wait_for_identify(120, minimum=identified_before + 1)
+            health = await _wait_native_protocol_ready(
+                second_sidecar.name, str(run.target.record["revision"]), second.alive
+            )
+            detail["reloadHealth"] = health
+            if not _native_protocol_ready(health, str(run.target.record["revision"])):
+                raise RuntimeError("second native boot did not reach pinned zero-player readiness")
+            second_boot_id = health.get("bootId")
+            if second_boot_id == first_boot_id:
+                raise RuntimeError("second native boot reused the first boot ID")
+            detail["secondBootId"] = second_boot_id
+            detail["readEvidence"] = watch.read_evidence()
+            if not detail["readEvidence"]["openedReadClosed"]:
+                raise RuntimeError("second game boot did not open and read the exact owned save")
+        finally:
+            watch.close()
+
+        after = await asyncio.to_thread(net.hash_file, save)
+        detail["saveAfterReload"] = {**after, "mtimeNs": save.stat().st_mtime_ns}
+        if after != before:
+            raise RuntimeError("owned save changed during reload before a new shutdown save")
+
+        reload_log = run.out / "server-reload.log"
+        log_stat = reload_log.stat()
+        ack = await fake.request("shutdown", {})
+        detail["reloadShutdownAcknowledgement"] = ack
+        if ack != {}:
+            raise RuntimeError("second Generic shutdown was not acknowledged")
+        exit_code = await asyncio.to_thread(second.wait_for_exit, 45)
+        detail["reloadExitCode"] = exit_code
+        markers = await asyncio.to_thread(
+            _fresh_shutdown_markers, reload_log, log_stat.st_dev, log_stat.st_ino, log_stat.st_size
+        )
+        detail["reloadShutdownMarkers"] = markers
+        if exit_code != 134 or not all(markers.values()):
+            raise RuntimeError("second native shutdown lacked fresh save/exit-request markers or exit 134")
+        saved_again = await asyncio.to_thread(net.hash_file, save)
+        detail["saveAfterSecondShutdown"] = {**saved_again, "mtimeNs": save.stat().st_mtime_ns}
+        if saved_again["size"] <= 0:
+            raise RuntimeError("second shutdown left an empty owned save")
+    except Exception as exc:
+        problems.append(str(exc))
+    run.record(_result("owned-save-reload", problems, started, **detail))
+
+
 async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[dict[str, Any]]) -> None:
-    del ws_url
     if run.wanted("event"):
         events = [
             event
@@ -483,8 +657,8 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
             else:
                 exit_code = await asyncio.to_thread(run.container.wait_for_exit, 45)
                 shutdown_detail["exitCode"] = exit_code
-                # The exact build's main loop calls RequestExit(true) after the
-                # guarded native exit request, normally aborting with status 134.
+                # This exact build requests exit after a flushed ACK. With the
+                # ARK process behind Docker init, the engine aborts with 134.
                 # Fresh markers distinguish that path from an unrelated abort.
                 markers = await asyncio.to_thread(_fresh_shutdown_markers, run.server_log, *log_identity)
                 for label, marker in markers.items():
@@ -493,20 +667,26 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
                         shutdown_problems.append(f"native shutdown {label} completion marker is missing")
                 if exit_code != 134:
                     shutdown_problems.append(f"native shutdown exit status {exit_code} != expected 134")
-                if getattr(getattr(run, "options", None), "ark_readonly_base", None) is not None:
+                if getattr(run, "data_dir", None) is not None:
                     save = run.data_dir / "ShooterGame/Saved/SavedArks/TheIsland.ark"
                     saved = save.stat() if save.is_file() else None
                     shutdown_detail["ownedSave"] = {
                         "path": "ShooterGame/Saved/SavedArks/TheIsland.ark",
                         "size": saved.st_size if saved else None,
+                        "sha256": await asyncio.to_thread(net.sha256_file, save) if saved else None,
+                        "mtimeNs": saved.st_mtime_ns if saved else None,
                     }
                     if not saved or saved.st_size <= 0:
-                        shutdown_problems.append("native shutdown left no TheIsland.ark in the fresh owned Saved tree")
+                        shutdown_problems.append("native shutdown left no TheIsland.ark in the owned Saved tree")
         except Exception as exc:
             shutdown_problems.append(str(exc))
         run.record(_result("native-shutdown", shutdown_problems, started, **shutdown_detail))
     else:
         run.skip("native-shutdown", "not selected by --checks")
+    if run.wanted("owned-save-reload"):
+        await _reload_owned_save(run, fake, ws_url, ledger_inputs)
+    else:
+        run.skip("owned-save-reload", "not selected by --checks")
     if run.wanted("stop"):
         started = time.monotonic()
         stop_problems: list[str] = []

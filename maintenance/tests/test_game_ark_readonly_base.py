@@ -166,7 +166,7 @@ def test_readonly_health_rejects_executable_resolving_to_preserved_base(
         ark_verify.subprocess,
         "run",
         lambda *args, **kwargs: SimpleNamespace(
-            returncode=0, stdout=f"{actual_exe}\n/ark/ShooterGame/Saved\n", stderr=""
+            returncode=0, stdout=f"game 7 {actual_exe}\nsaved /ark/ShooterGame/Saved\n", stderr=""
         ),
     )
 

@@ -39,6 +39,7 @@ GAME_PROTOCOL_CHECKS: dict[str, tuple[str, ...]] = {
         "entities",
         "ark-console",
         "native-shutdown",
+        "owned-save-reload",
         "stop",
     ),
 }

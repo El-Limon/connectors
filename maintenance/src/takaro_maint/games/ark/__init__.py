@@ -137,6 +137,7 @@ class ArkAdapter(BaseAdapter):
     def container_options(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
         del resolved, data_dir
         return [
+            "--init",
             "--memory",
             "24g",
             "--user",

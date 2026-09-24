@@ -114,6 +114,17 @@ def bridge_gateway() -> str:
     return "172.17.0.1"
 
 
+def _command_env_secrets(argv: list[str]) -> list[str]:
+    """Find secret-valued `docker run -e KEY=value` arguments for kept logs."""
+    environment: dict[str, str] = {}
+    for index, argument in enumerate(argv[:-1]):
+        if argument in ("-e", "--env"):
+            key, separator, value = argv[index + 1].partition("=")
+            if separator:
+                environment[key] = value
+    return redact.secret_values(environment)
+
+
 @dataclass
 class Container:
     """One game server container, its log file and its lifecycle."""
@@ -133,7 +144,7 @@ class Container:
             handle.write(redact.redact(" ".join(shlex.quote(part) for part in self.argv), self.secrets) + "\n")
         result = subprocess.run(self.argv, capture_output=True, text=True, check=False)
         if result.returncode != 0:
-            raise UpstreamUnavailable(f"docker run failed: {result.stderr.strip()}")
+            raise UpstreamUnavailable(f"docker run failed: {redact.redact(result.stderr.strip(), self.secrets)}")
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
         log_handle = self.log_file.open("wb")
         self._follower = subprocess.Popen(
@@ -463,7 +474,7 @@ class TargetRun:
             argv=argv,
             log_file=self.out / log_name,
             docker_log=self.docker_log,
-            secrets=[self.registration_token, *(extra_env or {}).values()],
+            secrets=[self.registration_token, *(extra_env or {}).values(), *_command_env_secrets(argv)],
         )
         # Registered before it is started, not after: `docker run` has created the container
         # by the time `start()` returns, and an interrupt arriving during `start()` or the
