@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -804,6 +805,160 @@ def test_native_console_safety_probe_reads_structured_http_400_without_token_in_
     assert calls[0][-1] == "DoExit"
     assert "ARK_NATIVE_TOKEN" in calls[0][-2]
     assert all("Bearer fixture-secret" not in part for part in calls[0])
+
+
+def test_native_message_probe_reads_real_status_without_token_in_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def native_response(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout='{"status":503,"body":{"error":"offline"}}', stderr="")
+
+    monkeypatch.setattr(ark_verify.subprocess, "run", native_response)
+    monkeypatch.setattr(ark_verify, "docker_command", lambda: ["docker"])
+    result = ark_verify._native_message_probe("owned-sidecar", "/players/76561198009999999/message", "fixture")
+    assert result == {"status": 503, "body": {"error": "offline"}}
+    assert calls[0][:4] == ["docker", "exec", "owned-sidecar", "node"]
+    assert calls[0][-2:] == ["/players/76561198009999999/message", "fixture"]
+    assert "process.env.ARK_NATIVE_TOKEN" in calls[0][-3]
+    assert all("fixture-secret" not in part for part in calls[0])
+
+
+@pytest.mark.parametrize("native_status", [200, 503])
+def test_empty_broadcast_requires_native_and_generic_ack(
+    monkeypatch: pytest.MonkeyPatch, native_status: int
+) -> None:
+    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        ark_verify,
+        "_native_message_probe",
+        lambda container, path, message: {"status": native_status, "body": {"success": native_status == 200}},
+    )
+
+    class FakeTakaro:
+        async def request(self, action: str, args: dict[str, object]) -> object:
+            if action == "getPlayers":
+                assert args == {}
+                return []
+            assert action == "sendMessage" and "empty broadcast" in str(args["message"])
+            return {}
+
+    class FakeRun:
+        options = SimpleNamespace(run_id="owned-empty")
+
+        def __init__(self) -> None:
+            self.results: list[CheckResult] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "ark-empty-broadcast"
+
+        def record(self, result: CheckResult) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
+    assert len(run.results) == 1
+    assert run.results[0].status == ("pass" if native_status == 200 else "fail")
+
+
+@pytest.mark.parametrize("native_status", [503, 200])
+def test_offline_targeted_message_must_still_fail(
+    monkeypatch: pytest.MonkeyPatch, native_status: int
+) -> None:
+    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        ark_verify,
+        "_native_message_probe",
+        lambda container, path, message: {
+            "status": native_status,
+            "body": {"error": "no native recipient or queue full"} if native_status == 503 else {"success": True},
+        },
+    )
+
+    class FakeRun:
+        def __init__(self) -> None:
+            self.results: list[CheckResult] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "ark-targeted-offline"
+
+        def record(self, result: CheckResult) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_protocol(run, object(), lambda: True))
+    assert len(run.results) == 1
+    assert run.results[0].status == ("pass" if native_status == 503 else "fail")
+
+
+def test_saveworld_requires_fresh_ordered_engine_lines(tmp_path: Path) -> None:
+    log = tmp_path / "server.log"
+    log.write_text("Saving world...\nWorld Save Complete. Took 0.1\n")
+    stat = log.stat()
+    assert ark_verify._fresh_saveworld_completion(log, stat.st_dev, stat.st_ino, stat.st_size, timeout=0) == {
+        "start": None,
+        "complete": None,
+    }
+    with log.open("a") as stream:
+        stream.write("World Save Complete. Took 0.2\nSaving world...\nWorld Save Complete. Took 0.3\n")
+    markers = ark_verify._fresh_saveworld_completion(log, stat.st_dev, stat.st_ino, stat.st_size, timeout=0)
+    assert markers["start"] == "Saving world..."
+    assert markers["complete"] == "World Save Complete. Took 0.3"
+
+
+@pytest.mark.parametrize("handled", [True, False])
+def test_saveworld_check_needs_handled_command_and_owned_file_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, handled: bool
+) -> None:
+    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: {"bootId": "same-boot"})
+    monkeypatch.setattr(ark_verify, "_fresh_saveworld_completion", lambda *args: {
+        "start": "Saving world...", "complete": "World Save Complete. Took 0.3"
+    })
+    saved = tmp_path / "ShooterGame/Saved/SavedArks/TheIsland.ark"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"old")
+    os.utime(saved, ns=(1, 1))
+    log = tmp_path / "server.log"
+    log.write_text("booted\n")
+
+    class FakeTakaro:
+        async def request(self, action: str, args: dict[str, object]) -> dict[str, object]:
+            assert (action, args) == ("executeConsoleCommand", {"command": "SaveWorld"})
+            if handled:
+                saved.write_bytes(b"new-world")
+            return {"success": handled, "rawResult": "", "errorMessage": None if handled else "unhandled"}
+
+    class FakeRun:
+        container = SimpleNamespace(alive=lambda: True)
+        data_dir = tmp_path
+        server_log = log
+
+        def __init__(self) -> None:
+            self.results: list[CheckResult] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "ark-saveworld"
+
+        def record(self, result: CheckResult) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
+    assert len(run.results) == 1
+    assert run.results[0].status == ("pass" if handled else "fail"), run.results[0].detail
 
 
 def test_ark_console_safety_probe_fails_if_native_boot_changes(monkeypatch: pytest.MonkeyPatch) -> None:

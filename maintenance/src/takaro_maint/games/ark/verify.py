@@ -41,7 +41,10 @@ CHECK_IDS = (
     "inventory",
     "catalog",
     "entities",
+    "ark-empty-broadcast",
+    "ark-targeted-offline",
     "ark-console",
+    "ark-saveworld",
     "native-shutdown",
     "owned-save-reload",
     "event",
@@ -51,6 +54,7 @@ CHECK_IDS = (
 READY_LINE = re.compile(r"ARK_NATIVE_DIAG .*main-loop-tick count=1")
 SHUTDOWN_SAVE_LINE = re.compile(r"native-shutdown-synchronous-save-completed-before-ack")
 SHUTDOWN_REQUEST_LINE = re.compile(r"ARK_NATIVE_SHUTDOWN native-exit-requested$")
+SAVEWORLD_COMPLETE_LINE = re.compile(r"World Save Complete[.] Took [0-9.]+$")
 SHUTDOWN_MARKER_TIMEOUT = 8.0
 _IN_ACCESS = 0x00000001
 _IN_CLOSE_NOWRITE = 0x00000010
@@ -212,6 +216,58 @@ def _native_console_probe(container: str, command: str) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise RuntimeError("native console safety probe returned no structured response")
     return result
+
+
+def _native_message_probe(container: str, path: str, message: str) -> dict[str, Any]:
+    """Read an authenticated native message status without exposing the token in argv."""
+    script = (
+        "fetch('http://127.0.0.1:18891'+process.argv[1],{method:'POST',"
+        "headers:{Authorization:'Bearer '+process.env.ARK_NATIVE_TOKEN,"
+        "'Content-Type':'text/plain; charset=utf-8'},body:process.argv[2]})"
+        ".then(async r=>console.log(JSON.stringify({status:r.status,body:await r.json()})))"
+        ".catch(e=>{console.error(e.message);process.exitCode=1})"
+    )
+    proc = subprocess.run(
+        [*docker_command(), "exec", container, "node", "-e", script, path, message],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if proc.returncode:
+        raise RuntimeError(f"native message probe failed: {proc.stderr.strip()[:160]}")
+    result = json.loads(proc.stdout)
+    if not isinstance(result, dict):
+        raise RuntimeError("native message probe returned no structured response")
+    return result
+
+
+def _fresh_saveworld_completion(
+    log_file: Path, device: int, inode: int, offset: int, *, timeout: float = 10.0
+) -> dict[str, str | None]:
+    """Observe both real engine save lines appended after the console request began."""
+    deadline = time.monotonic() + timeout
+    while True:
+        stat = log_file.stat()
+        if (stat.st_dev, stat.st_ino) != (device, inode) or stat.st_size < offset:
+            raise RuntimeError("server log rotated or truncated during SaveWorld")
+        with log_file.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (device, inode) or opened.st_size < offset:
+                raise RuntimeError("server log rotated or truncated during SaveWorld")
+            stream.seek(offset)
+            lines = stream.read().decode("utf-8", errors="replace").splitlines()
+        start = next((i for i, line in enumerate(lines) if "Saving world..." in line), None)
+        complete = next(
+            (
+                line for i, line in enumerate(lines)
+                if start is not None and i > start and SAVEWORLD_COMPLETE_LINE.search(line)
+            ),
+            None,
+        )
+        if complete or time.monotonic() >= deadline:
+            return {"start": lines[start] if start is not None else None, "complete": complete}
+        time.sleep(0.2)
 
 
 def _wait_json(container: str, url: str, *, native: bool = False, timeout: float = 30) -> Any:
@@ -454,6 +510,47 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     )
                 ):
                     problems.append(f"native {method} catalog is missing or malformed")
+            elif check_id == "ark-empty-broadcast":
+                native_players = await asyncio.to_thread(
+                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/players", native=True
+                )
+                takaro_players = await fake.request("getPlayers", {})
+                detail["nativePlayersBefore"] = native_players
+                detail["takaroPlayersBefore"] = takaro_players
+                if native_players != [] or takaro_players != []:
+                    problems.append("zero-recipient broadcast requires a verified empty native and Takaro roster")
+                else:
+                    marker = f"ARK isolated empty broadcast {run.options.run_id}"
+                    native_result = await asyncio.to_thread(_native_message_probe, sidecar.name, "/message", marker)
+                    detail["native"] = native_result
+                    if native_result != {"status": 200, "body": {"success": True}}:
+                        problems.append("native empty broadcast did not acknowledge game-thread completion")
+                    response = await fake.request("sendMessage", {"message": marker})
+                    detail["generic"] = response
+                    if response != {}:
+                        problems.append("Generic empty broadcast did not acknowledge the native no-op")
+                    detail["nativePlayersAfter"] = await asyncio.to_thread(
+                        _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/players", native=True
+                    )
+                    if detail["nativePlayersAfter"] != []:
+                        problems.append("empty broadcast changed the zero-player roster")
+            elif check_id == "ark-targeted-offline":
+                target = "76561198009999999"
+                native_players = await asyncio.to_thread(
+                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/players", native=True
+                )
+                detail["nativePlayers"] = native_players
+                if not isinstance(native_players, list) or any(
+                    isinstance(player, dict) and player.get("gameId") == target for player in native_players
+                ):
+                    problems.append("offline target was not verified absent from native roster")
+                else:
+                    result = await asyncio.to_thread(
+                        _native_message_probe, sidecar.name, f"/players/{target}/message", "offline target must fail"
+                    )
+                    detail["native"] = result
+                    if result != {"status": 503, "body": {"error": "no native recipient or queue full"}}:
+                        problems.append("native targeted message did not reject the offline recipient")
             elif check_id == "chat-out":
                 marker = f"Takaro ARK verify {run.options.run_id}"
                 detail["message"] = marker
@@ -516,6 +613,43 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     or result.get("errorMessage") is not None
                 ):
                     problems.append("native GetAll player-name query was not reported handled with a valid result")
+            elif check_id == "ark-saveworld":
+                if run.container is None:
+                    raise RuntimeError("game container was not started")
+                save = run.data_dir / "ShooterGame/Saved/SavedArks/TheIsland.ark"
+                before = save.stat() if save.is_file() else None
+                log_stat = run.server_log.stat()
+                log_identity = (log_stat.st_dev, log_stat.st_ino, log_stat.st_size)
+                health_before = await asyncio.to_thread(
+                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
+                )
+                result = await fake.request("executeConsoleCommand", {"command": "SaveWorld"})
+                detail["result"] = result
+                if result != {"success": True, "rawResult": "", "errorMessage": None}:
+                    problems.append("Generic SaveWorld was not acknowledged as a completed native save")
+                markers = await asyncio.to_thread(_fresh_saveworld_completion, run.server_log, *log_identity)
+                detail["freshSaveMarkers"] = markers
+                if not markers["start"] or not markers["complete"]:
+                    problems.append("fresh engine SaveWorld start/completion lines were not observed")
+                after = save.stat() if save.is_file() else None
+                detail["ownedSave"] = {
+                    "sizeBefore": before.st_size if before else None,
+                    "mtimeNsBefore": before.st_mtime_ns if before else None,
+                    "sizeAfter": after.st_size if after else None,
+                    "mtimeNsAfter": after.st_mtime_ns if after else None,
+                    "sha256After": await asyncio.to_thread(net.sha256_file, save) if after else None,
+                }
+                if not after or after.st_size <= 0 or (before and after.st_mtime_ns <= before.st_mtime_ns):
+                    problems.append("owned world save was not freshly written by SaveWorld")
+                health_after = await asyncio.to_thread(
+                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
+                )
+                detail["bootIdBefore"] = health_before.get("bootId") if isinstance(health_before, dict) else None
+                detail["bootIdAfter"] = health_after.get("bootId") if isinstance(health_after, dict) else None
+                if not await asyncio.to_thread(run.container.alive) or not detail["bootIdBefore"] or (
+                    detail["bootIdAfter"] != detail["bootIdBefore"]
+                ):
+                    problems.append("game stopped or native boot changed after SaveWorld")
             elif check_id == "reconnect":
                 before = fake.identify_count
                 await fake.disconnect(1001, "going away")
