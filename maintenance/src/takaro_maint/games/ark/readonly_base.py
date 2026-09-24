@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -150,11 +151,16 @@ def project_base(base: Path, owned: Path) -> None:
                             # The engine resolves /proc/self/exe to find its Saved path.
                             # A symlink here would point that lookup at the preserved base.
                             shutil.copy2(file, target)
+                        elif file.name == "BanList.txt":
+                            # The engine writes this beside its executable, not
+                            # under Saved. Project it as owned state below.
+                            continue
                         else:
                             target.symlink_to(
                                 f"/ark-base/ShooterGame/Binaries/Linux/{file.name}",
                                 target_is_directory=file.is_dir(),
                             )
+                    _project_ban_list(binary_child / "BanList.txt", linux / "BanList.txt")
                 else:
                     (binaries / binary_child.name).symlink_to(
                         f"/ark-base/ShooterGame/Binaries/{binary_child.name}",
@@ -167,6 +173,24 @@ def project_base(base: Path, owned: Path) -> None:
     (projected_shooter / "Saved").mkdir()
     (owned / ".takaro" / "home").mkdir(parents=True)
     (owned / "TakaroArk").mkdir()
+
+
+def _project_ban_list(source: Path, target: Path) -> None:
+    """Seed an owned ARK BanList once; never overwrite bans from a prior boot."""
+    if target.is_symlink():
+        # Earlier read-only projections linked this file to /ark-base. That
+        # link cannot contain owned changes, so replace it with a regular file.
+        target.unlink()
+    if target.exists():
+        if not target.is_file():
+            raise IntegrityError("ARK owned BanList path is not a regular file")
+    elif source.exists():
+        if source.is_symlink() or not source.is_file():
+            raise IntegrityError("ARK base BanList is not a regular file")
+        shutil.copy2(source, target)
+    else:
+        target.touch(mode=0o600, exist_ok=False)
+    target.chmod(target.stat().st_mode | stat.S_IWUSR)
 
 
 def prepare(run: Any, manifest: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:

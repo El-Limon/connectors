@@ -11,7 +11,7 @@ import pytest
 from takaro_maint import net
 from takaro_maint.exit_codes import IntegrityError, UsageError
 from takaro_maint.games.ark import verify as ark_verify
-from takaro_maint.games.ark.readonly_base import project_base, validate_base
+from takaro_maint.games.ark.readonly_base import _project_ban_list, project_base, validate_base
 from takaro_maint.verify.hooks import GameHooks
 from takaro_maint.verify.runner import RunOptions, TargetRun
 
@@ -103,6 +103,34 @@ def test_readonly_projection_keeps_saved_and_connector_owned(tmp_path: Path) -> 
     assert owned_steamclient.read_bytes() == (base / "linux64/steamclient.so").read_bytes()
     with pytest.raises(UsageError, match="must be separate"):
         project_base(base, base / "nested")
+
+
+def test_readonly_projection_keeps_banlist_writable_and_preserves_it_on_restart(tmp_path: Path) -> None:
+    base, _ = _base(tmp_path)
+    source = base / "ShooterGame/Binaries/Linux/BanList.txt"
+    source.write_text("76561198000000001\n")
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    project_base(base, owned)
+    target = owned / "ShooterGame/Binaries/Linux/BanList.txt"
+    assert target.is_file() and not target.is_symlink()
+    assert target.read_text() == "76561198000000001\n"
+    assert target.stat().st_mode & 0o200
+
+    target.write_text("76561198009999999\n")
+    source.write_text("76561198000000002\n")
+    _project_ban_list(source, target)  # A second boot keeps the same owned file.
+    assert target.read_text() == "76561198009999999\n"
+    assert source.read_text() == "76561198000000002\n"
+
+
+def test_readonly_projection_creates_owned_banlist_when_base_lacks_one(tmp_path: Path) -> None:
+    base, _ = _base(tmp_path)
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    project_base(base, owned)
+    target = owned / "ShooterGame/Binaries/Linux/BanList.txt"
+    assert target.is_file() and not target.is_symlink() and target.read_bytes() == b""
 
 
 def test_readonly_container_mounts_never_expose_existing_base_writable(tmp_path: Path) -> None:
