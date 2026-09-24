@@ -3,12 +3,14 @@
 // Exact ShooterGameServer 21241282 kick route. Native bool confirms selection;
 // the caller must still confirm the Steam64 disappears from a fresh roster.
 #include "inventory_bindings.hpp"
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -17,6 +19,28 @@ namespace ark_moderation {
 enum class Status { dispatched, native_rejected, unavailable, invalid_id, invalid_layout };
 enum class BanStatus { changed_in_memory, already_in_state, native_rejected,
                        unavailable, invalid_id, invalid_layout };
+enum class BanEffect { invalid, pending_departure, verified };
+enum class BanProgress { reject, wait, attempt_kick, confirm };
+
+// The GameMode bool is not an effect acknowledgment for offline IDs. Require
+// a fresh, fully validated ban-set snapshot; an online ban is complete only
+// after the same Steam64 disappears from the live controller roster.
+inline BanEffect ban_effect(BanStatus result, bool should_ban,
+                            const std::vector<std::string>& fresh_ids,
+                            std::string_view steam64, bool still_online) {
+  if (result != BanStatus::changed_in_memory && result != BanStatus::already_in_state)
+    return BanEffect::invalid;
+  const bool present = std::find(fresh_ids.begin(), fresh_ids.end(), steam64) != fresh_ids.end();
+  if (present != should_ban) return BanEffect::invalid;
+  return should_ban && still_online ? BanEffect::pending_departure : BanEffect::verified;
+}
+
+inline BanProgress ban_progress(BanEffect effect, int64_t elapsed_ms, bool kick_attempted) {
+  if (effect == BanEffect::invalid || elapsed_ms > 2500) return BanProgress::reject;
+  if (effect == BanEffect::verified) return BanProgress::confirm;
+  if (!kick_attempted && elapsed_ms >= 250) return BanProgress::attempt_kick;
+  return BanProgress::wait;
+}
 struct Api {
   void* (*shooter_game_mode_class)() = reinterpret_cast<void* (*)()>(0x13CCDA0);
   bool (*kick_player)(void*, const ark_inventory::FString*, const ark_inventory::FString*) =

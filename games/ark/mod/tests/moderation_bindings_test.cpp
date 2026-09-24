@@ -65,6 +65,28 @@ int main() {
   std::memcpy(api.unban_prologue.data(), reinterpret_cast<const void*>(&unban_native), 8);
   std::memcpy(api.find_prologue.data(), reinterpret_cast<const void*>(&find_native), 8);
   constexpr auto steam64 = "76561198000000001";
+  const std::vector<std::string> present{steam64};
+  const std::vector<std::string> absent{};
+  assert(ban_effect(BanStatus::changed_in_memory, true, present, steam64, true) ==
+         BanEffect::pending_departure);
+  assert(ban_effect(BanStatus::already_in_state, true, present, steam64, true) ==
+         BanEffect::pending_departure);
+  assert(ban_effect(BanStatus::already_in_state, true, present, steam64, false) ==
+         BanEffect::verified);
+  assert(ban_effect(BanStatus::changed_in_memory, false, absent, steam64, false) ==
+         BanEffect::verified);
+  assert(ban_effect(BanStatus::already_in_state, false, absent, steam64, true) ==
+         BanEffect::verified);
+  assert(ban_effect(BanStatus::changed_in_memory, true, absent, steam64, false) ==
+         BanEffect::invalid);
+  assert(ban_effect(BanStatus::native_rejected, true, present, steam64, false) ==
+         BanEffect::invalid);
+  assert(ban_progress(BanEffect::invalid, 0, false) == BanProgress::reject);
+  assert(ban_progress(BanEffect::verified, 0, false) == BanProgress::confirm);
+  assert(ban_progress(BanEffect::pending_departure, 249, false) == BanProgress::wait);
+  assert(ban_progress(BanEffect::pending_departure, 250, false) == BanProgress::attempt_kick);
+  assert(ban_progress(BanEffect::pending_departure, 500, true) == BanProgress::wait);
+  assert(ban_progress(BanEffect::pending_departure, 2501, true) == BanProgress::reject);
   assert(kick(world, steam64, api) == Status::dispatched);
   assert(kicks == 1);
   assert(change_ban(world, steam64, true, api) == BanStatus::changed_in_memory && banned);

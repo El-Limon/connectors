@@ -141,6 +141,14 @@ struct PendingKick {
   std::chrono::steady_clock::time_point started;
 };
 std::vector<PendingKick> g_pending_kicks; // only touched on the verified game thread
+struct PendingBan {
+  std::shared_ptr<gate::Action> action;
+  ark_moderation::BanStatus native_result;
+  std::chrono::steady_clock::time_point started;
+  std::chrono::steady_clock::time_point next_check;
+  bool kick_attempted = false;
+};
+std::vector<PendingBan> g_pending_bans; // only touched on the verified game thread
 std::shared_ptr<gate::Action> g_pending_shutdown; // game thread only; response_sent is atomic
 std::chrono::steady_clock::time_point g_shutdown_staged_at{};
 
@@ -760,6 +768,40 @@ void tick_hook(void* loop) {
         it = g_pending_kicks.erase(it);
       } else ++it;
     }
+    for (auto it = g_pending_bans.begin(); it != g_pending_bans.end();) {
+      const auto checked_at = std::chrono::steady_clock::now();
+      if (checked_at < it->next_check) { ++it; continue; }
+      it->next_check = checked_at + std::chrono::milliseconds(100);
+      ark_list_bans::Api list_api{};
+      list_api.game_thread_tid = tid;
+      std::vector<std::string> ids;
+      const bool snapshot_ok = ark_list_bans::snapshot(resolve_live_world(), ids, list_api) ==
+          ark_list_bans::Status::ok;
+      const bool online = resolve_live_controller(it->action->player_id) != nullptr;
+      const auto effect = snapshot_ok
+          ? ark_moderation::ban_effect(it->native_result, true, ids, it->action->player_id, online)
+          : ark_moderation::BanEffect::invalid;
+      if (snapshot_ok) g_gate->record_bans(std::move(ids));
+      else g_gate->clear_bans();
+      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          checked_at - it->started).count();
+      const auto progress = ark_moderation::ban_progress(effect, elapsed_ms, it->kick_attempted);
+      if (progress == ark_moderation::BanProgress::attempt_kick) {
+        it->kick_attempted = true;
+        ark_moderation::Api api{};
+        api.game_thread_tid = tid;
+        const auto result = ark_moderation::kick(resolve_live_world(), it->action->player_id, api);
+        enqueue(result == ark_moderation::Status::dispatched
+            ? "native-ban-online-kick-dispatched" : "native-ban-online-kick-unavailable");
+      }
+      if (progress == ark_moderation::BanProgress::confirm ||
+          progress == ark_moderation::BanProgress::reject) {
+        const bool verified = progress == ark_moderation::BanProgress::confirm;
+        gate::Server::complete(it->action, verified);
+        enqueue(verified ? "native-ban-set-and-departure-verified" : "native-ban-effect-unverified");
+        it = g_pending_bans.erase(it);
+      } else ++it;
+    }
     if (auto action = g_gate->take_action()) {
       bool execute = false;
       { std::lock_guard<std::mutex> lock(action->mutex);
@@ -840,17 +882,28 @@ void tick_hook(void* loop) {
             }
             if (!pending) enqueue("native-kick-dispatch-rejected");
           } else {
+            const bool should_ban = action->kind == gate::Action::Kind::ban;
             const auto result = ark_moderation::change_ban(world, action->player_id,
-                action->kind == gate::Action::Kind::ban, api);
-            success = result == ark_moderation::BanStatus::changed_in_memory;
+                should_ban, api);
             ark_list_bans::Api list_api{};
             list_api.game_thread_tid = tid;
             std::vector<std::string> ids;
-            if (ark_list_bans::snapshot(resolve_live_world(), ids, list_api) == ark_list_bans::Status::ok)
+            if (ark_list_bans::snapshot(resolve_live_world(), ids, list_api) == ark_list_bans::Status::ok) {
+              const auto effect = ark_moderation::ban_effect(result, should_ban, ids,
+                  action->player_id, resolve_live_controller(action->player_id) != nullptr);
+              success = effect == ark_moderation::BanEffect::verified;
+              if (effect == ark_moderation::BanEffect::pending_departure &&
+                  g_pending_bans.size() < 128) {
+                const auto started = std::chrono::steady_clock::now();
+                g_pending_bans.push_back({action, result, started, started});
+                pending = true;
+              }
               g_gate->record_bans(std::move(ids));
-            else
+            } else {
               g_gate->clear_bans();
-            enqueue(success ? "native-ban-memory-state-verified" : "native-ban-memory-state-unverified");
+            }
+            enqueue(success ? "native-ban-memory-state-verified" : pending
+                ? "native-ban-awaiting-departure" : "native-ban-memory-state-unverified");
           }
         } else {
           void* controller = resolve_live_controller(action->player_id);
