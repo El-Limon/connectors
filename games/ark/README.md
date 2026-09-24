@@ -37,8 +37,8 @@ As of 2026-09-24, this remains a candidate for ARK public build **21241282**. Th
 
 | Capability | Status | Evidence and limit |
 | --- | --- | --- |
-| Exact executable guard and deployed identity | Observed on v20 | The pinned native library and sidecar booted against the exact server build; isolated wrong-target tests reject a different executable. |
-| Native health and sidecar connection | Observed on v20 | Authenticated native health and sidecar identification reported the same live boot ID. |
-| Real client chat and server broadcast | Observed on v20 | PC-typed `9904` persisted as a Takaro chat event; a Takaro `sendMessage` with marker `9905` appeared as yellow SERVER chat in the ARK client. Full same-boot native attribution is under review. |
-| Read-only engine console command and native ban list | Pending on v20 | Both had narrow v17 proof, which remains historical. The isolated v20 protocol checked a handled console dispatch and empty native ban list; real live behavior still needs current evidence. |
-| Location, inventory, grant, teleport, death, catalog, modules, and recovery | Pending on v20 | These need their own current-artifact acceptance evidence. A sidecar outage longer than two minutes retained native chat and leave events but delayed Takaro hydration failed after the player left; recovery needs a fix and retest. `listLocations` has no available Takaro SDK/MCP operation despite native support. |
+| Exact executable guard and deployed identity | ✅ Observed on v20 | The pinned native library and sidecar booted against the exact server build; isolated wrong-target tests reject a different executable. |
+| Native health and sidecar connection | ✅ Observed on v20 | Authenticated native health and sidecar identification reported the same live boot ID. |
+| Real client chat and server broadcast | ⚠️ Observed on v20 | PC-typed `9904` persisted as a Takaro chat event; a Takaro `sendMessage` with marker `9905` appeared as yellow SERVER chat in the ARK client. Full same-boot native attribution is under review. |
+| Read-only engine console command and native ban list | ⚠️ Pending on v20 | Both had narrow v17 proof, which remains historical. The isolated v20 protocol checked a handled console dispatch and empty native ban list; real live behavior still needs current evidence. |
+| Location, inventory, grant, teleport, death, catalog, modules, and recovery | ❌ Pending on v20 | These need their own current-artifact acceptance evidence. A sidecar outage longer than two minutes retained native chat and leave events but delayed Takaro hydration failed after the player left; recovery needs a fix and retest. `listLocations` has no available Takaro SDK/MCP operation despite native support. |
