@@ -21,11 +21,11 @@ maintenance/bin/takaro-maint deploy --game ark --target linux-21241282 --dest /s
 
 ### 2. Configure and start
 
-Set the same long random `ARK_NATIVE_TOKEN` for the game and sidecar. Start the game through the shipped `/srv/ark/TakaroArk/TakaroArkNative/launch.sh /srv/ark 'TheIsland?listen?SessionName=Takaro-ARK?Port=7787?QueryPort=27025' -server -log -NoBattlEye`. The launcher checks the exact executable hash and sets `LD_PRELOAD` only for `ShooterGameServer`. Do not preload SteamCMD. The sidecar needs `TAKARO_REGISTRATION_TOKEN`, `TAKARO_IDENTITY_TOKEN`, `TAKARO_WS_URL`, `ARK_NATIVE_TOKEN`, `ARK_NATIVE_URL=http://127.0.0.1:18891`, and a persistent `TAKARO_CURSOR_FILE`; run it in the server's network namespace so the native bearer API stays on loopback. The shipped `TakaroArkSidecar/Dockerfile` builds from the compiled release files. `dev-servers/compose/ark.yml` supplies a concrete two-container rig.
+Set the same long random `ARK_NATIVE_TOKEN` for the game and sidecar. Start the game through the shipped `/srv/ark/TakaroArk/TakaroArkNative/launch.sh /srv/ark 'TheIsland?listen?SessionName=Takaro-ARK?Port=7787?QueryPort=27025' -server -log -NoBattlEye`. The launcher checks the exact executable hash and sets `LD_PRELOAD` only for `ShooterGameServer`. Do not preload SteamCMD. When containerized, run the game with Docker `--init` or Compose `init: true`, so the game is not namespace PID 1. ARK's normal acknowledged shutdown saves the world and intentionally exits with signal 6 (status 134); a PID 1 process can instead hit glibc's abort fallback and exit 139. The sidecar needs `TAKARO_REGISTRATION_TOKEN`, `TAKARO_IDENTITY_TOKEN`, `TAKARO_WS_URL`, `ARK_NATIVE_TOKEN`, `ARK_NATIVE_URL=http://127.0.0.1:18891`, and a persistent `TAKARO_CURSOR_FILE`; run it in the server's network namespace so the native bearer API stays on loopback. The shipped `TakaroArkSidecar/Dockerfile` builds from the compiled release files. `dev-servers/compose/ark.yml` supplies a concrete two-container rig.
 
 ### 3. Check the connection
 
-For an isolated verification run, use `maintenance/bin/takaro-maint verify --help` and the ARK-specific checks in `maintenance/src/takaro_maint/games/ark/verify.py`. A bare run cannot prove PC chat, player location/inventory, or unsupported actions without real clients; those checks fail openly rather than inventing success. Do not run the verifier against an active production server; it manages its own container and shutdown.
+For an isolated verification run, use `maintenance/bin/takaro-maint verify --help` and the ARK-specific checks in `maintenance/src/takaro_maint/games/ark/verify.py`. A bare run cannot prove PC chat, player location/inventory, or unsupported actions without real clients; those checks fail openly rather than inventing success. The `--ark-readonly-base` mode passed the pinned v20 isolated protocol, including two acknowledged saves and status-134 exits plus a distinct-boot reload that read the unchanged owned world save. That protocol run does not cover real PC gameplay. Do not run the verifier against an active production server; it manages its own container and shutdown.
 
 ### 4. Uninstall
 
@@ -33,11 +33,12 @@ To uninstall, stop the sidecar and game, then remove only the two paths named by
 
 ## What works, what doesn't
 
-As of 2026-09-24, this candidate targets ARK public build **21241282**. No capability below has been verified with a live server and real PC clients. ✅ means verified live, ⚠️ means implemented or checked only in source or isolated tests, and ❌ means unavailable.
+As of 2026-09-24, this remains a candidate for ARK public build **21241282**. The current v20 deployment uses source revision `a25e3a30892b7dc6751d28e7c907f3a1f99a5585`, native library SHA-256 `002faf257402e59aa2f3e5ef30dcffeffc7dd8d4e0de2e887af6b8c5f981b90c`, and sidecar ZIP SHA-256 `1484545f4141239c729d20214a72306ef2ef898495bc162f83466880f31d8e8b`. The [target issue #289](https://github.com/gettakaro/connectors/issues/289) and [draft PR #291](https://github.com/gettakaro/connectors/pull/291) track remaining verification. Earlier v17 gameplay evidence remains historical and does not count toward v20 acceptance.
 
 | Capability | Status | Evidence and limit |
 | --- | --- | --- |
-| Exact executable guard and deployment layout | ⚠️ | Implemented and covered by isolated tests; live server verification is pending. |
-| Native health and sidecar connection | ⚠️ | Implemented; live server verification is pending. |
-| Player roster, chat, location, and inventory | ⚠️ | Require real PC-client evidence; a bare verifier run cannot establish them. |
-| Native actions, gameplay events, and recovery | ⚠️ | Candidate work remains unfinished or unverified. |
+| Exact executable guard and deployed identity | Observed on v20 | The pinned native library and sidecar booted against the exact server build; isolated wrong-target tests reject a different executable. |
+| Native health and sidecar connection | Observed on v20 | Authenticated native health and sidecar identification reported the same live boot ID. |
+| Real client chat and server broadcast | Observed on v20 | PC-typed `9904` persisted as a Takaro chat event; a Takaro `sendMessage` with marker `9905` appeared as yellow SERVER chat in the ARK client. Full same-boot native attribution is under review. |
+| Read-only engine console command and native ban list | Pending on v20 | Both had narrow v17 proof, which remains historical. The isolated v20 protocol checked a handled console dispatch and empty native ban list; real live behavior still needs current evidence. |
+| Location, inventory, grant, teleport, death, catalog, modules, and recovery | Pending on v20 | These need their own current-artifact acceptance evidence. A sidecar outage longer than two minutes retained native chat and leave events but delayed Takaro hydration failed after the player left; recovery needs a fix and retest. `listLocations` has no available Takaro SDK/MCP operation despite native support. |
