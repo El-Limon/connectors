@@ -25,7 +25,7 @@ failure. It does not attribute any specific historical run without a marker
 showing which path ran. It also does not prove save persistence: save-world
 completion and preserved save files must be checked before and after a
 controlled restart. An HTTP shutdown response must flush before scheduling
-the `Exit` command on a later game tick, because the main loop can terminate
+the native exit request on a later game tick, because the main loop can terminate
 after the exit-request byte is set.
 
 The game's own save path emits `Saving world...` (UTF-32 literal `0x4068414`)
@@ -62,3 +62,37 @@ or use the validated game-mode virtual path and preserve the save file.
 Offline inspection used `objdump -d -M intel` on this exact executable around
 `0xD91900`, `0x1B03A90`, `0x262EEB0`, `0x262F340`, `0x8205D0–0x820700`,
 and `0xE64900–0xE65A60`.
+
+## Implemented shutdown and container requirement
+
+The connector calls the guarded `RequestExit(false)` entry directly on the
+game thread. It checks the complete 23-byte function signature and the unset
+exit-request byte before staging shutdown. It first completes synchronous
+`SaveWorld`, then waits for the HTTP acknowledgement to finish sending and
+at least 200 ms before requesting exit. While shutdown is pending, the action
+dispatcher does not execute subsequent queued mutations. Console aliases
+that bypass this sequence are rejected in favor of the dedicated shutdown
+action. No signal handlers are replaced.
+
+Run containerized ARK with Docker `--init` or Compose `init: true`. The game
+must not be PID 1. The game's normal termination path uses `abort`, and Linux
+PID-namespace init signal behavior changes its result when ARK is PID 1.
+Both the development rig and maintenance verifier enable an init process.
+
+Earlier isolated runs without init exited 139. Their final instruction was
+inside `SDL_HasClipboardText` called by `EngineCrashHandler`; this was a
+secondary fault, not evidence that normal shutdown cleanup required SDL.
+The saved original signal context instead pointed to the fallback `HLT`
+in libc `abort`. The same immutable runtime image reproduced the distinction
+with a small abort probe: PID 1 exited 139, while running under init exited
+134. Retesting the unchanged connector package under init resolved the
+failure; the connector does not force exit or patch the crash handler.
+
+The final implementation at source
+`a25e3a30892b7dc6751d28e7c907f3a1f99a5585` passed an isolated two-boot check:
+both native shutdowns acknowledged, completed synchronous saves and emitted
+fresh exit-request markers before status 134. Between them, the second game
+boot opened and read the exact owned world file, as observed with inotify;
+its hash was unchanged across loading, and the native boot identity changed.
+This establishes the tested save/reload sequence. It does not establish all
+real-client acceptance obligations or storage durability after power loss.
