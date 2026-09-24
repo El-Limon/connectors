@@ -1,4 +1,5 @@
 """Fail-closed classification for ARK's isolated wrong-build verification."""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,13 +13,19 @@ from takaro_maint.games.ark import GAME
 from takaro_maint.games.ark import verify as ark_verify
 
 
-@pytest.mark.parametrize("preload_stdout,expected", [
-    ("native_listener=absent\nfixture_exit=0\n", "pass"),
-    ("fixture_exit=0\n", "fail"),
-    ("unexpected_native_listener\n", "fail"),
-])
+@pytest.mark.parametrize(
+    "preload_stdout,expected",
+    [
+        ("native_listener=absent\nfixture_exit=0\n", "pass"),
+        ("fixture_exit=0\n", "fail"),
+        ("unexpected_native_listener\n", "fail"),
+    ],
+)
 def test_wrong_target_requires_both_launcher_refusal_and_no_native_listener(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preload_stdout: str, expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preload_stdout: str,
+    expected: str,
 ) -> None:
     data = tmp_path / "data/TakaroArk/TakaroArkNative"
     data.mkdir(parents=True)
@@ -32,8 +39,7 @@ def test_wrong_target_requires_both_launcher_refusal_and_no_native_listener(
         del kwargs
         calls.append(argv)
         if len(calls) == 1:
-            return SimpleNamespace(returncode=7, stdout="",
-                stderr="Unknown ARK executable; native connector refused\n")
+            return SimpleNamespace(returncode=7, stdout="", stderr="Unknown ARK executable; native connector refused\n")
         return SimpleNamespace(returncode=0, stdout=preload_stdout, stderr="")
 
     monkeypatch.setattr(ark_verify.subprocess, "run", run_command)
@@ -42,9 +48,17 @@ def test_wrong_target_requires_both_launcher_refusal_and_no_native_listener(
     class FakeRun:
         data_dir = tmp_path / "data"
         out = output
-        target = SimpleNamespace(record={"inputs": {"server": {"files": {
-            "ShooterGame/Binaries/Linux/ShooterGameServer": {"size": 4096},
-        }}}})
+        target = SimpleNamespace(
+            record={
+                "inputs": {
+                    "server": {
+                        "files": {
+                            "ShooterGame/Binaries/Linux/ShooterGameServer": {"size": 4096},
+                        }
+                    }
+                }
+            }
+        )
         resolved = {"containerRef": "node@sha256:pinned"}
         results: list[object] = []
 
@@ -62,12 +76,18 @@ def test_wrong_target_requires_both_launcher_refusal_and_no_native_listener(
         assert "native_listener=absent" in (output / "negative-wrong-target-preload.log").read_text()
 
 
-@pytest.mark.parametrize("role,folder,files", [
-    ("server-plugin", "TakaroArkNative", ["libtakaro-ark-native.so", "launch.sh"]),
-    ("sidecar", "TakaroArkSidecar", ["Dockerfile", "dist/index.js", "package-lock.json"]),
-])
+@pytest.mark.parametrize(
+    "role,folder,files",
+    [
+        ("server-plugin", "TakaroArkNative", ["libtakaro-ark-native.so", "launch.sh"]),
+        ("sidecar", "TakaroArkSidecar", ["Dockerfile", "dist/index.js", "package-lock.json"]),
+    ],
+)
 def test_ark_release_artifact_deploy_contract(
-    tmp_path: Path, role: str, folder: str, files: list[str],
+    tmp_path: Path,
+    role: str,
+    folder: str,
+    files: list[str],
 ) -> None:
     artifact = tmp_path / f"{role}.zip"
     with zipfile.ZipFile(artifact, "w") as archive:

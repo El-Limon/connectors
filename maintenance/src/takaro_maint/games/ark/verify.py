@@ -27,8 +27,18 @@ from ...verify.hooks import GameHooks
 from ...verify.runner import Container, docker_command
 
 CHECK_IDS = (
-    "native-health", "sidecar-identify", "roster", "location", "chat-in", "chat-out",
-    "reconnect", "inventory", "catalog", "ark-console", "event", "stop",
+    "native-health",
+    "sidecar-identify",
+    "roster",
+    "location",
+    "chat-in",
+    "chat-out",
+    "reconnect",
+    "inventory",
+    "catalog",
+    "ark-console",
+    "event",
+    "stop",
     "negative-wrong-target",
 )
 READY_LINE = re.compile(r"ARK_NATIVE_DIAG .*main-loop-tick count=1")
@@ -58,9 +68,20 @@ def start_sidecar(run: Any, fake: Any) -> Container:
         raise RuntimeError("the shipped ARK sidecar folder is incomplete")
     image = f"takaro-ark-sidecar:tm-{run.options.run_id}"
     build = subprocess.run(
-        [*docker_command(), "build", "-f", "Dockerfile", "-t", image,
-         "--label", f"tm.run={run.options.run_id}", str(source)],
-        capture_output=True, text=True, check=False,
+        [
+            *docker_command(),
+            "build",
+            "-f",
+            "Dockerfile",
+            "-t",
+            image,
+            "--label",
+            f"tm.run={run.options.run_id}",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     (run.out / "sidecar-build.log").write_text(build.stdout + build.stderr, encoding="utf-8")
     if build.returncode:
@@ -68,10 +89,21 @@ def start_sidecar(run: Any, fake: Any) -> Container:
     takaro = run.takaro_env(f"ws://{fake.host}:{fake.port}/")
     token = native_token(takaro["TAKARO_REGISTRATION_TOKEN"])
     name = f"{run.container.name}-sidecar"
-    argv = [*docker_command(), "run", "-d", "--name", name,
-            "--label", f"tm.run={run.options.run_id}",
-            "--label", f"tm.ttl={int(time.time()) + 10800}",
-            "--network", f"container:{run.container.name}", "--memory", "512m"]
+    argv = [
+        *docker_command(),
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--label",
+        f"tm.run={run.options.run_id}",
+        "--label",
+        f"tm.ttl={int(time.time()) + 10800}",
+        "--network",
+        f"container:{run.container.name}",
+        "--memory",
+        "512m",
+    ]
     for label in run.options.labels:
         argv += ["--label", label]
     env = {
@@ -89,9 +121,13 @@ def start_sidecar(run: Any, fake: Any) -> Container:
     sidecar_data = run.data_dir / ".takaro/runtime/sidecar-data"
     sidecar_data.mkdir(parents=True, exist_ok=True)
     argv += ["-v", f"{sidecar_data}:/data", image]
-    container = Container(name=name, argv=argv, log_file=run.out / "sidecar.log",
-                          docker_log=run.docker_log,
-                          secrets=[takaro["TAKARO_REGISTRATION_TOKEN"], token])
+    container = Container(
+        name=name,
+        argv=argv,
+        log_file=run.out / "sidecar.log",
+        docker_log=run.docker_log,
+        secrets=[takaro["TAKARO_REGISTRATION_TOKEN"], token],
+    )
     run.containers.append(container)
     run.extra_logs.append(container.log_file)
     container.start()
@@ -101,13 +137,21 @@ def start_sidecar(run: Any, fake: Any) -> Container:
 def _get_json(container: str, url: str, *, native: bool = False) -> Any:
     # Run inside the sidecar namespace. Token stays in that process environment and is
     # never interpolated into the docker argv or logs.
-    script = ("fetch(process.argv[1],{headers:{Authorization:'Bearer '+process.env.ARK_NATIVE_TOKEN}})"
-              ".then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);console.log(await r.text())})"
-              ".catch(e=>{console.error(e.message);process.exitCode=1})") if native else (
-              "fetch(process.argv[1]).then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);"
-              "console.log(await r.text())}).catch(e=>{console.error(e.message);process.exitCode=1})")
-    proc = subprocess.run([*docker_command(), "exec", container, "node", "-e", script, url],
-                          capture_output=True, text=True, check=False)
+    script = (
+        (
+            "fetch(process.argv[1],{headers:{Authorization:'Bearer '+process.env.ARK_NATIVE_TOKEN}})"
+            ".then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);console.log(await r.text())})"
+            ".catch(e=>{console.error(e.message);process.exitCode=1})"
+        )
+        if native
+        else (
+            "fetch(process.argv[1]).then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);"
+            "console.log(await r.text())}).catch(e=>{console.error(e.message);process.exitCode=1})"
+        )
+    )
+    proc = subprocess.run(
+        [*docker_command(), "exec", container, "node", "-e", script, url], capture_output=True, text=True, check=False
+    )
     if proc.returncode:
         raise RuntimeError(f"sidecar namespace HTTP request failed: {proc.stderr.strip()[:160]}")
     return json.loads(proc.stdout)
@@ -125,9 +169,12 @@ def _wait_json(container: str, url: str, *, native: bool = False, timeout: float
 
 
 def _result(check_id: str, problems: list[str], started: float, **detail: Any) -> checks.CheckResult:
-    return checks.CheckResult(check_id, "fail" if problems else "pass",
-                              int((time.monotonic() - started) * 1000),
-                              {**detail, "problems": problems})
+    return checks.CheckResult(
+        check_id,
+        "fail" if problems else "pass",
+        int((time.monotonic() - started) * 1000),
+        {**detail, "problems": problems},
+    )
 
 
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
@@ -152,8 +199,9 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
             if sidecar is None:
                 raise RuntimeError(f"shipped sidecar did not start: {launch_error}")
             if check_id == "native-health":
-                health = await asyncio.to_thread(_wait_json, sidecar.name,
-                    f"http://127.0.0.1:{NATIVE_PORT}/health", native=True)
+                health = await asyncio.to_thread(
+                    _wait_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
+                )
                 detail["health"] = health
                 if health.get("status") != "ok" or health.get("build") != str(run.target.record["revision"]):
                     problems.append("native status/build does not match the pinned target")
@@ -166,8 +214,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     problems.append("native chat/sendMessage capabilities are not healthy")
             elif check_id == "sidecar-identify":
                 await fake.wait_for_identify(120)
-                health = await asyncio.to_thread(_wait_json, sidecar.name,
-                    f"http://127.0.0.1:{SIDECAR_PORT}/health")
+                health = await asyncio.to_thread(_wait_json, sidecar.name, f"http://127.0.0.1:{SIDECAR_PORT}/health")
                 detail["health"] = health
                 if health.get("takaroIdentified") is not True:
                     problems.append("sidecar did not report identified")
@@ -189,9 +236,10 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     position = await fake.request("getPlayerLocation", {"gameId": player["gameId"]})
                     detail["position"] = position
                     if not isinstance(position, dict) or any(
-                        isinstance(position.get(k), bool) or
-                        not isinstance(position.get(k), (float, int)) or
-                        not math.isfinite(position[k]) for k in ("x", "y", "z")
+                        isinstance(position.get(k), bool)
+                        or not isinstance(position.get(k), (float, int))
+                        or not math.isfinite(position[k])
+                        for k in ("x", "y", "z")
                     ):
                         problems.append("location did not contain numeric x/y/z")
             elif check_id == "inventory":
@@ -206,8 +254,11 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
             elif check_id == "catalog":
                 items = await fake.request("listItems", {})
                 detail["count"] = len(items) if isinstance(items, list) else None
-                if not isinstance(items, list) or not items or any(
-                    not isinstance(item, dict) or not item.get("code") or not item.get("name") for item in items):
+                if (
+                    not isinstance(items, list)
+                    or not items
+                    or any(not isinstance(item, dict) or not item.get("code") or not item.get("name") for item in items)
+                ):
                     problems.append("native item catalog is missing or malformed")
             elif check_id == "chat-out":
                 marker = f"Takaro ARK verify {run.options.run_id}"
@@ -218,10 +269,15 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     problems.append("sendMessage did not return the Generic success payload")
             elif check_id == "chat-in":
                 await asyncio.sleep(1)
-                events = [event for event in fake.events if isinstance(event, dict) and
-                          event.get("type") == "chat-message" and
-                          isinstance(event.get("data"), dict) and
-                          event["data"].get("player") and event["data"].get("msg")]
+                events = [
+                    event
+                    for event in fake.events
+                    if isinstance(event, dict)
+                    and event.get("type") == "chat-message"
+                    and isinstance(event.get("data"), dict)
+                    and event["data"].get("player")
+                    and event["data"].get("msg")
+                ]
                 detail["chatEvents"] = len(events)
                 if not events:
                     problems.append("no real client chat event reached Takaro; external client input required")
@@ -244,29 +300,38 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
 async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[dict[str, Any]]) -> None:
     del ws_url
     if run.wanted("event"):
-        events = [event for event in fake.events if isinstance(event, dict) and
-                  event.get("type") in ("chat-message", "player-connected", "player-disconnected")]
+        events = [
+            event
+            for event in fake.events
+            if isinstance(event, dict)
+            and event.get("type") in ("chat-message", "player-connected", "player-disconnected")
+        ]
         problems = [] if events else ["no real client chat/join/leave event reached Takaro"]
-        run.record(checks.CheckResult("event", "fail" if problems else "pass", 0,
-                                      {"count": len(events), "problems": problems}))
+        run.record(
+            checks.CheckResult("event", "fail" if problems else "pass", 0, {"count": len(events), "problems": problems})
+        )
     else:
         run.skip("event", "not selected by --checks")
     if run.wanted("stop"):
         started = time.monotonic()
-        problems: list[str] = []
+        stop_problems: list[str] = []
         if run.container is None:
-            problems.append("game container was not started")
+            stop_problems.append("game container was not started")
         else:
-            proc = await asyncio.to_thread(subprocess.run,
+            proc = await asyncio.to_thread(
+                subprocess.run,
                 [*docker_command(), "stop", "-t", "30", run.container.name],
-                capture_output=True, text=True, check=False)
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             if proc.returncode:
-                problems.append(f"docker stop failed: {proc.stderr.strip()[:160]}")
+                stop_problems.append(f"docker stop failed: {proc.stderr.strip()[:160]}")
         for entry in ledger_inputs:
             path = run.data_dir / entry["path"]
             if not path.is_file() or net.hash_file(path).get("sha256") != entry.get("sha256"):
-                problems.append(f"pinned input changed or disappeared: {entry['path']}")
-        run.record(_result("stop", problems, started))
+                stop_problems.append(f"pinned input changed or disappeared: {entry['path']}")
+        run.record(_result("stop", stop_problems, started))
     else:
         run.skip("stop", "not selected by --checks")
 
@@ -285,8 +350,9 @@ async def _negative_impl(run: Any, fake: Any, ws_url: str, manifest: dict[str, A
         problems.append("the installed native artifact is incomplete")
     else:
         evidence["artifactSha256"] = net.hash_file(plugin)["sha256"]
-        expected_size = run.target.record["inputs"]["server"]["files"][
-            "ShooterGame/Binaries/Linux/ShooterGameServer"]["size"]
+        expected_size = run.target.record["inputs"]["server"]["files"]["ShooterGame/Binaries/Linux/ShooterGameServer"][
+            "size"
+        ]
         with tempfile.TemporaryDirectory(prefix="takaro-ark-wrong-target-") as temporary:
             root = Path(temporary)
             binary = root / "server/ShooterGame/Binaries/Linux/ShooterGameServer"
@@ -305,14 +371,15 @@ async def _negative_impl(run: Any, fake: Any, ws_url: str, manifest: dict[str, A
             launcher_proc = subprocess.run(
                 [str(fixture_launcher), str(root / "server"), "TheIsland?listen", "-server"],
                 env={**os.environ, "ARK_NATIVE_TOKEN": "isolated-fixture"},
-                capture_output=True, text=True, check=False, timeout=10,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
             )
             launcher_output = launcher_proc.stdout + launcher_proc.stderr
-            (run.out / "negative-wrong-target-launcher.log").write_text(
-                launcher_output, encoding="utf-8")
+            (run.out / "negative-wrong-target-launcher.log").write_text(launcher_output, encoding="utf-8")
             evidence["launcherExit"] = launcher_proc.returncode
-            if launcher_proc.returncode != 7 or launcher_output != \
-                    "Unknown ARK executable; native connector refused\n":
+            if launcher_proc.returncode != 7 or launcher_output != "Unknown ARK executable; native connector refused\n":
                 problems.append("shipped launcher did not reject the wrong executable hash")
 
             # Direct preload tests the library's own constructor guard. The
@@ -328,24 +395,47 @@ async def _negative_impl(run: Any, fake: Any, ws_url: str, manifest: dict[str, A
                 "  if (echo >/dev/tcp/127.0.0.1/18891) 2>/dev/null; "
                 "then echo unexpected_native_listener; exit 1; fi\n"
                 "done\n"
-                "echo native_listener=absent\nwait \"$pid\"\necho fixture_exit=0\n"
+                'echo native_listener=absent\nwait "$pid"\necho fixture_exit=0\n'
             )
             image = run.resolved["containerRef"]
             direct = subprocess.run(
-                [*docker_command(), "run", "--rm", "--pull", "never", "--network", "none",
-                 "--memory", "512m", "-v", f"{root}:/fixture:ro", image, "bash", "-c", script],
-                capture_output=True, text=True, check=False, timeout=30,
+                [
+                    *docker_command(),
+                    "run",
+                    "--rm",
+                    "--pull",
+                    "never",
+                    "--network",
+                    "none",
+                    "--memory",
+                    "512m",
+                    "-v",
+                    f"{root}:/fixture:ro",
+                    image,
+                    "bash",
+                    "-c",
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
             )
             direct_output = direct.stdout + direct.stderr
-            (run.out / "negative-wrong-target-preload.log").write_text(
-                direct_output, encoding="utf-8")
+            (run.out / "negative-wrong-target-preload.log").write_text(direct_output, encoding="utf-8")
             evidence["preloadExit"] = direct.returncode
             evidence["network"] = "none"
             if direct.returncode or direct.stdout != "native_listener=absent\nfixture_exit=0\n":
                 problems.append("native preload guard did not return safely without a listener")
     evidence["problems"] = problems
-    run.record(checks.CheckResult("negative-wrong-target", "pass" if not problems else "fail",
-                                  int((time.monotonic() - started) * 1000), evidence))
+    run.record(
+        checks.CheckResult(
+            "negative-wrong-target",
+            "pass" if not problems else "fail",
+            int((time.monotonic() - started) * 1000),
+            evidence,
+        )
+    )
 
 
 async def negative(run: Any, fake: Any, ws_url: str, manifest: dict[str, Any]) -> None:
@@ -355,9 +445,16 @@ async def negative(run: Any, fake: Any, ws_url: str, manifest: dict[str, Any]) -
     try:
         await _negative_impl(run, fake, ws_url, manifest)
     except (OSError, subprocess.TimeoutExpired, KeyError, ValueError) as exc:
-        run.record(checks.CheckResult("negative-wrong-target", "fail", 0, {
-            "problems": [f"isolated wrong-target fixture failed: {type(exc).__name__}: {exc}"],
-        }))
+        run.record(
+            checks.CheckResult(
+                "negative-wrong-target",
+                "fail",
+                0,
+                {
+                    "problems": [f"isolated wrong-target fixture failed: {type(exc).__name__}: {exc}"],
+                },
+            )
+        )
 
 
 HOOKS = GameHooks(

@@ -54,12 +54,21 @@ class ArkAdapter(BaseAdapter):
 
     def artifact_paths(self, resolved: dict[str, Any], version: str, repo_root: Path) -> dict[str, Path]:
         out = repo_root / DIST_ROOT / resolved["fp16"]
-        return {component["role"]: out / component["artifact"].replace("{version}", version)
-                for component in resolved["components"]}
+        return {
+            component["role"]: out / component["artifact"].replace("{version}", version)
+            for component in resolved["components"]
+        }
 
-    def build(self, resolved: dict[str, Any], version: str, out: Path, toolchain: str,
-              repo_root: Path, gradle_args: list[str] | None = None,
-              source_revision: str | None = None) -> BuildResult:
+    def build(
+        self,
+        resolved: dict[str, Any],
+        version: str,
+        out: Path,
+        toolchain: str,
+        repo_root: Path,
+        gradle_args: list[str] | None = None,
+        source_revision: str | None = None,
+    ) -> BuildResult:
         del out, toolchain, gradle_args
         artifacts = self.artifact_paths(resolved, version, repo_root)
         artifacts["server-plugin"].parent.mkdir(parents=True, exist_ok=True)
@@ -71,9 +80,19 @@ class ArkAdapter(BaseAdapter):
         if source_revision:
             env["TAKARO_SOURCE_REVISION"] = source_revision
         proc = subprocess.run(
-            ["bash", str(repo_root / BUILD_SCRIPT), version, str(artifacts["server-plugin"].parent),
-             "--target", str(resolved["id"])],
-            cwd=repo_root, env=env, text=True, capture_output=True, check=False,
+            [
+                "bash",
+                str(repo_root / BUILD_SCRIPT),
+                version,
+                str(artifacts["server-plugin"].parent),
+                "--target",
+                str(resolved["id"]),
+            ],
+            cwd=repo_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         log = proc.stdout + proc.stderr
         if proc.returncode:
@@ -95,9 +114,7 @@ class ArkAdapter(BaseAdapter):
     def runtime_env(self, resolved: dict[str, Any], takaro: dict[str, str]) -> dict[str, str]:
         # Derived separately for each ephemeral verification run. The release itself
         # carries no registration token or native bearer secret.
-        token = hashlib.sha256(
-            b"takaro-ark-native:" + takaro["TAKARO_REGISTRATION_TOKEN"].encode("utf-8")
-        ).hexdigest()
+        token = hashlib.sha256(b"takaro-ark-native:" + takaro["TAKARO_REGISTRATION_TOKEN"].encode("utf-8")).hexdigest()
         return {
             **{str(k): str(v) for k, v in resolved["runtime"]["container"].get("env", {}).items()},
             "ARK_NATIVE_TOKEN": token,
@@ -119,14 +136,25 @@ class ArkAdapter(BaseAdapter):
 
     def container_options(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
         del resolved, data_dir
-        return ["--memory", "24g", "--user", f"{os.getuid()}:{os.getgid()}",
-                "--workdir", f"{SERVER_ROOT}/ShooterGame/Binaries/Linux"]
+        return [
+            "--memory",
+            "24g",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--workdir",
+            f"{SERVER_ROOT}/ShooterGame/Binaries/Linux",
+        ]
 
     def container_command(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
         del resolved, data_dir
-        return [f"{SERVER_ROOT}/TakaroArk/TakaroArkNative/launch.sh", SERVER_ROOT,
-                "TheIsland?listen?SessionName=Takaro-Verify?Port=7787?QueryPort=27025",
-                "-server", "-log", "-NoBattlEye"]
+        return [
+            f"{SERVER_ROOT}/TakaroArk/TakaroArkNative/launch.sh",
+            SERVER_ROOT,
+            "TheIsland?listen?SessionName=Takaro-Verify?Port=7787?QueryPort=27025",
+            "-server",
+            "-log",
+            "-NoBattlEye",
+        ]
 
     def install(self, catalog: Any, target: Any, resolved: dict[str, Any], args: Any) -> int | None:
         del catalog
@@ -135,7 +163,9 @@ class ArkAdapter(BaseAdapter):
             document = steam_install.rollback(target, dest=dest)
         else:
             document = steam_install.install_exact(
-                target, dest=dest, preserve=self.preserve_globs(resolved),
+                target,
+                dest=dest,
+                preserve=self.preserve_globs(resolved),
                 cache=paths.cache_dir(),
                 log=paths.cache_dir() / "steam/logs" / f"{target.game}-{target.id}.log",
                 dry_run=bool(getattr(args, "dry_run", False)),
@@ -163,19 +193,29 @@ class ArkAdapter(BaseAdapter):
                     if relative != folder and not relative.startswith(folder + "/"):
                         raise ConflictError(f"{artifact.name} contains an entry outside {folder}/: {name}")
                     paths.safe_relative(relative, field="artifact zip entry")
+                required: tuple[str, ...]
                 if role == "server-plugin":
-                    required = (f"{folder}/libtakaro-ark-native.so", f"{folder}/launch.sh",
-                                f"{folder}/uninstall-manifest.json", f"{folder}/takaro-target.json")
+                    required = (
+                        f"{folder}/libtakaro-ark-native.so",
+                        f"{folder}/launch.sh",
+                        f"{folder}/uninstall-manifest.json",
+                        f"{folder}/takaro-target.json",
+                    )
                 else:
-                    required = (f"{folder}/Dockerfile", f"{folder}/dist/index.js", f"{folder}/package-lock.json",
-                                f"{folder}/uninstall-manifest.json", f"{folder}/takaro-target.json")
+                    required = (
+                        f"{folder}/Dockerfile",
+                        f"{folder}/dist/index.js",
+                        f"{folder}/package-lock.json",
+                        f"{folder}/uninstall-manifest.json",
+                        f"{folder}/takaro-target.json",
+                    )
                 if any(name not in names for name in required):
                     raise ConflictError(f"{artifact.name} lacks required {role} files")
                 for member in archive.infolist():
                     if member.is_dir():
                         continue
-                    relative = Path(member.filename).relative_to(folder)
-                    destination = stage / relative
+                    relative_path = Path(member.filename).relative_to(folder)
+                    destination = stage / relative_path
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, destination.open("wb") as sink:
                         shutil.copyfileobj(source, sink)
