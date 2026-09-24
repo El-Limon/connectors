@@ -365,11 +365,15 @@ void postlogin_hook(void* game_mode, void* controller) {
 }
 
 void logout_hook(void* game_mode, void* controller) {
+  if (!controller || !g_hooks_ready.load(std::memory_order_acquire) ||
+      thread_id() != g_game_thread_tid.load(std::memory_order_acquire)) {
+    g_original_logout(game_mode, controller);
+    return;
+  }
   if (controller) {
     // Logout runs before the engine releases this actor. Never retain or use it afterwards.
     const std::string id = steam_id(controller);
-    if (g_gate && !id.empty() &&
-        thread_id() == g_game_thread_tid.load(std::memory_order_acquire)) {
+    if (g_gate && !id.empty()) {
       void* pawn = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(controller) + 0x490);
       if (reinterpret_cast<uintptr_t>(pawn) >= 0x10000 &&
           (reinterpret_cast<uintptr_t>(pawn) & 7) == 0) {
@@ -430,7 +434,8 @@ void death_hook(void* victim, void* context, void* killer_character, void* other
         }
         if (!victim_id.empty()) {
           const FVector location = reinterpret_cast<FVector (*)(void*)>(kGetActorLocation)(current_victim);
-          g_gate->record_death_position(victim_id, location.x, location.y, location.z);
+          g_gate->record_death_position(victim_id, location.x, location.y, location.z,
+                                        key.index, key.serial);
           return ark_death::Event{ark_death::Type::player_death,
                                   std::move(victim_id), std::move(victim_name),
                                   std::move(attacker_id), key};
@@ -582,7 +587,22 @@ void tick_hook(void* loop) {
           if (std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z) &&
               std::abs(position.x) < 1e9f && std::abs(position.y) < 1e9f &&
               std::abs(position.z) < 1e9f) {
-            g_gate->record_position(id, position.x, position.y, position.z);
+            ark_death::ObjectKey pawn_key{-1, 0};
+            if (auto existing = ark_death::object_key(pawn)) {
+              pawn_key = *existing;
+            } else {
+              constexpr unsigned char weak_prologue[] =
+                  {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x50};
+              if (memcmp(reinterpret_cast<const void*>(kCreateWeakObject), weak_prologue,
+                         sizeof(weak_prologue)) == 0) {
+                ark_death::ObjectKey created{-1, 0};
+                reinterpret_cast<void (*)(ark_death::ObjectKey*, void*)>(kCreateWeakObject)(&created, pawn);
+                if (auto verified = ark_death::object_key(pawn); verified && *verified == created)
+                  pawn_key = created;
+              }
+            }
+            g_gate->record_position(id, position.x, position.y, position.z,
+                                    pawn_key.index, pawn_key.serial);
             if (!g_position_logged) {
               char label[160];
               snprintf(label, sizeof(label), "native-pawn-location x=%.3f y=%.3f z=%.3f",

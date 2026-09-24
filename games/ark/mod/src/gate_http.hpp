@@ -23,6 +23,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -176,6 +177,8 @@ struct Position {
   float y;
   float z;
   std::chrono::steady_clock::time_point sampled;
+  int32_t actor_index = -1;
+  int32_t actor_serial = 0;
 };
 
 struct InventoryItem {
@@ -210,6 +213,10 @@ struct Event {
   std::string entity_code;
   std::string entity_name;
   std::string timestamp;
+  // Actual game-thread position captured at the event, retained exactly as
+  // long as this bounded event remains replayable.
+  std::optional<Position> position;
+  bool position_from_death = false;
 };
 
 inline std::string escape(const std::string& value) {
@@ -347,7 +354,14 @@ class Server {
     event.timestamp = utc_now();
     std::lock_guard<std::mutex> lock(mutex_);
     if (!players_.contains(id)) return;
+    if (auto position = death_positions_.find(id); position != death_positions_.end()) {
+      if (std::chrono::steady_clock::now() - position->second.sampled < std::chrono::seconds(2))
+        event.position = position->second;
+      death_positions_.erase(position);
+    }
     event.seq = ++sequence_;
+    if (event.position) death_event_seq_[id] = event.seq;
+    else death_event_seq_.erase(id);
     events_.push_back(std::move(event));
     while (events_.size() > 4096) events_.pop_front();
   }
@@ -400,12 +414,14 @@ class Server {
     return sequence_;
   }
 
-  void record_death_position(const std::string& id, float x, float y, float z) {
+  void record_death_position(const std::string& id, float x, float y, float z,
+                             int32_t actor_index = -1, int32_t actor_serial = 0) {
     if (id.empty() || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
         std::abs(x) > 1e9f || std::abs(y) > 1e9f || std::abs(z) > 1e9f) return;
     std::lock_guard<std::mutex> lock(mutex_);
     if (players_.contains(id))
-      death_positions_[id] = Position{x, y, z, std::chrono::steady_clock::now()};
+      death_positions_[id] = Position{x, y, z, std::chrono::steady_clock::now(),
+                                      actor_index, actor_serial};
   }
 
   void record_login(const std::string& id, const std::string& name) {
@@ -413,6 +429,7 @@ class Server {
     std::lock_guard<std::mutex> lock(mutex_);
     departed_positions_.erase(id);
     death_positions_.erase(id);
+    death_event_seq_.erase(id);
     const std::string display = name.empty() ? id : name;
     if (players_.find(id) != players_.end()) return;
     players_[id] = Player{id, display};
@@ -436,20 +453,32 @@ class Server {
     event.name = it->second.name;
     event.type = "player-disconnected";
     event.timestamp = utc_now();
+    // A direct pre-Logout capture wins. A recent live game-thread sample is
+    // the fallback when the engine has already detached the pawn.
+    if (auto direct = departed_positions_.find(id); direct != departed_positions_.end() &&
+        std::chrono::steady_clock::now() - direct->second.sampled < std::chrono::seconds(2)) {
+      event.position = direct->second;
+    } else if (auto recent = positions_.find(id); recent != positions_.end() &&
+               std::chrono::steady_clock::now() - recent->second.sampled < std::chrono::seconds(2)) {
+      event.position = recent->second;
+    } else if (auto active = death_event_seq_.find(id); active != death_event_seq_.end()) {
+      // A player may leave after death has detached the pawn. The still-active
+      // death event is the last verified position of this same life, not a
+      // fabricated Logout sample. A respawned pawn clears this marker.
+      auto death = std::find_if(events_.rbegin(), events_.rend(), [&](const Event& prior) {
+        return prior.seq == active->second;
+      });
+      if (death != events_.rend() && death->position) {
+        event.position = death->position;
+        event.position_from_death = true;
+      }
+    }
     event.seq = ++sequence_;
     events_.push_back(std::move(event));
     while (events_.size() > 4096) events_.pop_front();
-    // Logout may already have detached the pawn. Preserve only the most
-    // recent actual game-thread position sample for event enrichment; the
-    // sampling loop runs every 250 ms. Never synthesize an offline position.
-    if (!departed_positions_.contains(id)) {
-      auto position = positions_.find(id);
-      if (position != positions_.end() &&
-          std::chrono::steady_clock::now() - position->second.sampled < std::chrono::seconds(2)) {
-        departed_positions_[id] = Position{position->second.x, position->second.y,
-                                           position->second.z, std::chrono::steady_clock::now()};
-      }
-    }
+    departed_positions_.erase(id);
+    death_positions_.erase(id);
+    death_event_seq_.erase(id);
     players_.erase(it);
     positions_.erase(id);
     inventories_.erase(id);
@@ -457,29 +486,39 @@ class Server {
 
   // The engine thread captures this from the live pawn immediately before
   // Logout invalidates the controller. It is the departure event's actual
-  // final position, available briefly for Takaro's asynchronous enrichment.
+  // final position and moves it into the bounded departure event on Logout.
   // It never makes the player online or permits an action against that actor.
   void record_departure_position(const std::string& id, float x, float y, float z) {
     if (id.empty() || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
         std::abs(x) > 1e9f || std::abs(y) > 1e9f || std::abs(z) > 1e9f) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto now = std::chrono::steady_clock::now();
-    for (auto it = departed_positions_.begin(); it != departed_positions_.end();) {
-      if (now - it->second.sampled >= std::chrono::seconds(15)) it = departed_positions_.erase(it);
-      else ++it;
-    }
     if (players_.contains(id)) {
-      if (departed_positions_.size() >= 128 && !departed_positions_.contains(id))
-        departed_positions_.erase(departed_positions_.begin());
-      departed_positions_[id] = Position{x, y, z, now};
+      departed_positions_[id] = Position{x, y, z, std::chrono::steady_clock::now()};
     }
   }
 
-  void record_position(const std::string& id, float x, float y, float z) {
+  void record_position(const std::string& id, float x, float y, float z,
+                       int32_t actor_index = -1, int32_t actor_serial = 0) {
     if (id.empty() || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return;
     if (std::abs(x) > 1e9f || std::abs(y) > 1e9f || std::abs(z) > 1e9f) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (players_.contains(id)) positions_[id] = Position{x, y, z, std::chrono::steady_clock::now()};
+    if (players_.contains(id)) {
+      positions_[id] = Position{x, y, z, std::chrono::steady_clock::now(), actor_index, actor_serial};
+      // A tick of the dying pawn must not invalidate its own death event.
+      // A different verified pawn, or an unverified identity, cannot keep
+      // presenting the old death location as this survivor's current one.
+      if (auto active = death_event_seq_.find(id); active != death_event_seq_.end()) {
+        auto death = std::find_if(events_.rbegin(), events_.rend(), [&](const Event& event) {
+          return event.seq == active->second;
+        });
+        if (death == events_.rend() || !death->position ||
+            actor_index < 0 || actor_serial <= 0 || death->position->actor_index < 0 ||
+            death->position->actor_serial <= 0 ||
+            actor_index != death->position->actor_index ||
+            actor_serial != death->position->actor_serial)
+          death_event_seq_.erase(active);
+      }
+    }
   }
 
   void clear_position(const std::string& id) {
@@ -584,6 +623,7 @@ class Server {
   std::map<std::string, Position> positions_;
   std::map<std::string, Position> departed_positions_;
   std::map<std::string, Position> death_positions_;
+  std::map<std::string, uint64_t> death_event_seq_;
   std::map<std::string, InventorySnapshot> inventories_;
   std::vector<CatalogItem> catalog_items_;
   bool catalog_ready_ = false;
@@ -784,18 +824,32 @@ class Server {
           point = it->second;
           found = true;
         } else if (!players_.contains(id)) {
-          auto last = departed_positions_.find(id);
-          if (last != departed_positions_.end() &&
-              std::chrono::steady_clock::now() - last->second.sampled < std::chrono::seconds(15)) {
-            point = last->second;
-            found = departed = true;
+          // Only the latest retained disconnect for this identity may enrich
+          // an offline event. An older disconnect cannot stand in for a newer
+          // event that lacked an actual position.
+          for (auto event = events_.rbegin(); event != events_.rend(); ++event) {
+            if (event->id != id || event->type != "player-disconnected") continue;
+            if (event->position) {
+              point = *event->position;
+              found = true;
+              departed = !event->position_from_death;
+              died = event->position_from_death;
+            }
+            break;
           }
         } else {
-          auto death = death_positions_.find(id);
-          if (death != death_positions_.end() &&
-              std::chrono::steady_clock::now() - death->second.sampled < std::chrono::seconds(15)) {
-            point = death->second;
-            found = died = true;
+          // A new login supersedes prior deaths. A fresh live position above
+          // always wins after respawn; retained death position is event-time
+          // provenance while its event is still in the replay ring.
+          for (auto event = events_.rbegin(); event != events_.rend(); ++event) {
+            if (event->id != id) continue;
+            if (event->type == "player-connected") break;
+            if (event->type == "player-death") {
+              auto active = death_event_seq_.find(id);
+              if (active != death_event_seq_.end() && active->second == event->seq && event->position)
+                { point = *event->position; found = died = true; }
+              break;
+            }
           }
         }
       }

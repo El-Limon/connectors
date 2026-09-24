@@ -218,13 +218,83 @@ int main() {
     const auto departure = request(port, location_path);
     check(status(departure, 200) && departure.find("\"source\":\"departure\"") != std::string::npos &&
           departure.find("\"x\":4.000000") != std::string::npos,
-          "actual game-thread departure position remains briefly available for event enrichment");
+          "actual game-thread departure position is attached to the replayable event");
     check(status(request(port, std::string("/players/") + location_steam), 200) &&
           request(port, std::string("/players/") + location_steam).find("\r\n\r\nnull") != std::string::npos,
           "departure snapshot does not make an offline player appear online");
+    constexpr char death_steam[] = "76561198000000003";
+    const std::string death_path = std::string("/players/") + death_steam + "/location";
+    server.record_login(death_steam, "Fallen");
+    server.record_death_position(death_steam, 7, 8, 9, 31, 41);
+    server.record_player_death(death_steam, "Fallen", "");
+    constexpr char stale_steam[] = "76561198000000005";
+    const std::string stale_path = std::string("/players/") + stale_steam + "/location";
+    server.record_login(stale_steam, "Stale");
+    server.record_departure_position(stale_steam, 90, 91, 92);
+    constexpr char stale_death_steam[] = "76561198000000007";
+    const std::string stale_death_path = std::string("/players/") + stale_death_steam + "/location";
+    server.record_login(stale_death_steam, "StaleDeath");
+    server.record_death_position(stale_death_steam, 93, 94, 95, 70, 80);
+    std::this_thread::sleep_for(std::chrono::seconds(16));
+    server.record_logout(stale_steam);
+    check(status(request(port, stale_path), 503),
+          "an old unconsumed pre-Logout capture cannot become a fresh departure event");
+    server.record_player_death(stale_death_steam, "StaleDeath", "");
+    check(status(request(port, stale_death_path), 503),
+          "an old unconsumed pre-death capture cannot become a fresh death event");
+    check(status(request(port, location_path), 200) &&
+          request(port, location_path).find("\"source\":\"departure\"") != std::string::npos,
+          "departure enrichment survives an outage beyond the old 15-second TTL");
+    check(status(request(port, death_path), 200) &&
+          request(port, death_path).find("\"source\":\"death\"") != std::string::npos,
+          "death enrichment survives an outage while its event remains replayable");
+    server.record_position(death_steam, 7, 8, 9, 31, 41);
+    server.clear_position(death_steam);
+    check(status(request(port, death_path), 200),
+          "a post-death tick of the same verified pawn preserves event-time enrichment");
+    constexpr char dead_leave_steam[] = "76561198000000008";
+    const std::string dead_leave_path = std::string("/players/") + dead_leave_steam + "/location";
+    server.record_login(dead_leave_steam, "DeadLeave");
+    server.record_death_position(dead_leave_steam, 16, 17, 18, 33, 43);
+    server.record_player_death(dead_leave_steam, "DeadLeave", "");
+    server.record_logout(dead_leave_steam);
+    const auto dead_leave = request(port, dead_leave_path);
+    check(status(dead_leave, 200) && dead_leave.find("\"x\":16.000000") != std::string::npos &&
+          dead_leave.find("\"source\":\"death\"") != std::string::npos,
+          "Logout after pawn removal uses only the active same-life death position, labelled as death");
+    server.record_position(death_steam, 10, 11, 12, 32, 42);
+    check(request(port, death_path).find("\"x\":10.000000") != std::string::npos,
+          "fresh respawn position supersedes the historical death position");
+    server.clear_position(death_steam);
+    check(status(request(port, death_path), 503),
+          "new verified pawn invalidates death fallback after its live sample expires");
+    server.record_player_death(death_steam, "Fallen", "");
+    check(status(request(port, death_path), 503),
+          "a later death without a new actual capture cannot reuse older death coordinates");
+    constexpr char unknown_steam[] = "76561198000000006";
+    const std::string unknown_path = std::string("/players/") + unknown_steam + "/location";
+    server.record_login(unknown_steam, "Unverified");
+    server.record_death_position(unknown_steam, 1, 2, 3, 50, 60);
+    server.record_player_death(unknown_steam, "Unverified", "");
+    server.record_position(unknown_steam, 1, 2, 3);
+    server.clear_position(unknown_steam);
+    check(status(request(port, unknown_path), 503),
+          "an unverified later pawn key fails closed rather than serving historical death coordinates");
     server.record_login(location_steam, "Survivor");
     check(status(request(port, location_path), 503), "reconnect invalidates prior departure snapshot");
     server.record_logout(location_steam);
+    check(status(request(port, location_path), 503),
+          "a later departure without a live position cannot reuse an older departure");
+
+    constexpr char evict_steam[] = "76561198000000004";
+    const std::string evict_path = std::string("/players/") + evict_steam + "/location";
+    server.record_login(evict_steam, "Evicted");
+    server.record_departure_position(evict_steam, 20, 21, 22);
+    server.record_logout(evict_steam);
+    check(status(request(port, evict_path), 200), "new departure is retained before ring rollover");
+    for (int i = 0; i < 4096; ++i) server.record_log("Saving world...");
+    check(status(request(port, evict_path), 503),
+          "departure position expires when its source event leaves the bounded ring");
 
     const std::string inventory_path = std::string("/players/") + location_steam + "/inventory";
     check(status(request(port, inventory_path), 503), "inventory unavailable without a player");
