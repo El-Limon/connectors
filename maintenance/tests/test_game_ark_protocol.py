@@ -527,17 +527,29 @@ def test_ark_entity_check_queries_real_generic_catalog(
 
 
 @pytest.mark.parametrize(
-    ("result", "expected"),
+    ("result", "rejection_status", "expected"),
     [
-        ({"success": True, "rawResult": "", "errorMessage": None}, "pass"),
-        ({"success": False, "rawResult": "", "errorMessage": "unhandled"}, "fail"),
-        ({"success": True, "rawResult": None, "errorMessage": None}, "fail"),
+        ({"success": True, "rawResult": "", "errorMessage": None}, 400, "pass"),
+        ({"success": False, "rawResult": "", "errorMessage": "unhandled"}, 400, "fail"),
+        ({"success": True, "rawResult": None, "errorMessage": None}, 400, "fail"),
+        ({"success": True, "rawResult": "", "errorMessage": None}, 200, "fail"),
     ],
 )
 def test_ark_console_requires_native_handled_result(
-    monkeypatch: pytest.MonkeyPatch, result: dict[str, object], expected: str
+    monkeypatch: pytest.MonkeyPatch, result: dict[str, object], rejection_status: int, expected: str
 ) -> None:
     monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: {"bootId": "same-boot"})
+
+    def reject(container: str, command: str) -> dict[str, object]:
+        assert container == "sidecar"
+        expected_error = dict(ark_verify.CONSOLE_SAFETY_PROBES)[command]
+        return {
+            "status": rejection_status,
+            "body": {"success": False, "rawResult": "", "errorMessage": expected_error},
+        }
+
+    monkeypatch.setattr(ark_verify, "_native_console_probe", reject)
 
     class FakeTakaro:
         async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
@@ -548,6 +560,8 @@ def test_ark_console_requires_native_handled_result(
             return result
 
     class FakeRun:
+        container = SimpleNamespace(alive=lambda: True)
+
         def __init__(self) -> None:
             self.results: list[object] = []
 
@@ -565,6 +579,85 @@ def test_ark_console_requires_native_handled_result(
     assert len(run.results) == 1
     assert run.results[0].id == "ark-console"
     assert run.results[0].status == expected
+    assert len(run.results[0].detail["safetyProbes"]) == len(ark_verify.CONSOLE_SAFETY_PROBES)
+
+
+def test_native_console_safety_probe_reads_structured_http_400_without_token_in_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def native_response(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"status":400,"body":{"success":false,"rawResult":"",'
+                '"errorMessage":"Use the dedicated shutdown action"}}'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(ark_verify.subprocess, "run", native_response)
+    monkeypatch.setattr(ark_verify, "docker_command", lambda: ["docker"])
+    result = ark_verify._native_console_probe("owned-sidecar", "DoExit")
+    assert result["status"] == 400
+    assert result["body"]["errorMessage"] == "Use the dedicated shutdown action"
+    assert calls[0][:4] == ["docker", "exec", "owned-sidecar", "node"]
+    assert calls[0][-1] == "DoExit"
+    assert "ARK_NATIVE_TOKEN" in calls[0][-2]
+    assert all("Bearer fixture-secret" not in part for part in calls[0])
+
+
+def test_ark_console_safety_probe_fails_if_native_boot_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+    health_calls = 0
+
+    def health(*args: object, **kwargs: object) -> dict[str, str]:
+        nonlocal health_calls
+        del args, kwargs
+        health_calls += 1
+        return {"bootId": "before" if health_calls == 1 else "different"}
+
+    monkeypatch.setattr(ark_verify, "_get_json", health)
+    monkeypatch.setattr(
+        ark_verify,
+        "_native_console_probe",
+        lambda container, command: {
+            "status": 400,
+            "body": {
+                "success": False,
+                "rawResult": "",
+                "errorMessage": dict(ark_verify.CONSOLE_SAFETY_PROBES)[command],
+            },
+        },
+    )
+
+    class FakeTakaro:
+        async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
+            del name, args
+            return {"success": True, "rawResult": "", "errorMessage": None}
+
+    class FakeRun:
+        container = SimpleNamespace(alive=lambda: True)
+
+        def __init__(self) -> None:
+            self.results: list[CheckResult] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "ark-console"
+
+        def record(self, result: CheckResult) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
+    assert run.results[0].status == "fail"
+    assert any("native boot changed" in problem for problem in run.results[0].detail["problems"])
 
 
 def test_ark_shutdown_only_selection_starts_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:

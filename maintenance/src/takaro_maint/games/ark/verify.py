@@ -62,6 +62,14 @@ UNSUPPORTED_CHECKS = {
 SIDECAR_FOLDER = Path("TakaroArk/TakaroArkSidecar")
 NATIVE_PORT = 18891
 SIDECAR_PORT = 18892
+CONSOLE_SAFETY_PROBES = (
+    ("Exit", "Use the dedicated shutdown action"),
+    ("  qUiT extra", "Use the dedicated shutdown action"),
+    ("DoExit", "Use the dedicated shutdown action"),
+    ("cheat DoExit", "Use the dedicated shutdown action"),
+    ("GetAll Foo; Quit", "Use the dedicated shutdown action"),
+    ("\u00a0Exit", "Unsupported command whitespace"),
+)
 
 
 def native_token(registration_token: str) -> str:
@@ -162,6 +170,30 @@ def _get_json(container: str, url: str, *, native: bool = False) -> Any:
     if proc.returncode:
         raise RuntimeError(f"sidecar namespace HTTP request failed: {proc.stderr.strip()[:160]}")
     return json.loads(proc.stdout)
+
+
+def _native_console_probe(container: str, command: str) -> dict[str, Any]:
+    """Observe the native HTTP status/body for a rejected termination token."""
+    script = (
+        "fetch('http://127.0.0.1:18891/console',{method:'POST',"
+        "headers:{Authorization:'Bearer '+process.env.ARK_NATIVE_TOKEN,"
+        "'Content-Type':'text/plain; charset=utf-8'},body:process.argv[1]})"
+        ".then(async r=>console.log(JSON.stringify({status:r.status,body:await r.json()})))"
+        ".catch(e=>{console.error(e.message);process.exitCode=1})"
+    )
+    proc = subprocess.run(
+        [*docker_command(), "exec", container, "node", "-e", script, command],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if proc.returncode:
+        raise RuntimeError(f"native console safety probe failed: {proc.stderr.strip()[:160]}")
+    result = json.loads(proc.stdout)
+    if not isinstance(result, dict):
+        raise RuntimeError("native console safety probe returned no structured response")
+    return result
 
 
 def _wait_json(container: str, url: str, *, native: bool = False, timeout: float = 30) -> Any:
@@ -367,6 +399,35 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 if not events:
                     problems.append("no real client chat event reached Takaro; external client input required")
             elif check_id == "ark-console":
+                baseline = await asyncio.to_thread(
+                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
+                )
+                boot_id = baseline.get("bootId") if isinstance(baseline, dict) else None
+                if not boot_id:
+                    problems.append("native bootId was unavailable before console safety probes")
+                safety: list[dict[str, Any]] = []
+                for command, error_message in CONSOLE_SAFETY_PROBES:
+                    rejection = await asyncio.to_thread(_native_console_probe, sidecar.name, command)
+                    health_after = await asyncio.to_thread(
+                        _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
+                    )
+                    still_alive = bool(run.container and await asyncio.to_thread(run.container.alive))
+                    row = {
+                        "command": command,
+                        "rejection": rejection,
+                        "bootIdAfter": health_after.get("bootId") if isinstance(health_after, dict) else None,
+                        "serverAlive": still_alive,
+                    }
+                    safety.append(row)
+                    if rejection != {
+                        "status": 400,
+                        "body": {"success": False, "rawResult": "", "errorMessage": error_message},
+                    }:
+                        problems.append(f"native console did not structurally reject {command!r}")
+                    if not still_alive or row["bootIdAfter"] != boot_id:
+                        problems.append(f"native boot changed or stopped after console rejection {command!r}")
+                detail["safetyProbes"] = safety
+                detail["bootIdBefore"] = boot_id
                 result = await fake.request(
                     "executeConsoleCommand", {"command": "GetAll ShooterPlayerState PlayerName"}
                 )
