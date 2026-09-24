@@ -29,6 +29,7 @@ from ...verify.runner import Container, docker_command
 CHECK_IDS = (
     "native-health",
     "sidecar-identify",
+    "ark-heartbeat",
     "roster",
     "location",
     "chat-in",
@@ -36,21 +37,26 @@ CHECK_IDS = (
     "reconnect",
     "inventory",
     "catalog",
+    "entities",
     "ark-console",
+    "native-shutdown",
     "event",
     "stop",
     "negative-wrong-target",
 )
 READY_LINE = re.compile(r"ARK_NATIVE_DIAG .*main-loop-tick count=1")
+SHUTDOWN_SAVE_LINE = re.compile(r"native-shutdown-synchronous-save-completed-before-ack")
+SHUTDOWN_EXIT_LINE = re.compile(r"ARK_NATIVE_SHUTDOWN engine-exit-handled")
+SHUTDOWN_MARKER_TIMEOUT = 8.0
 UNSUPPORTED_CHECKS = {
     "connector-load": "ARK native /health is checked by native-health",
     "identify": "the Generic sidecar identify frame is checked by sidecar-identify",
-    "heartbeat": "the Generic sidecar WebSocket is checked by reconnect",
+    "heartbeat": "ARK sidecar WebSocket ping/pong and reachability are checked by ark-heartbeat",
     "players": "ARK roster is checked by roster",
     "catalog-items": "ARK item catalog is checked by catalog",
-    "catalog-entities": "ARK entity catalog is checked by catalog",
+    "catalog-entities": "ARK entity catalog is checked by entities",
     "console": "ARK console support is checked by ark-console",
-    "shutdown": "ARK process shutdown and file integrity are checked by stop",
+    "shutdown": "ARK native shutdown acknowledgement and process exit are checked by native-shutdown",
 }
 SIDECAR_FOLDER = Path("TakaroArk/TakaroArkSidecar")
 NATIVE_PORT = 18891
@@ -177,6 +183,26 @@ def _result(check_id: str, problems: list[str], started: float, **detail: Any) -
     )
 
 
+def _fresh_shutdown_markers(log_file: Path, device: int, inode: int, offset: int) -> dict[str, str | None]:
+    """Find both shutdown markers only in bytes appended after this request began."""
+    deadline = time.monotonic() + SHUTDOWN_MARKER_TIMEOUT
+    while True:
+        stat = log_file.stat()
+        if (stat.st_dev, stat.st_ino) != (device, inode) or stat.st_size < offset:
+            raise RuntimeError("server log rotated or truncated during native shutdown")
+        with log_file.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (device, inode) or opened.st_size < offset:
+                raise RuntimeError("server log rotated or truncated during native shutdown")
+            stream.seek(offset)
+            lines = stream.read().decode("utf-8", errors="replace").splitlines()
+        save = next((line for line in lines if SHUTDOWN_SAVE_LINE.search(line)), None)
+        exit_line = next((line for line in lines if SHUTDOWN_EXIT_LINE.search(line)), None)
+        if (save and exit_line) or time.monotonic() >= deadline:
+            return {"save": save, "exit": exit_line}
+        time.sleep(0.2)
+
+
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
     selected = [name for name in CHECK_IDS if name not in ("negative-wrong-target", "stop") and run.wanted(name)]
     sidecar: Container | None = None
@@ -187,7 +213,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
         except Exception as exc:
             launch_error = str(exc)
     for check_id in CHECK_IDS:
-        if check_id in ("event", "stop", "negative-wrong-target"):
+        if check_id in ("event", "native-shutdown", "stop", "negative-wrong-target"):
             continue
         if not run.wanted(check_id):
             run.skip(check_id, "not selected by --checks")
@@ -218,6 +244,10 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 detail["health"] = health
                 if health.get("takaroIdentified") is not True:
                     problems.append("sidecar did not report identified")
+            elif check_id == "ark-heartbeat":
+                heartbeat = await checks.check_heartbeat(fake)
+                detail.update(heartbeat.detail)
+                problems.extend(heartbeat.detail.get("problems", []))
             elif check_id == "roster":
                 result = await fake.request("getPlayers", {})
                 detail["players"] = result
@@ -251,15 +281,23 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     detail["count"] = len(inventory) if isinstance(inventory, list) else None
                     if not isinstance(inventory, list):
                         problems.append("inventory did not return a list")
-            elif check_id == "catalog":
-                items = await fake.request("listItems", {})
+            elif check_id in ("catalog", "entities"):
+                method = "listItems" if check_id == "catalog" else "listEntities"
+                items = await fake.request(method, {})
                 detail["count"] = len(items) if isinstance(items, list) else None
                 if (
                     not isinstance(items, list)
                     or not items
-                    or any(not isinstance(item, dict) or not item.get("code") or not item.get("name") for item in items)
+                    or any(
+                        not isinstance(item, dict)
+                        or not isinstance(item.get("code"), str)
+                        or not item["code"].strip()
+                        or not isinstance(item.get("name"), str)
+                        or not item["name"].strip()
+                        for item in items
+                    )
                 ):
-                    problems.append("native item catalog is missing or malformed")
+                    problems.append(f"native {method} catalog is missing or malformed")
             elif check_id == "chat-out":
                 marker = f"Takaro ARK verify {run.options.run_id}"
                 detail["message"] = marker
@@ -282,8 +320,17 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 if not events:
                     problems.append("no real client chat event reached Takaro; external client input required")
             elif check_id == "ark-console":
-                await fake.request("executeConsoleCommand", {"command": "listplayers"})
-                problems.append("console responded, but no ARK result contract is defined yet")
+                result = await fake.request(
+                    "executeConsoleCommand", {"command": "GetAll ShooterPlayerState PlayerName"}
+                )
+                detail["result"] = result
+                if (
+                    not isinstance(result, dict)
+                    or result.get("success") is not True
+                    or not isinstance(result.get("rawResult"), str)
+                    or result.get("errorMessage") is not None
+                ):
+                    problems.append("native GetAll player-name query was not reported handled with a valid result")
             elif check_id == "reconnect":
                 before = fake.identify_count
                 await fake.disconnect(1001, "going away")
@@ -312,6 +359,37 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
         )
     else:
         run.skip("event", "not selected by --checks")
+    if run.wanted("native-shutdown"):
+        started = time.monotonic()
+        shutdown_problems: list[str] = []
+        shutdown_detail: dict[str, Any] = {}
+        try:
+            if run.container is None:
+                raise RuntimeError("game container was not started")
+            log_stat = run.server_log.stat()
+            log_identity = (log_stat.st_dev, log_stat.st_ino, log_stat.st_size)
+            ack = await fake.request("shutdown", {})
+            shutdown_detail["acknowledgement"] = ack
+            if ack != {}:
+                shutdown_problems.append("Generic shutdown did not return the native acknowledgement payload")
+            else:
+                exit_code = await asyncio.to_thread(run.container.wait_for_exit, 45)
+                shutdown_detail["exitCode"] = exit_code
+                # This exact ARK build calls RequestExit(true) during its normal
+                # teardown, which aborts with status 134. The fresh native markers
+                # distinguish that path from an unrelated abort or crash.
+                markers = await asyncio.to_thread(_fresh_shutdown_markers, run.server_log, *log_identity)
+                for label, marker in markers.items():
+                    shutdown_detail[f"{label}Marker"] = marker
+                    if not marker:
+                        shutdown_problems.append(f"native shutdown {label} completion marker is missing")
+                if exit_code != 134:
+                    shutdown_problems.append(f"native shutdown exit status {exit_code} != expected 134")
+        except Exception as exc:
+            shutdown_problems.append(str(exc))
+        run.record(_result("native-shutdown", shutdown_problems, started, **shutdown_detail))
+    else:
+        run.skip("native-shutdown", "not selected by --checks")
     if run.wanted("stop"):
         started = time.monotonic()
         stop_problems: list[str] = []
