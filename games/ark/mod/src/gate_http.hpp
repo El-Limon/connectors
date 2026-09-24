@@ -525,6 +525,19 @@ class Server {
     locations_ready_ = false;
   }
 
+  void record_bans(std::vector<std::string> ids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    banned_ids_ = std::move(ids);
+    bans_ready_ = true;
+    bans_sampled_ = std::chrono::steady_clock::now();
+  }
+
+  void clear_bans() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    banned_ids_.clear();
+    bans_ready_ = false;
+  }
+
   void clear_inventory(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
     inventories_.erase(id);
@@ -574,6 +587,9 @@ class Server {
   bool entities_ready_ = false;
   std::vector<LocationItem> locations_;
   bool locations_ready_ = false;
+  std::vector<std::string> banned_ids_;
+  bool bans_ready_ = false;
+  std::chrono::steady_clock::time_point bans_sampled_{};
   std::deque<Event> events_;
   std::deque<std::shared_ptr<Action>> actions_;
   uint64_t sequence_ = 0;
@@ -695,6 +711,25 @@ class Server {
       for (const auto& p : snapshot) {
         if (json.size() > 1) json += ',';
         json += player_json(p);
+      }
+      json += ']'; reply(c, 200, json); return;
+    }
+    if (method == "GET" && path == "/bans") {
+      std::vector<std::string> snapshot;
+      { std::lock_guard<std::mutex> lock(mutex_);
+        if (!bans_ready_ || std::chrono::steady_clock::now() - bans_sampled_ >
+            std::chrono::seconds(3)) {
+          reply(c, 503, "{\"error\":\"native bans unavailable\"}"); return;
+        }
+        snapshot = banned_ids_;
+      }
+      std::string json = "[";
+      for (const auto& id : snapshot) {
+        if (json.size() > 1) json += ',';
+        json += escape(id);
+        if (json.size() > 256000) {
+          reply(c, 503, "{\"error\":\"native bans payload too large\"}"); return;
+        }
       }
       json += ']'; reply(c, 200, json); return;
     }

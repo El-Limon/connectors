@@ -111,6 +111,24 @@ int main() {
           "entity catalog stays unavailable until a complete native snapshot exists");
     check(status(request(port, "/locations"), 503),
           "locations remain unavailable until actual loaded PlayerStart actors are sampled");
+    check(status(request(port, "/bans"), 503),
+          "ban list stays unavailable until native collection is validated");
+    check(status(request(port, "/bans", "wrong"), 401),
+          "ban list requires bearer authorization");
+    server.record_bans({steam});
+    check(status(request(port, "/bans"), 200) &&
+          request(port, "/bans").find("\r\n\r\n[\"76561198000000000\"]") != std::string::npos,
+          "ban list returns only published native Steam IDs");
+    server.clear_bans();
+    check(status(request(port, "/bans"), 503),
+          "failed native ban snapshot cannot return stale data");
+    server.record_bans({});
+    check(status(request(port, "/bans"), 200) &&
+          request(port, "/bans").find("\r\n\r\n[]") != std::string::npos,
+          "validated empty native collection may return empty list");
+    std::this_thread::sleep_for(std::chrono::milliseconds(3100));
+    check(status(request(port, "/bans"), 503),
+          "stalled game-thread ban snapshot cannot remain readable indefinitely");
     server.record_locations({{"/Game/TheIsland/StartA", "South Zone 1", 12.5f, -4.0f, 300.0f,
                               100.0f, 90.0f, 180.0f}});
     const auto locations = request(port, "/locations");

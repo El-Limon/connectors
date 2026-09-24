@@ -36,6 +36,9 @@ struct Api {
   std::array<uint8_t, 8> ban_prologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57, 0x41, 0x56};
   std::array<uint8_t, 8> unban_prologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x56, 0x53, 0x49};
   std::array<uint8_t, 8> find_prologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57, 0x41, 0x56};
+  uintptr_t expected_game_mode_class = 0x13CCDA0;
+  std::array<uint8_t, 8> game_mode_class_prologue{0x55, 0x48, 0x89, 0xE5,
+                                                   0x48, 0x8B, 0x05, 0x25};
 };
 
 inline bool plausible(const void* p) { return ark_inventory::plausible_pointer(p); }
@@ -63,7 +66,9 @@ inline bool exact_target(uintptr_t actual, uintptr_t expected, const std::array<
 }
 
 inline void* game_mode(void* world, const Api& api) {
-  if (!plausible(world) || !api.shooter_game_mode_class) return nullptr;
+  if (!plausible(world) || !api.shooter_game_mode_class ||
+      !exact_target(reinterpret_cast<uintptr_t>(api.shooter_game_mode_class),
+                    api.expected_game_mode_class, api.game_mode_class_prologue)) return nullptr;
   void* mode = *reinterpret_cast<void* const*>(reinterpret_cast<uintptr_t>(world) + 0x250);
   return plausible(mode) && game_mode_is_a(mode, api.shooter_game_mode_class()) ? mode : nullptr;
 }

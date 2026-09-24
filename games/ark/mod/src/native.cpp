@@ -12,6 +12,8 @@
 #include "log_tail.hpp"
 #include "save_bindings.hpp"
 #include "location_bindings.hpp"
+#include "list_bans_bindings.hpp"
+#include "world_bootstrap.hpp"
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -526,6 +528,19 @@ void tick_hook(void* loop) {
     enqueue("main-loop-tick-wrong-thread");
     return;
   }
+  static auto next_world_probe = std::chrono::steady_clock::time_point{};
+  const auto world_probe_now = std::chrono::steady_clock::now();
+  if (!resolve_live_world() && world_probe_now >= next_world_probe) {
+    next_world_probe = world_probe_now + std::chrono::seconds(1);
+    ark_world_bootstrap::Api api{};
+    api.game_thread_tid = tid;
+    const auto found = ark_world_bootstrap::discover(api);
+    if (found.status == ark_world_bootstrap::Status::ready) {
+      g_world.store(found.world, std::memory_order_release);
+      g_world_weak.store(ark_death::packed(found.key), std::memory_order_release);
+      enqueue("native-world-bootstrapped-before-player");
+    }
+  }
   if (g_pending_shutdown) {
     const auto now = std::chrono::steady_clock::now();
     if (g_pending_shutdown->response_sent.load(std::memory_order_acquire) &&
@@ -680,6 +695,17 @@ void tick_hook(void* loop) {
         location_retry_at = now + std::chrono::seconds(10);
       }
     }
+    static auto next_ban_sample = std::chrono::steady_clock::time_point{};
+    if (now >= next_ban_sample) {
+      next_ban_sample = now + std::chrono::seconds(2);
+      ark_list_bans::Api api{};
+      api.game_thread_tid = tid;
+      std::vector<std::string> ids;
+      if (ark_list_bans::snapshot(resolve_live_world(), ids, api) == ark_list_bans::Status::ok)
+        g_gate->record_bans(std::move(ids));
+      else
+        g_gate->clear_bans();
+    }
     static auto next_inventory_sample = std::chrono::steady_clock::time_point{};
     if (now >= next_inventory_sample) {
       next_inventory_sample = now + std::chrono::seconds(1);
@@ -751,14 +777,16 @@ void tick_hook(void* loop) {
         } else if (action->kind == gate::Action::Kind::console) {
           void* world = resolve_live_world();
           const uint64_t packed = g_world_weak.load(std::memory_order_acquire);
+          ark_engine_capture::Status console_status = ark_engine_capture::Status::invalid;
           if (world && packed) {
             ark_engine_capture::Api api{};
             api.game_thread_tid = tid;
             const ark_engine_exec::WeakWorld key{
                 static_cast<int32_t>(packed >> 32), static_cast<int32_t>(packed & 0xffffffffu)};
             const auto result = ark_engine_capture::list_players(world, key, api);
+            console_status = result.status;
+            action->output = result.output;
             if (result.status == ark_engine_capture::Status::handled) {
-              action->output = result.output;
               for (const auto& id : g_gate->player_ids()) {
                 if (resolve_live_controller(id) && action->output.find(id) != std::string::npos) {
                   success = true;
@@ -767,6 +795,15 @@ void tick_hook(void* loop) {
               }
             }
           }
+          const char* status_name = console_status == ark_engine_capture::Status::handled
+              ? "handled" : console_status == ark_engine_capture::Status::unhandled
+              ? "unhandled" : console_status == ark_engine_capture::Status::output_truncated
+              ? "output-truncated" : "invalid";
+          char console_label[192];
+          std::snprintf(console_label, sizeof(console_label),
+              "native-console-listplayers status=%s output-bytes=%zu player-id-present=%d",
+              status_name, action->output.size(), success ? 1 : 0);
+          enqueue(console_label);
           enqueue(success ? "native-console-listplayers-verified" : "native-console-listplayers-unverified");
         } else if (action->kind == gate::Action::Kind::kick ||
                    action->kind == gate::Action::Kind::ban ||
@@ -787,6 +824,13 @@ void tick_hook(void* loop) {
             const auto result = ark_moderation::change_ban(world, action->player_id,
                 action->kind == gate::Action::Kind::ban, api);
             success = result == ark_moderation::BanStatus::changed_in_memory;
+            ark_list_bans::Api list_api{};
+            list_api.game_thread_tid = tid;
+            std::vector<std::string> ids;
+            if (ark_list_bans::snapshot(resolve_live_world(), ids, list_api) == ark_list_bans::Status::ok)
+              g_gate->record_bans(std::move(ids));
+            else
+              g_gate->clear_bans();
             enqueue(success ? "native-ban-memory-state-verified" : "native-ban-memory-state-unverified");
           }
         } else {

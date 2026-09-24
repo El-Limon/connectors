@@ -311,6 +311,35 @@ describe('native transport and narrow actions', () => {
     log.mockRestore();
   });
 
+  it('maps only a validated native Steam64 ban set and rejects unavailable or malformed data', async () => {
+    const other = '76561198000000001';
+    const calls: { url: string; init?: RequestInit }[] = [];
+    let payload: unknown = [steam, other];
+    let status = 200;
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(JSON.stringify(payload), { status });
+    }) as typeof fetch;
+    const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
+    await expect(adapter.handle('listBans', { search: 'x' })).rejects.toThrow('no options');
+    expect(calls).toHaveLength(0);
+    expect(await adapter.handle('listBans', {}, 'ban-list-req')).toEqual([steam, other].map((id) => ({
+      player: { gameId: id, name: id, steamId: id, platformId: `steam:${id}` },
+      reason: '', expiresAt: null,
+    })));
+    expect(calls[0]).toEqual({ url: 'http://127.0.0.1:18891/bans',
+      init: expect.objectContaining({ method: 'GET', headers: { Authorization: 'Bearer secret' } }) });
+    payload = [];
+    expect(await adapter.handle('listBans', {})).toEqual([]); // native validated empty only
+    for (const bad of [[steam, steam], ['steam:' + steam], ['bad'], [123], {}, null]) {
+      payload = bad;
+      await expect(adapter.handle('listBans', {})).rejects.toThrow(/invalid|duplicate/);
+    }
+    status = 501;
+    payload = { error: 'unavailable' };
+    await expect(adapter.handle('listBans', {})).rejects.toThrow('501');
+  });
+
   it('maps exact native give-item and teleport requests and requires verified acknowledgments', async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {

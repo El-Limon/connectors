@@ -65,6 +65,9 @@ export class NativeClient {
     return this.request('POST', `/players/${encodeURIComponent(steamId)}/${action}`, '', requestId,
       'text/plain; charset=utf-8', 503);
   }
+  bans(requestId?: string): Promise<string[]> {
+    return this.request('GET', '/bans', undefined, requestId);
+  }
   events(since: number): Promise<NativeEvents> {
     return this.request('GET', `/events?since=${encodeURIComponent(String(since))}`);
   }

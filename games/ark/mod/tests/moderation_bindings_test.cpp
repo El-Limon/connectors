@@ -50,6 +50,8 @@ int main() {
   put(mode, 0x10, static_cast<void*>(derived_class));
   put(derived_class, 0x30, static_cast<void*>(mode_class));
   Api api{static_mode_class, kick_native, syscall(SYS_gettid)};
+  api.expected_game_mode_class = reinterpret_cast<uintptr_t>(&static_mode_class);
+  std::memcpy(api.game_mode_class_prologue.data(), reinterpret_cast<const void*>(&static_mode_class), 8);
   api.expected_native = reinterpret_cast<uintptr_t>(&kick_native);
   std::memcpy(api.expected_prologue.data(), reinterpret_cast<const void*>(&kick_native),
               api.expected_prologue.size());
@@ -92,4 +94,8 @@ int main() {
   api.game_thread_tid = syscall(SYS_gettid);
   api.expected_prologue[0] ^= 0xff;
   assert(kick(world, steam64, api) == Status::invalid_layout);
+  api.expected_prologue[0] ^= 0xff;
+  api.game_mode_class_prologue[0] ^= 0xff;
+  assert(kick(world, steam64, api) == Status::unavailable);
+  assert(change_ban(world, steam64, true, api) == BanStatus::unavailable);
 }

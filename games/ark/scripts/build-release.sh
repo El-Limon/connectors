@@ -47,6 +47,9 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
     g++ -std=c++20 -Wall -Wextra -Werror -pthread games/ark/mod/tests/moderation_bindings_test.cpp \
       -o games/ark/_data/build/moderation_bindings_test
     games/ark/_data/build/moderation_bindings_test
+    g++ -std=c++20 -Wall -Wextra -Werror -pthread games/ark/mod/tests/list_bans_bindings_test.cpp \
+      -o games/ark/_data/build/list_bans_bindings_test
+    games/ark/_data/build/list_bans_bindings_test
     g++ -std=c++20 -Wall -Wextra -Werror -pthread games/ark/mod/tests/entity_bindings_test.cpp \
       -o games/ark/_data/build/entity_bindings_test
     games/ark/_data/build/entity_bindings_test
@@ -65,6 +68,9 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
     g++ -std=c++20 -Wall -Wextra -Werror -pthread games/ark/mod/tests/location_bindings_test.cpp \
       -o games/ark/_data/build/location_bindings_test
     games/ark/_data/build/location_bindings_test
+    g++ -std=c++20 -Wall -Wextra -Werror -pthread games/ark/mod/tests/world_bootstrap_test.cpp \
+      -o games/ark/_data/build/world_bootstrap_test
+    games/ark/_data/build/world_bootstrap_test
     cd games/ark/sidecar
     npm ci --no-audit --no-fund
     npm run typecheck

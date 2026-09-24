@@ -285,6 +285,27 @@ export class ArkAdapter {
         }
         return {};
       }
+      case 'listBans': {
+        if (Object.values(args).some((value) => value !== undefined && value !== null)) {
+          throw new Error('listBans accepts no options on this native build');
+        }
+        const rows = await this.native.bans(requestId);
+        if (!Array.isArray(rows) || rows.length > 4096) {
+          throw new Error('Native ban collection is unavailable or invalid');
+        }
+        const seen = new Set<string>();
+        return rows.map((raw) => {
+          const id = steam64(raw);
+          if (!id || id !== raw || seen.has(id)) {
+            throw new Error('Native ban collection contains an invalid or duplicate Steam64');
+          }
+          seen.add(id);
+          // The native ban set stores Steam64 only. Its required display-name field
+          // uses the exact ID, as in other Generic adapters; reason is unknown.
+          return { player: { gameId: id, name: id, steamId: id, platformId: `steam:${id}` },
+            reason: '', expiresAt: null };
+        });
+      }
       case 'executeConsoleCommand': {
         if (args.command !== 'ListPlayers') {
           throw new Error('Only the verified native ListPlayers console command is available on this build');
