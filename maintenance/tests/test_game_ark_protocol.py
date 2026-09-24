@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ import pytest
 from takaro_maint.catalog import schema
 from takaro_maint.games.ark import verify as ark_verify
 from takaro_maint.verify.report import GAME_PROTOCOL_CHECKS, build_report, level_for
+from takaro_maint.verify.runner import capture_ark_diagnostics
 
 
 def _rows(status: str = "pass") -> list[dict[str, str]]:
@@ -120,6 +122,46 @@ def test_sidecar_build_uses_packaged_dockerfile_outside_repository_cwd(
         "--label",
         "tm.run=fixture",
         str(source),
+    ]
+
+
+def test_ark_cleanup_keeps_exit_state_timestamped_log_and_owned_crash_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = tmp_path / "owned"
+    out = tmp_path / "report"
+    out.mkdir()
+    crash = data / "ShooterGame/Saved/Crashes/CrashContext.runtime-xml"
+    crash.parent.mkdir(parents=True)
+    crash.write_text("<CrashContext>owned rig</CrashContext>", encoding="utf-8")
+    world = data / "ShooterGame/Saved/SavedArks/TheIsland.ark"
+    world.parent.mkdir(parents=True)
+    world.write_bytes(b"fresh-world")
+    calls: list[list[str]] = []
+
+    def docker_result(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        calls.append(argv)
+        if "inspect" in argv:
+            return SimpleNamespace(returncode=0, stdout='{"Running":false,"ExitCode":139}', stderr="")
+        return SimpleNamespace(returncode=0, stdout="2026-09-24T09:00:00Z Signal 11 caught\n", stderr="")
+
+    monkeypatch.setattr("takaro_maint.verify.runner.subprocess.run", docker_result)
+    monkeypatch.setattr("takaro_maint.verify.runner.docker_command", lambda: ["docker"])
+    container = SimpleNamespace(name="owned-ark", secrets=[])
+    files = capture_ark_diagnostics([container], data, out)
+    assert out / "ark-cleanup-diagnostics.json" in files
+    assert (out / "owned-ark-timestamped.log").read_text() == "2026-09-24T09:00:00Z Signal 11 caught\n"
+    assert (out / "owned-saved-diagnostics/Crashes/CrashContext.runtime-xml").read_text() == crash.read_text()
+    evidence = json.loads((out / "ark-cleanup-diagnostics.json").read_text())
+    assert evidence["containers"][0]["state"]["ExitCode"] == 139
+    assert {row["file"] for row in evidence["ownedSavedFiles"]} == {
+        "Crashes/CrashContext.runtime-xml",
+        "SavedArks/TheIsland.ark",
+    }
+    assert calls == [
+        ["docker", "inspect", "-f", "{{json .State}}", "owned-ark"],
+        ["docker", "logs", "--timestamps", "--tail", "10000", "owned-ark"],
     ]
 
 

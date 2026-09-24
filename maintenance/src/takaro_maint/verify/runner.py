@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import datetime as dt
 import importlib
+import json
 import os
 import re
 import secrets
@@ -212,6 +213,73 @@ def cleanup_orphans(run_id: str) -> list[str]:
     for name in names:
         subprocess.run([*docker_command(), "rm", "-f", name], capture_output=True, check=False)
     return names
+
+
+def capture_ark_diagnostics(containers: list[Container], data_dir: Path, out: Path) -> list[Path]:
+    """Keep crash evidence before Docker removal and owned-data cleanup."""
+    captured_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+    files: list[Path] = []
+    states: list[dict[str, Any]] = []
+    for container in containers:
+        state = subprocess.run(
+            [*docker_command(), "inspect", "-f", "{{json .State}}", container.name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        entry: dict[str, Any] = {"name": container.name, "capturedAt": captured_at}
+        if state.returncode == 0:
+            try:
+                entry["state"] = json.loads(state.stdout)
+            except json.JSONDecodeError:
+                entry["inspectError"] = "Docker returned malformed State JSON"
+        else:
+            entry["inspectError"] = state.stderr.strip()[:500]
+        states.append(entry)
+        stamped = subprocess.run(
+            [*docker_command(), "logs", "--timestamps", "--tail", "10000", container.name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        log_path = out / f"{container.name}-timestamped.log"
+        log_path.write_text(redact.redact(stamped.stdout + stamped.stderr, container.secrets), encoding="utf-8")
+        files.append(log_path)
+
+    saved = data_dir / "ShooterGame" / "Saved"
+    saved_files: list[dict[str, Any]] = []
+    copied_bytes = 0
+    for folder in (saved / "Logs", saved / "Crashes"):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        for source in sorted(folder.rglob("*")):
+            if len(saved_files) >= 64:
+                break
+            if source.is_symlink() or not source.is_file():
+                continue
+            relative = source.relative_to(saved)
+            size = source.stat().st_size
+            row: dict[str, Any] = {"file": str(relative), "size": size, "copied": False}
+            if size <= 16 * 1024 * 1024 and copied_bytes + size <= 32 * 1024 * 1024:
+                destination = out / "owned-saved-diagnostics" / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                files.append(destination)
+                copied_bytes += size
+                row["copied"] = True
+            saved_files.append(row)
+    world = saved / "SavedArks" / "TheIsland.ark"
+    if world.is_file() and not world.is_symlink():
+        saved_files.append({"file": "SavedArks/TheIsland.ark", "size": world.stat().st_size, "copied": False})
+    evidence = out / "ark-cleanup-diagnostics.json"
+    evidence.write_text(
+        json.dumps({"capturedAt": captured_at, "containers": states, "ownedSavedFiles": saved_files}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    files.append(evidence)
+    return files
 
 
 @dataclass
@@ -676,6 +744,13 @@ class TargetRun:
             return
         self._cleaned = True
         failed = any(result.status == "fail" for result in self.results)
+        if self.target.game == "ark":
+            try:
+                self.extra_logs.extend(capture_ark_diagnostics(self.containers, self.data_dir, self.out))
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                (self.out / "ark-cleanup-diagnostics-error.txt").write_text(
+                    f"{type(exc).__name__}: {exc}\n", encoding="utf-8"
+                )
         for container in self.containers:
             container.remove()
         if failed and self.options.keep_on_failure:
