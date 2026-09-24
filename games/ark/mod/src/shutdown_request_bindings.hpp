@@ -14,6 +14,7 @@ constexpr uintptr_t kExitRequested = 0x5938b26;
 constexpr uint8_t kPrologue[] = {
     0x55, 0x48, 0x89, 0xe5, 0x40, 0x84, 0xff, 0x75, 0x09,
     0xc6, 0x05, 0x86, 0x50, 0xe3, 0x03, 0x01, 0x5d, 0xc3,
+    0xe8, 0x49, 0x44, 0xb4, 0xfe, // force=true branches here to abort@plt
 };
 
 using RequestFn = void (*)(bool force);
@@ -37,13 +38,17 @@ inline bool signature_matches(const Api& api = {}) {
       std::memcmp(api.entry, kPrologue, sizeof(kPrologue)) == 0;
 }
 
+inline bool ready_to_stage(const Api& api = {}) {
+  return signature_matches(api) && *api.exit_requested == 0;
+}
+
 inline Status request_after_ack(bool save_completed, bool response_flushed,
                                 const Api& api = {}) {
   if (!save_completed || !response_flushed || api.game_thread_tid <= 0 ||
       syscall(SYS_gettid) != api.game_thread_tid || !signature_matches(api))
     return Status::guarded;
   if (*api.exit_requested != 0) return Status::already_requested;
-  api.request(false); // Force=true aborts. This only sets the main-loop exit flag.
+  api.request(false); // Let the verified main loop perform its normal exit.
   return *api.exit_requested == 1 ? Status::requested : Status::postcondition_failed;
 }
 

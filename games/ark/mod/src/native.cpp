@@ -555,15 +555,16 @@ void tick_hook(void* loop) {
           ? "ARK_NATIVE_SHUTDOWN native-exit-requested\n"
           : "ARK_NATIVE_SHUTDOWN native-exit-request-rejected\n";
       (void)write(STDERR_FILENO, marker, strlen(marker));
-      if (outcome == ark_shutdown_request::Status::requested) {
-        g_pending_shutdown.reset();
-        return;
-      }
       g_pending_shutdown.reset();
+      return;
     } else if (now - g_shutdown_staged_at > std::chrono::seconds(5)) {
       enqueue("native-shutdown-ack-not-flushed-or-expired");
       g_pending_shutdown.reset();
+      return;
     }
+    // The saved checkpoint precedes the HTTP ACK. Do not run another queued
+    // connector mutation while the acknowledged exit is pending.
+    return;
   }
   if (g_gate && g_hooks_ready.load(std::memory_order_acquire)) {
     g_gate->set_game_ready();
@@ -748,7 +749,7 @@ void tick_hook(void* loop) {
         bool success = false;
         bool pending = false;
         if (action->kind == gate::Action::Kind::shutdown) {
-          if (!g_pending_shutdown && ark_shutdown_request::signature_matches()) {
+          if (!g_pending_shutdown && ark_shutdown_request::ready_to_stage()) {
             ark_save::Api api{};
             api.game_thread_tid = tid;
             const auto outcome = ark_save::save_world(resolve_live_world(), api);

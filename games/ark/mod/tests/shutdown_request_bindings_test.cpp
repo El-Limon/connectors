@@ -20,6 +20,7 @@ int main() {
   api.exit_requested = &exit_flag;
   api.exact_binding = false;
   api.game_thread_tid = syscall(SYS_gettid);
+  assert(ready_to_stage(api));
   assert(request_after_ack(false, true, api) == Status::guarded);
   assert(request_after_ack(true, false, api) == Status::guarded);
   api.game_thread_tid += 1;
@@ -27,6 +28,7 @@ int main() {
   api.game_thread_tid -= 1;
   assert(request_after_ack(true, true, api) == Status::requested);
   assert(!force_seen && exit_flag == 1);
+  assert(!ready_to_stage(api));
   assert(request_after_ack(true, true, api) == Status::already_requested);
   exit_flag = 0;
   set_flag = false;
