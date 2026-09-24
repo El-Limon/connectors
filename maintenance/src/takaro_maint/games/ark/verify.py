@@ -242,21 +242,15 @@ def _native_message_probe(container: str, path: str, message: str) -> dict[str, 
     return result
 
 
-def _fresh_saveworld_completion(
-    log_file: Path, device: int, inode: int, offset: int, *, timeout: float = 10.0
-) -> dict[str, str | None]:
-    """Observe both real engine save lines appended after the console request began."""
+async def _fresh_saveworld_events(fake: Any, baseline: int, *, timeout: float = 10.0) -> dict[str, str | None]:
+    """Observe ordered native log events delivered to Takaro after this request began."""
     deadline = time.monotonic() + timeout
     while True:
-        stat = log_file.stat()
-        if (stat.st_dev, stat.st_ino) != (device, inode) or stat.st_size < offset:
-            raise RuntimeError("server log rotated or truncated during SaveWorld")
-        with log_file.open("rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if (opened.st_dev, opened.st_ino) != (device, inode) or opened.st_size < offset:
-                raise RuntimeError("server log rotated or truncated during SaveWorld")
-            stream.seek(offset)
-            lines = stream.read().decode("utf-8", errors="replace").splitlines()
+        lines = [
+            event["data"]["msg"] for event in fake.events[baseline:]
+            if isinstance(event, dict) and event.get("type") == "log"
+            and isinstance(event.get("data"), dict) and isinstance(event["data"].get("msg"), str)
+        ]
         start = next((i for i, line in enumerate(lines) if "Saving world..." in line), None)
         complete = next(
             (
@@ -267,7 +261,7 @@ def _fresh_saveworld_completion(
         )
         if complete or time.monotonic() >= deadline:
             return {"start": lines[start] if start is not None else None, "complete": complete}
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
 
 
 def _wait_json(container: str, url: str, *, native: bool = False, timeout: float = 30) -> Any:
@@ -618,8 +612,8 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     raise RuntimeError("game container was not started")
                 save = run.data_dir / "ShooterGame/Saved/SavedArks/TheIsland.ark"
                 before = save.stat() if save.is_file() else None
-                log_stat = run.server_log.stat()
-                log_identity = (log_stat.st_dev, log_stat.st_ino, log_stat.st_size)
+                event_baseline = len(fake.events)
+                detail["eventIndexBefore"] = event_baseline
                 health_before = await asyncio.to_thread(
                     _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
                 )
@@ -627,10 +621,10 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 detail["result"] = result
                 if result != {"success": True, "rawResult": "", "errorMessage": None}:
                     problems.append("Generic SaveWorld was not acknowledged as a completed native save")
-                markers = await asyncio.to_thread(_fresh_saveworld_completion, run.server_log, *log_identity)
+                markers = await _fresh_saveworld_events(fake, event_baseline)
                 detail["freshSaveMarkers"] = markers
                 if not markers["start"] or not markers["complete"]:
-                    problems.append("fresh engine SaveWorld start/completion lines were not observed")
+                    problems.append("fresh native SaveWorld log events were not delivered to Generic Takaro")
                 after = save.stat() if save.is_file() else None
                 detail["ownedSave"] = {
                     "sizeBefore": before.st_size if before else None,

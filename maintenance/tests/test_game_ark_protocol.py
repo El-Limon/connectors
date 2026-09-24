@@ -900,17 +900,21 @@ def test_offline_targeted_message_must_still_fail(
     assert run.results[0].status == ("pass" if native_status == 503 else "fail")
 
 
-def test_saveworld_requires_fresh_ordered_engine_lines(tmp_path: Path) -> None:
-    log = tmp_path / "server.log"
-    log.write_text("Saving world...\nWorld Save Complete. Took 0.1\n")
-    stat = log.stat()
-    assert ark_verify._fresh_saveworld_completion(log, stat.st_dev, stat.st_ino, stat.st_size, timeout=0) == {
+def test_saveworld_requires_fresh_ordered_native_log_events() -> None:
+    fake = SimpleNamespace(events=[
+        {"type": "log", "data": {"msg": "Saving world..."}},
+        {"type": "log", "data": {"msg": "World Save Complete. Took 0.1"}},
+    ])
+    assert asyncio.run(ark_verify._fresh_saveworld_events(fake, 2, timeout=0)) == {
         "start": None,
         "complete": None,
     }
-    with log.open("a") as stream:
-        stream.write("World Save Complete. Took 0.2\nSaving world...\nWorld Save Complete. Took 0.3\n")
-    markers = ark_verify._fresh_saveworld_completion(log, stat.st_dev, stat.st_ino, stat.st_size, timeout=0)
+    fake.events += [
+        {"type": "log", "data": {"msg": "World Save Complete. Took 0.2"}},
+        {"type": "log", "data": {"msg": "Saving world..."}},
+        {"type": "log", "data": {"msg": "World Save Complete. Took 0.3"}},
+    ]
+    markers = asyncio.run(ark_verify._fresh_saveworld_events(fake, 2, timeout=0))
     assert markers["start"] == "Saving world..."
     assert markers["complete"] == "World Save Complete. Took 0.3"
 
@@ -921,9 +925,12 @@ def test_saveworld_check_needs_handled_command_and_owned_file_update(
 ) -> None:
     monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
     monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: {"bootId": "same-boot"})
-    monkeypatch.setattr(ark_verify, "_fresh_saveworld_completion", lambda *args: {
-        "start": "Saving world...", "complete": "World Save Complete. Took 0.3"
-    })
+    original_events = ark_verify._fresh_saveworld_events
+
+    async def fresh_events(fake: object, baseline: int) -> dict[str, str | None]:
+        return await original_events(fake, baseline, timeout=0)
+
+    monkeypatch.setattr(ark_verify, "_fresh_saveworld_events", fresh_events)
     saved = tmp_path / "ShooterGame/Saved/SavedArks/TheIsland.ark"
     saved.parent.mkdir(parents=True)
     saved.write_bytes(b"old")
@@ -932,10 +939,20 @@ def test_saveworld_check_needs_handled_command_and_owned_file_update(
     log.write_text("booted\n")
 
     class FakeTakaro:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = [
+                {"type": "log", "data": {"msg": "Saving world..."}},
+                {"type": "log", "data": {"msg": "World Save Complete. Took 0.1"}},
+            ]
+
         async def request(self, action: str, args: dict[str, object]) -> dict[str, object]:
             assert (action, args) == ("executeConsoleCommand", {"command": "SaveWorld"})
             if handled:
                 saved.write_bytes(b"new-world")
+                self.events.extend([
+                    {"type": "log", "data": {"msg": "Saving world..."}},
+                    {"type": "log", "data": {"msg": "World Save Complete. Took 0.3"}},
+                ])
             return {"success": handled, "rawResult": "", "errorMessage": None if handled else "unhandled"}
 
     class FakeRun:
