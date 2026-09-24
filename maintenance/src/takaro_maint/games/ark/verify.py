@@ -204,6 +204,37 @@ def _fresh_shutdown_markers(log_file: Path, device: int, inode: int, offset: int
         time.sleep(0.2)
 
 
+def _native_protocol_ready(health: dict[str, Any], build: str) -> bool:
+    capabilities = health.get("capabilities")
+    return (
+        health.get("status") == "ok"
+        and health.get("build") == build
+        and bool(health.get("bootId"))
+        and isinstance(capabilities, dict)
+        and all(capabilities.get(name) == "ok" for name in ("roster", "items", "entities"))
+    )
+
+
+async def _wait_native_protocol_ready(
+    container: str, build: str, alive: Any, *, timeout: float = 60, poll_interval: float = 1
+) -> dict[str, Any]:
+    """Wait for zero-player protocol data; chat needs a real controller and is separate."""
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    url = f"http://127.0.0.1:{NATIVE_PORT}/health"
+    while True:
+        try:
+            response = await asyncio.to_thread(_get_json, container, url, native=True)
+            last = response if isinstance(response, dict) else {"probeError": f"unexpected health: {response!r}"}
+        except (RuntimeError, ValueError) as exc:
+            last = {"probeError": str(exc)}
+        if _native_protocol_ready(last, build) or (last.get("build") is not None and last.get("build") != build):
+            return last
+        if time.monotonic() >= deadline or not alive():
+            return last
+        await asyncio.sleep(poll_interval)
+
+
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
     selected = [name for name in CHECK_IDS if name not in ("negative-wrong-target", "stop") and run.wanted(name)]
     sidecar: Container | None = None
@@ -226,9 +257,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
             if sidecar is None:
                 raise RuntimeError(f"shipped sidecar did not start: {launch_error}")
             if check_id == "native-health":
-                health = await asyncio.to_thread(
-                    _wait_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
-                )
+                health = await _wait_native_protocol_ready(sidecar.name, str(run.target.record["revision"]), alive)
                 detail["health"] = health
                 if run.options.ark_readonly_base is not None:
                     if run.container is None:
@@ -253,15 +282,9 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                         "/ark/ShooterGame/Saved",
                     ]:
                         problems.append("ARK process executable or Saved path escapes the owned runtime tree")
-                if health.get("status") != "ok" or health.get("build") != str(run.target.record["revision"]):
-                    problems.append("native status/build does not match the pinned target")
-                if not health.get("bootId"):
-                    problems.append("native bootId is missing")
-                capabilities = health.get("capabilities")
-                if not isinstance(capabilities, dict) or any(
-                    capabilities.get(name) != "ok" for name in ("chat", "sendMessage")
-                ):
-                    problems.append("native chat/sendMessage capabilities are not healthy")
+                if not _native_protocol_ready(health, str(run.target.record["revision"])):
+                    problems.append("native health did not reach pinned build and zero-player protocol readiness")
+                detail["clientDependentCapabilities"] = ["chat", "sendMessage"]
             elif check_id == "sidecar-identify":
                 await fake.wait_for_identify(120)
                 health = await asyncio.to_thread(_wait_json, sidecar.name, f"http://127.0.0.1:{SIDECAR_PORT}/health")
@@ -270,7 +293,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     problems.append("sidecar did not report identified")
             elif check_id == "ark-heartbeat":
                 heartbeat = await checks.check_heartbeat(fake)
-                detail.update(heartbeat.detail)
+                detail.update({key: value for key, value in heartbeat.detail.items() if key != "problems"})
                 problems.extend(heartbeat.detail.get("problems", []))
             elif check_id == "roster":
                 result = await fake.request("getPlayers", {})

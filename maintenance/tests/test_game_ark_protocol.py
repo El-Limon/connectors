@@ -11,6 +11,7 @@ import pytest
 
 from takaro_maint.catalog import schema
 from takaro_maint.games.ark import verify as ark_verify
+from takaro_maint.verify.checks import CheckResult
 from takaro_maint.verify.report import GAME_PROTOCOL_CHECKS, build_report, level_for
 from takaro_maint.verify.runner import capture_ark_diagnostics
 
@@ -163,6 +164,130 @@ def test_ark_cleanup_keeps_exit_state_timestamped_log_and_owned_crash_context(
         ["docker", "inspect", "-f", "{{json .State}}", "owned-ark"],
         ["docker", "logs", "--timestamps", "--tail", "10000", "owned-ark"],
     ]
+
+
+def test_native_health_waits_for_zero_player_protocol_without_client_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starting = {
+        "status": "starting",
+        "build": "21241282",
+        "bootId": "fresh",
+        "capabilities": {
+            "chat": "starting",
+            "sendMessage": "starting",
+            "roster": "starting",
+            "items": "unavailable",
+            "entities": "unavailable",
+        },
+    }
+    ready = {
+        **starting,
+        "status": "ok",
+        "capabilities": {**starting["capabilities"], "roster": "ok", "items": "ok", "entities": "ok"},
+    }
+    responses = iter((starting, ready))
+    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: next(responses))
+    result = asyncio.run(ark_verify._wait_native_protocol_ready("sidecar", "21241282", lambda: True, poll_interval=0))
+    assert result == ready
+    assert ark_verify._native_protocol_ready(result, "21241282")
+    assert not ark_verify._native_protocol_ready(result, "wrong-build")
+
+
+def test_native_health_timeout_keeps_starting_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    starting = {"status": "starting", "build": "21241282", "bootId": "fresh", "capabilities": {}}
+    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: starting)
+    result = asyncio.run(ark_verify._wait_native_protocol_ready("sidecar", "21241282", lambda: True, timeout=0))
+    assert result == starting
+    assert not ark_verify._native_protocol_ready(result, "21241282")
+
+
+def test_native_health_wrong_build_fails_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def wrong_build(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        return {"status": "ok", "build": "wrong-build", "bootId": "fresh", "capabilities": {}}
+
+    monkeypatch.setattr(ark_verify, "_get_json", wrong_build)
+    result = asyncio.run(ark_verify._wait_native_protocol_ready("sidecar", "21241282", lambda: True))
+    assert result["build"] == "wrong-build"
+    assert calls == 1
+    assert not ark_verify._native_protocol_ready(result, "21241282")
+
+
+def test_ark_native_health_passes_with_client_dependent_chat_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+
+    async def ready(*args: object) -> dict[str, object]:
+        del args
+        return {
+            "status": "ok",
+            "build": "21241282",
+            "bootId": "fresh",
+            "capabilities": {
+                "chat": "starting",
+                "sendMessage": "starting",
+                "roster": "ok",
+                "items": "ok",
+                "entities": "ok",
+            },
+        }
+
+    monkeypatch.setattr(ark_verify, "_wait_native_protocol_ready", ready)
+
+    class FakeRun:
+        options = SimpleNamespace(ark_readonly_base=None)
+        target = SimpleNamespace(record={"revision": "21241282"})
+
+        def __init__(self) -> None:
+            self.results: list[CheckResult] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "native-health"
+
+        def record(self, result: CheckResult) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_protocol(run, object(), lambda: True))
+    assert run.results[0].status == "pass"
+    assert run.results[0].detail["clientDependentCapabilities"] == ["chat", "sendMessage"]
+
+
+def test_ark_heartbeat_detail_problems_do_not_crash_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+
+    async def heartbeat(fake: object) -> CheckResult:
+        del fake
+        return CheckResult("heartbeat", "fail", 0, {"pingRoundTripMs": [], "problems": ["no pong"]})
+
+    monkeypatch.setattr(ark_verify.checks, "check_heartbeat", heartbeat)
+
+    class FakeRun:
+        def __init__(self) -> None:
+            self.results: list[CheckResult] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "ark-heartbeat"
+
+        def record(self, result: CheckResult) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_protocol(run, object(), lambda: True))
+    assert run.results[0].status == "fail"
+    assert run.results[0].detail == {"pingRoundTripMs": [], "problems": ["no pong"]}
 
 
 @pytest.mark.parametrize(

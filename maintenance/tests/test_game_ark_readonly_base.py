@@ -141,15 +141,26 @@ def test_readonly_health_rejects_executable_resolving_to_preserved_base(
     monkeypatch: pytest.MonkeyPatch, actual_exe: str, expected: str
 ) -> None:
     monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-    monkeypatch.setattr(
-        ark_verify,
-        "_wait_json",
-        lambda *args, **kwargs: {
+
+    async def healthy(*args: object) -> dict[str, object]:
+        del args
+        return {
             "status": "ok",
             "build": "21241282",
             "bootId": "fresh",
-            "capabilities": {"chat": "ok", "sendMessage": "ok"},
-        },
+            "capabilities": {
+                "chat": "starting",
+                "sendMessage": "starting",
+                "roster": "ok",
+                "items": "ok",
+                "entities": "ok",
+            },
+        }
+
+    monkeypatch.setattr(
+        ark_verify,
+        "_wait_native_protocol_ready",
+        healthy,
     )
     monkeypatch.setattr(
         ark_verify.subprocess,
