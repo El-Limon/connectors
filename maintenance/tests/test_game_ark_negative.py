@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from takaro_maint.games.ark import verify as ark_verify
 from takaro_maint.games.ark import GAME
+from takaro_maint.games.ark import verify as ark_verify
 
 
 @pytest.mark.parametrize("preload_stdout,expected", [

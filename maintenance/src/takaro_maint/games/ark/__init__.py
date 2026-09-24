@@ -163,10 +163,12 @@ class ArkAdapter(BaseAdapter):
                     if relative != folder and not relative.startswith(folder + "/"):
                         raise ConflictError(f"{artifact.name} contains an entry outside {folder}/: {name}")
                     paths.safe_relative(relative, field="artifact zip entry")
-                required = (f"{folder}/libtakaro-ark-native.so", f"{folder}/launch.sh",
-                            f"{folder}/uninstall-manifest.json", f"{folder}/takaro-target.json") if role == "server-plugin" \
-                    else (f"{folder}/Dockerfile", f"{folder}/dist/index.js", f"{folder}/package-lock.json",
-                          f"{folder}/uninstall-manifest.json", f"{folder}/takaro-target.json")
+                if role == "server-plugin":
+                    required = (f"{folder}/libtakaro-ark-native.so", f"{folder}/launch.sh",
+                                f"{folder}/uninstall-manifest.json", f"{folder}/takaro-target.json")
+                else:
+                    required = (f"{folder}/Dockerfile", f"{folder}/dist/index.js", f"{folder}/package-lock.json",
+                                f"{folder}/uninstall-manifest.json", f"{folder}/takaro-target.json")
                 if any(name not in names for name in required):
                     raise ConflictError(f"{artifact.name} lacks required {role} files")
                 for member in archive.infolist():
