@@ -826,9 +826,7 @@ def test_native_message_probe_reads_real_status_without_token_in_argv(monkeypatc
 
 
 @pytest.mark.parametrize("native_status", [200, 503])
-def test_empty_broadcast_requires_native_and_generic_ack(
-    monkeypatch: pytest.MonkeyPatch, native_status: int
-) -> None:
+def test_empty_broadcast_requires_native_and_generic_ack(monkeypatch: pytest.MonkeyPatch, native_status: int) -> None:
     monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
     monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: [])
     monkeypatch.setattr(
@@ -867,9 +865,7 @@ def test_empty_broadcast_requires_native_and_generic_ack(
 
 
 @pytest.mark.parametrize("native_status", [503, 200])
-def test_offline_targeted_message_must_still_fail(
-    monkeypatch: pytest.MonkeyPatch, native_status: int
-) -> None:
+def test_offline_targeted_message_must_still_fail(monkeypatch: pytest.MonkeyPatch, native_status: int) -> None:
     monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
     monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: [])
     monkeypatch.setattr(
@@ -901,10 +897,12 @@ def test_offline_targeted_message_must_still_fail(
 
 
 def test_saveworld_requires_fresh_ordered_native_log_events() -> None:
-    fake = SimpleNamespace(events=[
-        {"type": "log", "data": {"msg": "Saving world..."}},
-        {"type": "log", "data": {"msg": "World Save Complete. Took 0.1"}},
-    ])
+    fake = SimpleNamespace(
+        events=[
+            {"type": "log", "data": {"msg": "Saving world..."}},
+            {"type": "log", "data": {"msg": "World Save Complete. Took 0.1"}},
+        ]
+    )
     assert asyncio.run(ark_verify._fresh_saveworld_events(fake, 2, timeout=0)) == {
         "start": None,
         "complete": None,
@@ -949,10 +947,12 @@ def test_saveworld_check_needs_handled_command_and_owned_file_update(
             assert (action, args) == ("executeConsoleCommand", {"command": "SaveWorld"})
             if handled:
                 saved.write_bytes(b"new-world")
-                self.events.extend([
-                    {"type": "log", "data": {"msg": "Saving world..."}},
-                    {"type": "log", "data": {"msg": "World Save Complete. Took 0.3"}},
-                ])
+                self.events.extend(
+                    [
+                        {"type": "log", "data": {"msg": "Saving world..."}},
+                        {"type": "log", "data": {"msg": "World Save Complete. Took 0.3"}},
+                    ]
+                )
             return {"success": handled, "rawResult": "", "errorMessage": None if handled else "unhandled"}
 
     class FakeRun:

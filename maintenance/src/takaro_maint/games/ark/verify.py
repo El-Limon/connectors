@@ -247,14 +247,18 @@ async def _fresh_saveworld_events(fake: Any, baseline: int, *, timeout: float = 
     deadline = time.monotonic() + timeout
     while True:
         lines = [
-            event["data"]["msg"] for event in fake.events[baseline:]
-            if isinstance(event, dict) and event.get("type") == "log"
-            and isinstance(event.get("data"), dict) and isinstance(event["data"].get("msg"), str)
+            event["data"]["msg"]
+            for event in fake.events[baseline:]
+            if isinstance(event, dict)
+            and event.get("type") == "log"
+            and isinstance(event.get("data"), dict)
+            and isinstance(event["data"].get("msg"), str)
         ]
         start = next((i for i, line in enumerate(lines) if "Saving world..." in line), None)
         complete = next(
             (
-                line for i, line in enumerate(lines)
+                line
+                for i, line in enumerate(lines)
                 if start is not None and i > start and SAVEWORLD_COMPLETE_LINE.search(line)
             ),
             None,
@@ -640,8 +644,10 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 )
                 detail["bootIdBefore"] = health_before.get("bootId") if isinstance(health_before, dict) else None
                 detail["bootIdAfter"] = health_after.get("bootId") if isinstance(health_after, dict) else None
-                if not await asyncio.to_thread(run.container.alive) or not detail["bootIdBefore"] or (
-                    detail["bootIdAfter"] != detail["bootIdBefore"]
+                if (
+                    not await asyncio.to_thread(run.container.alive)
+                    or not detail["bootIdBefore"]
+                    or (detail["bootIdAfter"] != detail["bootIdBefore"])
                 ):
                     problems.append("game stopped or native boot changed after SaveWorld")
             elif check_id == "reconnect":
