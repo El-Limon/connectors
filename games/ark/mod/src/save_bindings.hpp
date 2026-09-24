@@ -5,12 +5,32 @@
 // Its two early guards must be clear before a void return can prove completion.
 #include "moderation_bindings.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 #include <sys/syscall.h>
 #include <unistd.h>
 
 namespace ark_save {
+
+// The authenticated /console route may dispatch this one native-only command.
+// The general engine Exec path does not handle SaveWorld on this dedicated
+// server. Match only the complete command, allowing ASCII outer spaces and
+// ASCII case folding; never reinterpret arguments or chained commands.
+inline bool is_console_save_world(std::string_view command) {
+  while (!command.empty() && command.front() == ' ') command.remove_prefix(1);
+  while (!command.empty() && command.back() == ' ') command.remove_suffix(1);
+  constexpr std::string_view name = "saveworld";
+  if (command.size() != name.size()) return false;
+  for (std::size_t i = 0; i < name.size(); ++i) {
+    const unsigned char ch = static_cast<unsigned char>(command[i]);
+    const char lower = ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch + ('a' - 'A'))
+                                            : static_cast<char>(ch);
+    if (lower != name[i]) return false;
+  }
+  return true;
+}
 
 enum class Status { invalid, guarded, completed };
 struct Api {

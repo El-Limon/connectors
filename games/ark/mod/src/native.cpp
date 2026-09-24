@@ -845,6 +845,21 @@ void tick_hook(void* loop) {
             enqueue("native-console-termination-requires-shutdown-action");
           } else if (ark_shutdown_request::contains_unicode_space(action->command)) {
             enqueue("native-console-unicode-space-rejected");
+          } else if (ark_save::is_console_save_world(action->command)) {
+            // Dedicated-server Engine Exec reports this command unhandled.
+            // The exact GameMode binding returns only after native SaveWorld
+            // completes; keep rawResult empty because no console text was captured.
+            ark_save::Api api{};
+            api.game_thread_tid = tid;
+            const auto result = world && packed
+                ? ark_save::save_world(world, api) : ark_save::Status::invalid;
+            success = result == ark_save::Status::completed;
+            console_status = success ? ark_general_console::Status::handled
+                                     : ark_general_console::Status::rejected;
+            enqueue(success ? "native-console-saveworld-synchronous-completed"
+                            : result == ark_save::Status::guarded
+                            ? "native-console-saveworld-guarded"
+                            : "native-console-saveworld-unavailable");
           } else if (world && packed) {
             ark_general_console::Api api{};
             api.game_thread_tid = tid;

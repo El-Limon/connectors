@@ -17,6 +17,17 @@ void check(bool value, const char* label) { if (!value) throw std::runtime_error
 
 int main() {
   try {
+    for (const char* command : {"SaveWorld", "saveworld", "SAVEWORLD",
+                                "  sAvEwOrLd  "}) {
+      check(ark_save::is_console_save_world(command), "exact native SaveWorld command");
+    }
+    for (const char* command : {"", "SaveWorld now", "save world", "AdminCheat SaveWorld",
+                                "Cheat SaveWorld", "SaveWorld;", "SaveWorld; Exit",
+                                "SaveWorld\n", "SaveWorld\t", "SaveWorldX",
+                                "  SaveWorld /Game/Test  ", "SaveWorld\xC2\xA0"}) {
+      check(!ark_save::is_console_save_world(command),
+            "arguments, aliases, controls and Unicode spaces are not native SaveWorld");
+    }
     alignas(8) std::array<unsigned char, 0xD10> mode{};
     alignas(8) std::array<unsigned char, 0x260> world{};
     alignas(8) std::array<uintptr_t, 0xD80 / 8 + 1> vtable{};
