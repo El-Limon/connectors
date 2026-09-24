@@ -88,6 +88,33 @@ describe('Takaro Generic failure contract', () => {
 });
 
 describe('native transport and narrow actions', () => {
+  it('traces health, roster, player and broadcast requests by request ID without logging message text', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const route = new URL(String(input)).pathname;
+      const payload = route === '/health' ? { status: 'ok', bootId: 'test-boot' } :
+        route === '/players' ? [{ steamId: steam, name: 'Survivor' }] :
+        route === `/players/${steam}` ? { steamId: steam, name: 'Survivor' } : { success: true };
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }) as typeof fetch;
+    const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
+    try {
+      expect(await adapter.handle('testReachability', {}, 'health-9942')).toMatchObject({ connectable: true });
+      expect(await adapter.handle('getPlayers', {}, 'roster-9942')).toHaveLength(1);
+      expect(await adapter.handle('getPlayer', { gameId: steam }, 'player-9942')).toMatchObject({ gameId: steam });
+      expect(await adapter.handle('sendMessage', { message: 'private fixture text' }, 'message-9942')).toEqual({});
+      const traces = info.mock.calls.map(([entry]) => JSON.parse(String(entry).replace(/^\[Takaro ARK native\] /, '')));
+      expect(traces.map(({ requestId, path, status }) => [requestId, path, status])).toEqual([
+        ['health-9942', '/health', 200], ['roster-9942', '/players', 200],
+        ['player-9942', `/players/${steam}`, 200], ['message-9942', '/message', 200],
+      ]);
+      expect(JSON.stringify(info.mock.calls)).not.toContain('private fixture text');
+      expect(JSON.stringify(info.mock.calls)).not.toContain('secret');
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('sends bearer auth and raw UTF-8 text, and accepts only native success acknowledgment', async () => {
     const calls: { input: string; init?: RequestInit }[] = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {

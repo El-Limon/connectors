@@ -1135,7 +1135,7 @@ class Server {
       bool queued = false;
       { std::lock_guard<std::mutex> lock(mutex_);
         if (actions_.size() < 128 &&
-            (targeted_message ? players_.count(action->player_id) != 0 : !players_.empty())) {
+            (!targeted_message || players_.count(action->player_id) != 0)) {
           actions_.push_back(action); queued = true;
         }
       }

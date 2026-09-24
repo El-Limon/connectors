@@ -104,6 +104,40 @@ int main() {
     const auto health = request(port, "/health");
     check(status(health, 200) && health.find("\"bootId\":\"test-boot\"") != std::string::npos,
           "authorized health and boot ID");
+    gate::Server message_server(token, "message-boot");
+    const int message_port = free_loopback_port();
+    check(message_server.start(message_port), "message-only server starts on loopback");
+    message_server.set_game_ready();
+    auto empty_broadcast = std::async(std::launch::async, [&] {
+      return request(message_port, "/message", token, "zero recipients", "POST");
+    });
+    auto empty_action = wait_action(message_server);
+    check(empty_action->kind == gate::Action::Kind::message && empty_action->player_id.empty() &&
+          empty_action->text == U"zero recipients" && message_server.player_ids().empty(),
+          "zero-recipient broadcast still reaches the game-thread queue");
+    gate::Server::complete(empty_action, true);
+    check(status(empty_broadcast.get(), 200), "completed empty broadcast is an acknowledged no-op");
+    check(status(request(message_port, std::string("/players/") + steam + "/message", token, "private", "POST"), 503),
+          "targeted message to an absent player still fails");
+    message_server.record_login(steam, "One");
+    auto one_broadcast = std::async(std::launch::async, [&] {
+      return request(message_port, "/message", token, "one recipient", "POST");
+    });
+    auto one_action = wait_action(message_server);
+    check(one_action->kind == gate::Action::Kind::message && one_action->player_id.empty() &&
+          message_server.player_ids().size() == 1, "single-recipient broadcast uses the same queue");
+    gate::Server::complete(one_action, true);
+    check(status(one_broadcast.get(), 200), "single-recipient broadcast acknowledges dispatch");
+    message_server.record_login("76561198000000009", "Two");
+    auto many_broadcast = std::async(std::launch::async, [&] {
+      return request(message_port, "/message", token, "two recipients", "POST");
+    });
+    auto many_action = wait_action(message_server);
+    check(many_action->kind == gate::Action::Kind::message && many_action->player_id.empty() &&
+          message_server.player_ids().size() == 2, "multi-recipient broadcast uses the same queue");
+    gate::Server::complete(many_action, true);
+    check(status(many_broadcast.get(), 200), "multi-recipient broadcast acknowledges dispatch");
+    message_server.stop();
     check(status(request(port, "/not-implemented"), 501), "unknown route is unavailable");
     check(status(request(port, "/items?offset=0&limit=128"), 503),
           "catalog stays unavailable until a complete native snapshot exists");

@@ -35,10 +35,10 @@ export class NativeClient {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  health(): Promise<NativeHealth> { return this.request('GET', '/health'); }
-  players(): Promise<NativePlayer[]> { return this.request('GET', '/players'); }
-  player(steamId: string): Promise<NativePlayer | null> {
-    return this.request('GET', `/players/${encodeURIComponent(steamId)}`);
+  health(requestId?: string): Promise<NativeHealth> { return this.request('GET', '/health', undefined, requestId); }
+  players(requestId?: string): Promise<NativePlayer[]> { return this.request('GET', '/players', undefined, requestId); }
+  player(steamId: string, requestId?: string): Promise<NativePlayer | null> {
+    return this.request('GET', `/players/${encodeURIComponent(steamId)}`, undefined, requestId);
   }
   playerLocation(steamId: string, requestId?: string): Promise<NativePosition> {
     return this.request('GET', `/players/${encodeURIComponent(steamId)}/location`, undefined, requestId);
@@ -71,8 +71,8 @@ export class NativeClient {
   events(since: number): Promise<NativeEvents> {
     return this.request('GET', `/events?since=${encodeURIComponent(String(since))}`);
   }
-  message(text: string): Promise<{ success: boolean }> {
-    return this.request('POST', '/message', text);
+  message(text: string, requestId?: string): Promise<{ success: boolean }> {
+    return this.request('POST', '/message', text, requestId);
   }
   messageTo(steamId: string, text: string, requestId?: string): Promise<{ success: boolean }> {
     return this.request('POST', `/players/${encodeURIComponent(steamId)}/message`, text, requestId);

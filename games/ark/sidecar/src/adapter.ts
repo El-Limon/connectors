@@ -117,7 +117,7 @@ export class ArkAdapter {
     switch (action) {
       case 'testReachability': {
         try {
-          const health = await this.native.health();
+          const health = await this.native.health(requestId);
           const ok = (health.status === 'ok' || health.status === 'ready') && !!health.bootId;
           const capabilities = asRecord(health.capabilities);
           const degraded = Object.entries(capabilities)
@@ -133,12 +133,12 @@ export class ArkAdapter {
         }
       }
       case 'getPlayers': {
-        const rows = await this.native.players();
+        const rows = await this.native.players(requestId);
         if (!Array.isArray(rows)) throw new Error('Native /players did not return an array');
         return rows.map(mapPlayer);
       }
       case 'getPlayer': {
-        const row = await this.native.player(playerId(args));
+        const row = await this.native.player(playerId(args), requestId);
         return row ? mapPlayer(row) : null;
       }
       case 'getPlayerLocation': {
@@ -362,7 +362,7 @@ export class ArkAdapter {
         const recipient = messageRecipient(args);
         const ack = recipient
           ? await this.native.messageTo(recipient, message, requestId)
-          : await this.native.message(message);
+          : await this.native.message(message, requestId);
         if (ack?.success !== true) throw new Error(`Native chat ${recipient ? 'recipient' : 'broadcast'} was not acknowledged`);
         return {};
       }
