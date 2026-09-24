@@ -2,7 +2,6 @@ import EventEmitter from 'node:events';
 import WebSocket from 'ws';
 import { logger } from '../logger.js';
 import {
-  createErrorResponse,
   createGameEvent,
   createIdentify,
   createResponse,
@@ -229,10 +228,6 @@ export class TakaroWsClient extends EventEmitter {
 
   sendResponse(requestId: string, payload: unknown): boolean {
     return this.send(createResponse(requestId, payload));
-  }
-
-  sendError(requestId: string, error: string): boolean {
-    return this.send(createErrorResponse(requestId, error));
   }
 
   /**

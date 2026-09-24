@@ -5,8 +5,9 @@ import { EventPump } from './eventPump.js';
 import { logger } from './logger.js';
 import { NativeClient } from './native/client.js';
 import { FileCursorStore } from './native/cursorStore.js';
+import { handleTakaroRequest } from './requestHandler.js';
 import { TakaroWsClient } from './takaro/client.js';
-import { createErrorResponse, createResponse, parseTakaroRequest, type WsMessage } from './takaro/protocol.js';
+import type { WsMessage } from './takaro/protocol.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -20,16 +21,7 @@ async function main(): Promise<void> {
   const events = new EventPump(native, takaro, new FileCursorStore(config.cursorFile), config.pollIntervalMs);
 
   takaro.on('request', (message: WsMessage) => {
-    void (async () => {
-      if (!message.requestId) return;
-      try {
-        const request = parseTakaroRequest(message);
-        const payload = await adapter.handle(request.action, request.args, request.requestId);
-        takaro.send(createResponse(request.requestId, payload));
-      } catch (error) {
-        takaro.send(createErrorResponse(message.requestId, error instanceof Error ? error.message : String(error)));
-      }
-    })();
+    void handleTakaroRequest(message, adapter, (response) => takaro.send(response));
   });
   takaro.on('identified', () => events.start());
   takaro.on('disconnected', () => events.disconnected());

@@ -70,11 +70,6 @@ export function createResponse(requestId: string, payload: unknown): WsMessage {
   return { type: 'response', requestId, payload: payload === undefined ? {} : payload };
 }
 
-/** Error response: same frame type as a success, with a top-level error string (proven on the PZ connector). */
-export function createErrorResponse(requestId: string, error: string): WsMessage {
-  return { type: 'response', requestId, error };
-}
-
 export function createGameEvent(type: GameEventType, data: unknown): WsMessage {
   return { type: 'gameEvent', payload: { type, data } };
 }
@@ -90,17 +85,23 @@ export function parseTakaroRequest(message: WsMessage): TakaroRequest {
 
 /** Takaro sends args as [], {}, a JSON string ("{}", "[]", "{...}"), "" or null. */
 export function normalizeArgs(value: unknown): Record<string, unknown> {
-  if (value == null || Array.isArray(value)) return {};
+  if (value == null) return {};
+  let parsed = value;
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (!trimmed) return {};
     try {
-      return asRecord(JSON.parse(trimmed));
+      parsed = JSON.parse(trimmed);
     } catch {
-      return {};
+      throw new Error('Takaro request args contain invalid JSON');
     }
   }
-  return asRecord(value);
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return {};
+    throw new Error('Takaro request args must be an object or empty array');
+  }
+  if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+  throw new Error('Takaro request args must be an object or empty array');
 }
 
 export function asRecord(value: unknown): Record<string, unknown> {

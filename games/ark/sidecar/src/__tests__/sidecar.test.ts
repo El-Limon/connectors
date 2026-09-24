@@ -7,9 +7,85 @@ import { ArkAdapter } from '../adapter.js';
 import { EventPump } from '../eventPump.js';
 import { NativeClient, type NativeEvents } from '../native/client.js';
 import { FileCursorStore, MemoryCursorStore } from '../native/cursorStore.js';
+import { handleTakaroRequest } from '../requestHandler.js';
 import { TakaroWsClient } from '../takaro/client.js';
+import { normalizeArgs, type WsMessage } from '../takaro/protocol.js';
 
 const steam = '76561198000000000';
+
+describe('Takaro Generic failure contract', () => {
+  it('withholds failed replies so a void action times out while a concurrent success resolves', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sent: WsMessage[] = [];
+    const pending = new Map<string, { resolve: (value: unknown) => void; timer: NodeJS.Timeout }>();
+    const adapter = { handle: async (action: string) => {
+      if (action === 'kickPlayer') throw new Error('private native failure detail');
+      return {};
+    } } as unknown as ArkAdapter;
+    // Takaro's Generic connector resolves a matched void-action frame from
+    // payload alone, even when its type is "error" or it has a top-level error.
+    const send = (reply: WsMessage): boolean => {
+      sent.push(reply);
+      const request = pending.get(reply.requestId ?? '');
+      if (request) {
+        clearTimeout(request.timer);
+        pending.delete(reply.requestId ?? '');
+        request.resolve(reply.payload);
+      }
+      return true;
+    };
+    const ask = (requestId: string, action: string): Promise<unknown> => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(requestId);
+        reject(new Error(`Request timed out: ${action}`));
+      }, 30);
+      pending.set(requestId, { resolve, timer });
+      void handleTakaroRequest({ type: 'request', requestId, payload: { action, args: {} } }, adapter, send);
+    });
+    const failed = ask('failed', 'kickPlayer');
+    const failedExpectation = expect(failed).rejects.toThrow('Request timed out: kickPlayer');
+    const succeeded = ask('succeeded', 'sendMessage');
+    await expect(succeeded).resolves.toEqual({});
+    await failedExpectation;
+    expect(sent).toEqual([{ type: 'response', requestId: 'succeeded', payload: {} }]);
+    expect(pending.size).toBe(0);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('"category":"action-failed"');
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain('private native failure detail');
+    const oldAccepted = new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('legacy reply was not accepted')), 30);
+      pending.set('old-error', { resolve, timer });
+      send({ type: 'response', requestId: 'old-error', error: 'kick rejected' });
+    });
+    await expect(oldAccepted).resolves.toBeUndefined(); // Previous error frame falsely acknowledged a void action.
+    warn.mockRestore();
+  });
+
+  it('withholds a malformed request instead of acknowledging an unknown action', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const send = vi.fn(() => true);
+    const adapter = { handle: vi.fn() } as unknown as ArkAdapter;
+    await handleTakaroRequest({ type: 'request', requestId: 'malformed', payload: { args: {} } }, adapter, send);
+    expect(send).not.toHaveBeenCalled();
+    expect(adapter.handle).not.toHaveBeenCalled();
+    expect(String(warn.mock.calls[0]?.[0])).toContain('"category":"invalid-request"');
+    warn.mockRestore();
+  });
+
+  it('rejects malformed shutdown args before calling the adapter while retaining documented empty forms', async () => {
+    for (const value of [null, '', [], {}, '{}', '[]']) expect(normalizeArgs(value)).toEqual({});
+    expect(normalizeArgs('{"gameId":"test"}')).toEqual({ gameId: 'test' });
+    for (const value of ['{bad', '42', 42, true, [1]]) expect(() => normalizeArgs(value)).toThrow();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const send = vi.fn(() => true);
+    const adapter = { handle: vi.fn() } as unknown as ArkAdapter;
+    await handleTakaroRequest({ type: 'request', requestId: 'shutdown-bad',
+      payload: { action: 'shutdown', args: '{bad' } }, adapter, send);
+    expect(adapter.handle).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(String(warn.mock.calls[0]?.[0])).toContain('"category":"invalid-request"');
+    warn.mockRestore();
+  });
+});
 
 describe('native transport and narrow actions', () => {
   it('sends bearer auth and raw UTF-8 text, and accepts only native success acknowledgment', async () => {
@@ -315,32 +391,83 @@ describe('native transport and narrow actions', () => {
     }
   });
 
-  it('requires native kick, ban, and unban effect acknowledgments and rejects unsupported reason or expiry', async () => {
+  it('delivers a bounded kick reason before kick, rejects invalid reasons before HTTP, and keeps ban rules', async () => {
     const log = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const calls: { input: string; init?: RequestInit }[] = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       calls.push({ input: String(input), init });
-      return new Response(calls.length === 3 ? '{"success":false,"errorMessage":"effect unverified"}' : '{"success":true}',
-        { status: calls.length === 3 ? 503 : 200 });
+      return new Response(calls.length === 4 ? '{"success":false,"errorMessage":"effect unverified"}' : '{"success":true}',
+        { status: calls.length === 4 ? 503 : 200 });
     }) as typeof fetch;
     const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
-    await expect(adapter.handle('kickPlayer', { gameId: steam, reason: 'griefing' })).rejects.toThrow('reason');
+    for (const reason of [123, 'line\nbreak', 'line\u2028break', '\ud800', 'x'.repeat(481), '🙂'.repeat(300)]) {
+      await expect(adapter.handle('kickPlayer', { gameId: steam, reason })).rejects.toThrow('reason');
+    }
+    await expect(adapter.handle('banPlayer', { gameId: steam, reason: 'griefing' })).rejects.toThrow('reason');
+    await expect(adapter.handle('unbanPlayer', { gameId: steam, reason: 'griefing' })).rejects.toThrow('reason');
     await expect(adapter.handle('banPlayer', { gameId: steam, expiresAt: '2026-10-01T00:00:00Z' })).rejects.toThrow('Timed bans');
     await expect(adapter.handle('banPlayer', { gameId: 'not-steam' })).rejects.toThrow('Steam64');
     expect(calls).toHaveLength(0);
-    expect(await adapter.handle('kickPlayer', { gameId: steam })).toEqual({});
+    const reason = 'ARK kick diagnostic — réglage';
+    expect(await adapter.handle('kickPlayer', { gameId: steam, reason })).toEqual({});
     expect(await adapter.handle('banPlayer', { gameId: steam })).toEqual({});
     await expect(adapter.handle('unbanPlayer', { gameId: steam }, 'moderation-req')).rejects.toThrow('effect unverified');
-    expect(calls.map((call) => call.input)).toEqual(['kick', 'ban', 'unban'].map((action) =>
+    expect(calls.map((call) => call.input)).toEqual(['message', 'kick', 'ban', 'unban'].map((action) =>
       `http://127.0.0.1:18891/players/${steam}/${action}`));
-    expect(calls[0].init).toEqual(expect.objectContaining({ method: 'POST', body: '',
+    expect(calls[0].init).toEqual(expect.objectContaining({ method: 'POST', body: `Kick reason: ${reason}`,
       headers: { Authorization: 'Bearer secret', 'Content-Type': 'text/plain; charset=utf-8' } }));
+    expect(calls[1].init).toEqual(expect.objectContaining({ method: 'POST', body: '' }));
+    expect(calls[2].init).toEqual(expect.objectContaining({ method: 'POST', body: '' }));
+    expect(calls[3].init).toEqual(expect.objectContaining({ method: 'POST', body: '' }));
     const trace = String(log.mock.calls.at(-1)?.[0]);
     expect(trace).toContain('"requestId":"moderation-req"');
     expect(trace).toContain(`"path":"/players/${steam}/unban"`);
     expect(trace).toContain('"status":503');
     expect(trace).not.toContain('secret');
     log.mockRestore();
+  });
+
+  it('never kicks when a targeted reason message is unacknowledged, and skips it for empty reason', async () => {
+    const calls: string[] = [];
+    let messageAck = false;
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      calls.push(url);
+      return new Response(JSON.stringify({ success: !url.endsWith('/message') || messageAck }), { status: 200 });
+    }) as typeof fetch;
+    const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
+    await expect(adapter.handle('kickPlayer', { gameId: steam, reason: 'diagnostic' }))
+      .rejects.toThrow();
+    expect(calls).toEqual([`http://127.0.0.1:18891/players/${steam}/message`]);
+    messageAck = true;
+    expect(await adapter.handle('kickPlayer', { gameId: steam, reason: '' })).toEqual({});
+    expect(calls).toEqual([
+      `http://127.0.0.1:18891/players/${steam}/message`,
+      `http://127.0.0.1:18891/players/${steam}/kick`,
+    ]);
+  });
+
+  it('withholds a failed kick reply after a delivered reason without retrying the native kick', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const calls: { url: string; body: BodyInit | null | undefined }[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, body: init?.body });
+      return new Response(url.endsWith('/kick') ? '{"success":false,"errorMessage":"effect unverified"}' :
+        '{"success":true}', { status: url.endsWith('/kick') ? 503 : 200 });
+    }) as typeof fetch;
+    const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
+    const sent: WsMessage[] = [];
+    await handleTakaroRequest({ type: 'request', requestId: 'failed-kick', payload: { action: 'kickPlayer',
+      args: JSON.stringify({ player: { gameId: steam }, reason: 'diagnostic' }) } }, adapter,
+    (response) => { sent.push(response); return true; });
+    expect(calls).toEqual([
+      { url: `http://127.0.0.1:18891/players/${steam}/message`, body: 'Kick reason: diagnostic' },
+      { url: `http://127.0.0.1:18891/players/${steam}/kick`, body: '' },
+    ]);
+    expect(sent).toEqual([]);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('"response":"withheld"');
+    warn.mockRestore();
   });
 
   it('maps only a validated native Steam64 ban set and rejects unavailable or malformed data', async () => {
