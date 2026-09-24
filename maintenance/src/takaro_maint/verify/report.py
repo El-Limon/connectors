@@ -122,6 +122,8 @@ def build_report(
         coverage["verificationRunner"] = {"revision": runner_revision, "dirty": runner_dirty}
         revision = manifest.get("sourceRevision", revision)
         dirty = manifest.get("dirty", dirty)
+        if runtime.get("readOnlyBase") is not None:
+            coverage["readOnlyBase"] = runtime["readOnlyBase"]
     inputs: dict[str, Any] = {}
     for name, spec in target.record["inputs"].items():
         if spec["kind"] == "mojang-version":

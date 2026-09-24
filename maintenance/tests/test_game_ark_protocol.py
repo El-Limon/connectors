@@ -42,7 +42,7 @@ def test_ark_report_keeps_artifact_and_runner_revisions_separate(tmp_path: Path)
         game_record={},
         manifest={"version": "1.0", "sourceRevision": "artifact-commit", "dirty": False, "artifacts": []},
         artifacts_dir=tmp_path,
-        runtime={},
+        runtime={"readOnlyBase": {"readOnlyMount": True, "steamBuild": "21241282"}},
         checks=_rows(),
         started_at="2026-09-24T00:00:00Z",
         logs=[],
@@ -50,6 +50,7 @@ def test_ark_report_keeps_artifact_and_runner_revisions_separate(tmp_path: Path)
     )
     assert report["source"] == {"repo": "unknown", "revision": "artifact-commit", "dirty": False}
     assert report["coverage"]["verificationRunner"] == {"revision": "unknown", "dirty": True}
+    assert report["coverage"]["readOnlyBase"] == {"readOnlyMount": True, "steamBuild": "21241282"}
 
 
 @pytest.mark.parametrize(
@@ -92,7 +93,7 @@ def test_ark_native_shutdown_requires_sidecar_ack_and_clean_native_exit(
     asyncio.run(ark_verify.after_shutdown(run, FakeTakaro(), "", []))
     assert len(run.results) == 1
     assert run.results[0].id == "native-shutdown"
-    assert run.results[0].status == expected
+    assert run.results[0].status == expected, run.results[0].detail
 
 
 def test_ark_native_shutdown_rejects_unacknowledged_request(tmp_path: Path) -> None:
@@ -173,6 +174,48 @@ def test_ark_shutdown_log_rotation_fails_closed(tmp_path: Path) -> None:
     )
     with pytest.raises(RuntimeError, match="rotated or truncated"):
         ark_verify._fresh_shutdown_markers(log, before.st_dev, before.st_ino, before.st_size)
+
+
+@pytest.mark.parametrize(("write_save", "expected"), [(True, "pass"), (False, "fail")])
+def test_ark_readonly_shutdown_requires_fresh_owned_save(tmp_path: Path, write_save: bool, expected: str) -> None:
+    log = tmp_path / "server.log"
+    log.write_text("")
+    save = tmp_path / "ShooterGame/Saved/SavedArks/TheIsland.ark"
+
+    class FakeTakaro:
+        async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
+            assert (name, args) == ("shutdown", {})
+            with log.open("a") as stream:
+                stream.write(
+                    "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
+                    "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
+                )
+            if write_save:
+                save.parent.mkdir(parents=True)
+                save.write_bytes(b"fresh-world")
+            return {}
+
+    class FakeRun:
+        container = SimpleNamespace(wait_for_exit=lambda timeout: 134)
+        server_log = log
+        data_dir = tmp_path
+        options = SimpleNamespace(ark_readonly_base=tmp_path / "base")
+
+        def __init__(self) -> None:
+            self.results: list[object] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "native-shutdown"
+
+        def record(self, result: object) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_shutdown(run, FakeTakaro(), "", []))
+    assert run.results[0].status == expected, run.results[0].detail
 
 
 @pytest.mark.parametrize(

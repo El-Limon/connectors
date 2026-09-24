@@ -225,6 +225,7 @@ class RunOptions:
     keep_on_failure: bool = False
     negative: bool = False
     takaro: str = "local"
+    ark_readonly_base: Path | None = None
 
 
 class TargetRun:
@@ -252,6 +253,8 @@ class TargetRun:
         self.containers: list[Container] = []
         self.extra_logs: list[Path] = []
         self.results: list[base_checks.CheckResult] = []
+        self.readonly_inputs: list[dict[str, Any]] | None = None
+        self.readonly_provenance: dict[str, Any] | None = None
         self._cleaned = False
 
     # -- setup ----------------------------------------------------------------
@@ -272,6 +275,12 @@ class TargetRun:
 
     def install_and_deploy(self) -> dict[str, Any]:
         manifest_path = self.options.artifacts / "build-manifest.json"
+        if self.options.ark_readonly_base is not None:
+            if self.hooks.prepare_readonly_base is None:
+                raise UsageError(f"game '{self.target.game}' has no read-only base verification mode")
+            manifest = read_manifest(manifest_path)
+            self.readonly_inputs, self.readonly_provenance = self.hooks.prepare_readonly_base(self, manifest)
+            return manifest
         self._run_command(
             "install",
             ["install", "--game", self.target.game, "--target", self.target.id, "--dest", str(self.data_dir)],
@@ -303,6 +312,11 @@ class TargetRun:
 
     def container_mounts(self) -> list[str]:
         """The ``-v`` arguments this game's server needs; one data dir bound at /data by default."""
+        if self.options.ark_readonly_base is not None:
+            return [
+                f"{self.options.ark_readonly_base}:/ark-base:ro",
+                f"{self.data_dir}:/ark:rw",
+            ]
         return [str(mount) for mount in self.adapter.container_mounts(self.resolved, self.data_dir)]
 
     def ready_line(self) -> re.Pattern[str]:
@@ -347,6 +361,8 @@ class TargetRun:
         # A game that needs more than the run's own defaults appends them here -- docker
         # takes the last value of a repeated option, so these win over what is above.
         argv += [str(option) for option in self.adapter.container_options(self.resolved, self.data_dir)]
+        if self.options.ark_readonly_base is not None:
+            argv += ["--memory", "12g"]
         for key, value in sorted(environment.items()):
             argv += ["-e", f"{key}={value}"]
         for mount in self.container_mounts():
@@ -507,9 +523,12 @@ class TargetRun:
     async def _run(self, started_at: str) -> dict[str, Any]:
         self._select_default_checks()
         manifest = self.install_and_deploy()
-        ledger = read_ledger(self.data_dir)
-        assert ledger is not None
-        ledger_inputs = ledger.data["inputs"]
+        if self.readonly_inputs is not None:
+            ledger_inputs = self.readonly_inputs
+        else:
+            ledger = read_ledger(self.data_dir)
+            assert ledger is not None
+            ledger_inputs = ledger.data["inputs"]
 
         if self.options.takaro == "hosted":
             if self.hooks.run_hosted is None:
@@ -527,7 +546,9 @@ class TargetRun:
         ws_url = f"ws://host.docker.internal:{port}/"
         output.info(f"fake Takaro listening on {fake.host}:{port} (no host ports published)")
 
-        runtime: dict[str, Any] = {}
+        runtime: dict[str, Any] = (
+            {"readOnlyBase": self.readonly_provenance} if self.readonly_provenance is not None else {}
+        )
         try:
             container = self.boot(ws_url)
             alive = container.alive
@@ -540,7 +561,7 @@ class TargetRun:
                         self.server_log,
                         self.startup_timeout,
                         alive,
-                        self.data_dir,
+                        self.options.ark_readonly_base or self.data_dir,
                         ledger_inputs,
                         self.ready_line(),
                     )
@@ -559,6 +580,8 @@ class TargetRun:
                     "loaderVersion": identity.get("loaderVersion"),
                     "java": self.target.record["runtime"]["java"],
                 }
+                if self.readonly_provenance is not None:
+                    runtime["readOnlyBase"] = self.readonly_provenance
 
                 if self.wanted("connector-load"):
                     self.record(

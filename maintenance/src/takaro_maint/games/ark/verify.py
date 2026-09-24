@@ -25,6 +25,7 @@ from ... import net
 from ...verify import checks
 from ...verify.hooks import GameHooks
 from ...verify.runner import Container, docker_command
+from .readonly_base import prepare as prepare_readonly_base
 
 CHECK_IDS = (
     "native-health",
@@ -229,6 +230,29 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     _wait_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
                 )
                 detail["health"] = health
+                if run.options.ark_readonly_base is not None:
+                    if run.container is None:
+                        raise RuntimeError("read-only ARK game container was not started")
+                    paths = await asyncio.to_thread(
+                        subprocess.run,
+                        [
+                            *docker_command(),
+                            "exec",
+                            run.container.name,
+                            "bash",
+                            "-lc",
+                            "readlink -f /proc/1/exe; readlink -f /ark/ShooterGame/Saved",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    detail["readOnlyPaths"] = paths.stdout.splitlines()
+                    if paths.returncode or paths.stdout.splitlines() != [
+                        "/ark/ShooterGame/Binaries/Linux/ShooterGameServer",
+                        "/ark/ShooterGame/Saved",
+                    ]:
+                        problems.append("ARK process executable or Saved path escapes the owned runtime tree")
                 if health.get("status") != "ok" or health.get("build") != str(run.target.record["revision"]):
                     problems.append("native status/build does not match the pinned target")
                 if not health.get("bootId"):
@@ -385,6 +409,15 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
                         shutdown_problems.append(f"native shutdown {label} completion marker is missing")
                 if exit_code != 134:
                     shutdown_problems.append(f"native shutdown exit status {exit_code} != expected 134")
+                if getattr(getattr(run, "options", None), "ark_readonly_base", None) is not None:
+                    save = run.data_dir / "ShooterGame/Saved/SavedArks/TheIsland.ark"
+                    saved = save.stat() if save.is_file() else None
+                    shutdown_detail["ownedSave"] = {
+                        "path": "ShooterGame/Saved/SavedArks/TheIsland.ark",
+                        "size": saved.st_size if saved else None,
+                    }
+                    if not saved or saved.st_size <= 0:
+                        shutdown_problems.append("native shutdown left no TheIsland.ark in the fresh owned Saved tree")
         except Exception as exc:
             shutdown_problems.append(str(exc))
         run.record(_result("native-shutdown", shutdown_problems, started, **shutdown_detail))
@@ -406,9 +439,17 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
             if proc.returncode:
                 stop_problems.append(f"docker stop failed: {proc.stderr.strip()[:160]}")
         for entry in ledger_inputs:
-            path = run.data_dir / entry["path"]
+            path = (run.options.ark_readonly_base or run.data_dir) / entry["path"]
             if not path.is_file() or net.hash_file(path).get("sha256") != entry.get("sha256"):
                 stop_problems.append(f"pinned input changed or disappeared: {entry['path']}")
+            if run.options.ark_readonly_base is not None:
+                owned = run.data_dir / entry["path"]
+                if (
+                    owned.is_symlink()
+                    or not owned.is_file()
+                    or net.hash_file(owned).get("sha256") != entry.get("sha256")
+                ):
+                    stop_problems.append(f"owned pinned input changed or disappeared: {entry['path']}")
         run.record(_result("stop", stop_problems, started))
     else:
         run.skip("stop", "not selected by --checks")
@@ -543,5 +584,6 @@ HOOKS = GameHooks(
     unsupported_checks=UNSUPPORTED_CHECKS,
     after_protocol=after_protocol,
     after_shutdown=after_shutdown,
+    prepare_readonly_base=prepare_readonly_base,
     negative=negative,
 )
