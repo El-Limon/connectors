@@ -29,6 +29,10 @@ int main() {
     ark_save::Api api{};
     api.game_thread_tid = syscall(SYS_gettid);
     api.moderation.shooter_game_mode_class = &game_mode_class;
+    api.moderation.expected_game_mode_class = reinterpret_cast<uintptr_t>(&game_mode_class);
+    std::memcpy(api.moderation.game_mode_class_prologue.data(),
+                reinterpret_cast<const void*>(&game_mode_class),
+                api.moderation.game_mode_class_prologue.size());
     api.expected_target = target;
     api.text_min = target - 1;
     api.text_max = target + 4096;
