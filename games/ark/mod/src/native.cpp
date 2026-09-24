@@ -832,7 +832,6 @@ void tick_hook(void* loop) {
           } else {
             success = true;
             const auto ids = g_gate->player_ids();
-            if (ids.empty()) success = false;
             for (const auto& id : ids) {
               void* controller = resolve_live_controller(id);
               if (!send_queued_rpc(controller, action->text)) success = false;
