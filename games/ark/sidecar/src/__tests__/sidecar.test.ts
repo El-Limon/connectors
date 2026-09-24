@@ -94,27 +94,59 @@ describe('native transport and narrow actions', () => {
     expect(unavailable).toHaveBeenCalledTimes(1); // never retry an ambiguous shutdown
   });
 
-  it('passes through only native-verified ListPlayers CommandOutput, including HTTP 503 failures', async () => {
+  it('passes through bounded native-handled console output, including empty success and HTTP 503 failures', async () => {
     const calls: { input: string; init?: RequestInit }[] = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       calls.push({ input: String(input), init });
       const ok = calls.length === 1;
       return new Response(JSON.stringify(ok ?
-        { success: true, rawResult: `${steam} Survivor`, errorMessage: null } :
-        { success: false, rawResult: '', errorMessage: 'No verified live Steam64 in output' }), { status: ok ? 200 : 503 });
+        { success: true, rawResult: '', errorMessage: null } :
+        { success: false, rawResult: 'unknown command', errorMessage: 'native console rejected or unhandled' }),
+      { status: ok ? 200 : 503 });
     }) as typeof fetch;
     const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
-    await expect(adapter.handle('executeConsoleCommand', { command: 'listplayers' })).rejects.toThrow('Only the verified');
-    expect(calls).toHaveLength(0);
-    expect(await adapter.handle('executeConsoleCommand', { command: 'ListPlayers' })).toEqual({
-      success: true, rawResult: `${steam} Survivor`, errorMessage: null,
+    expect(await adapter.handle('executeConsoleCommand', { command: 'SaveWorld' }, 'console-1')).toEqual({
+      success: true, rawResult: '', errorMessage: null,
     });
-    expect(await adapter.handle('executeConsoleCommand', { command: 'ListPlayers' })).toEqual({
-      success: false, rawResult: '', errorMessage: 'No verified live Steam64 in output',
+    expect(await adapter.handle('executeConsoleCommand', { command: 'unknown command' })).toEqual({
+      success: false, rawResult: 'unknown command', errorMessage: 'native console rejected or unhandled',
     });
     expect(calls[0]).toEqual({ input: 'http://127.0.0.1:18891/console', init: expect.objectContaining({
-      method: 'POST', headers: { Authorization: 'Bearer secret', 'Content-Type': 'text/plain; charset=utf-8' }, body: 'ListPlayers',
+      method: 'POST', headers: { Authorization: 'Bearer secret', 'Content-Type': 'text/plain; charset=utf-8' }, body: 'SaveWorld',
     }) });
+    expect(calls[1]?.init?.body).toBe('unknown command');
+  });
+
+  it('rejects malformed or oversized console commands before native HTTP', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"success":true,"rawResult":"","errorMessage":null}')) as typeof fetch;
+    const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
+    for (const command of [undefined, '', '   ', 'save\nworld', 'save\rworld', 'save\0world',
+      'save\x7fworld', 'save\u0085world', 'save\u2028world', 'save\ud800world',
+      'x'.repeat(1025), '😀'.repeat(1025)]) {
+      await expect(adapter.handle('executeConsoleCommand', { command })).rejects.toThrow('executeConsoleCommand');
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed native console acknowledgments', async () => {
+    const payloads = [
+      { status: 200, body: { success: true, rawResult: '', errorMessage: 'wrong' } },
+      { status: 503, body: { success: false, rawResult: '', errorMessage: null } },
+      { status: 200, body: { success: 'true', rawResult: '', errorMessage: null } },
+      { status: 200, body: { success: true, rawResult: 'x'.repeat(32769), errorMessage: null } },
+      { status: 503, body: { success: false, rawResult: '', errorMessage: 'x'.repeat(1025) } },
+      { status: 200, body: { success: false, rawResult: '', errorMessage: 'failed' } },
+      { status: 503, body: { success: true, rawResult: '', errorMessage: null } },
+    ];
+    const fetchImpl = vi.fn(async () => {
+      const next = payloads.shift()!;
+      return new Response(JSON.stringify(next.body), { status: next.status });
+    }) as typeof fetch;
+    const adapter = new ArkAdapter(new NativeClient('http://127.0.0.1:18891', 'secret', 1000, fetchImpl));
+    for (let index = 0; index < 7; index++) {
+      await expect(adapter.handle('executeConsoleCommand', { command: 'ListPlayers' })).rejects.toThrow('Native console');
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
   });
 
   it('returns null for an absent player and maps real Steam64 records', async () => {

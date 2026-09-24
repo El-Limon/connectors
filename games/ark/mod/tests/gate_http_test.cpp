@@ -318,20 +318,30 @@ int main() {
     check(unban_action->kind == gate::Action::Kind::unban, "unban queues exact native action");
     gate::Server::complete(unban_action, true);
     check(status(unban_request.get(), 200), "verified in-memory unban acknowledgement returned");
-    check(status(request(port, "/console", token, "DestroyAll", "POST"), 400),
-          "unverified console command is rejected before dispatch");
+    check(status(request(port, "/console", token, "", "POST"), 400),
+          "empty console command is rejected before dispatch");
+    check(status(request(port, "/console", token, "ListPlayers\nExit", "POST"), 400),
+          "multi-line console command is rejected before dispatch");
     auto console_request = std::async(std::launch::async, [&] {
-      return request(port, "/console", token, "ListPlayers", "POST");
+      return request(port, "/console", token, "ServerChat ARK CONSOLE TEST", "POST");
     });
     auto console_action = wait_action(server);
-    check(console_action->kind == gate::Action::Kind::console,
-          "verified console command is queued");
-    console_action->output = "0. Survivor, 76561198000000001";
+    check(console_action->kind == gate::Action::Kind::console &&
+          console_action->command == "ServerChat ARK CONSOLE TEST",
+          "bounded native console command is queued unchanged");
+    console_action->output = "native handled";
     gate::Server::complete(console_action, true);
     const auto console_result = console_request.get();
     check(status(console_result, 200) &&
-          console_result.find("\"rawResult\":\"0. Survivor, 76561198000000001\"") != std::string::npos,
-          "console output is returned only after game-thread completion");
+          console_result.find("\"rawResult\":\"native handled\"") != std::string::npos,
+          "console handled output is returned only after game-thread completion");
+    auto unhandled = std::async(std::launch::async, [&] {
+      return request(port, "/console", token, "UnknownNativeCommand", "POST");
+    });
+    auto unhandled_action = wait_action(server);
+    check(unhandled_action->command == "UnknownNativeCommand", "unknown command reaches native dispatcher");
+    gate::Server::complete(unhandled_action, false);
+    check(status(unhandled.get(), 503), "native unhandled command cannot report success");
     server.record_logout(location_steam);
 
     auto accepted = std::async(std::launch::async, [&] { return request(port, "/message", token, "hello ARK", "POST"); });

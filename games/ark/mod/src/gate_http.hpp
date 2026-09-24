@@ -1,5 +1,7 @@
 #pragma once
 
+#include "engine_exec_bindings.hpp"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -34,6 +36,7 @@ struct Action {
   std::string player_id;
   std::string item_code;
   std::string output;
+  std::string command;
   int32_t amount = 0;
   float quality = 0;
   bool blueprint = false;
@@ -976,14 +979,18 @@ class Server {
     }
     if (method == "POST" && path == "/console") {
       if (!ready_) { reply(c, 503, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"game thread not ready\"}"); return; }
-      if (body != "ListPlayers") { reply(c, 400, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"command unavailable\"}"); return; }
+      std::wstring decoded_command;
+      if (!ark_engine_exec::decode_command(body, decoded_command)) {
+        reply(c, 400, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"invalid command\"}"); return;
+      }
       auto action = std::make_shared<Action>();
       action->kind = Action::Kind::console;
+      action->command = body;
       bool queued = false;
       { std::lock_guard<std::mutex> lock(mutex_);
-        if (actions_.size() < 128 && !players_.empty()) { actions_.push_back(action); queued = true; }
+        if (actions_.size() < 128) { actions_.push_back(action); queued = true; }
       }
-      if (!queued) { reply(c, 503, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"no native recipient or queue full\"}"); return; }
+      if (!queued) { reply(c, 503, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"queue full\"}"); return; }
       std::unique_lock<std::mutex> lock(action->mutex);
       if (!action->done_cv.wait_for(lock, std::chrono::seconds(3), [&] { return action->done; })) {
         if (!action->executing) {
@@ -995,7 +1002,7 @@ class Server {
       reply(c, action->success ? 200 : 503,
           "{\"success\":" + std::string(action->success ? "true" : "false") +
           ",\"rawResult\":" + escape(action->output) +
-          ",\"errorMessage\":" + (action->success ? "null" : "\"console output unverified\"") + "}");
+          ",\"errorMessage\":" + (action->success ? "null" : "\"native console rejected or unhandled\"") + "}");
       return;
     }
     if (method == "POST" && path.rfind("/players/", 0) == 0 &&

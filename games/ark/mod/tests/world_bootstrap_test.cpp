@@ -43,6 +43,11 @@ template <size_t N> void mock_binding(uintptr_t& expected, std::array<uint8_t, N
 
 int main() {
   using namespace ark_world_bootstrap;
+  const Api exact_build{};
+  assert(exact_build.expected_world_class == 0x2D1E730);
+  assert(exact_build.world_class_bytes ==
+      (std::array<uint8_t, 14>{0x55, 0x48, 0x89, 0xE5, 0x48, 0x8B, 0x05,
+                               0x4D, 0x97, 0xC8, 0x02, 0x48, 0x85, 0xC0}));
   put(engine.data(), 0x920, static_cast<void*>(context_ptrs));
   put<int32_t>(engine.data(), 0x928, 1);
   put<int32_t>(engine.data(), 0x92C, 2);

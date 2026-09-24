@@ -66,6 +66,9 @@ int main() {
 
   const int before_invalid = handler_calls;
   assert(execute(&world_storage, expected_key, "bad\ncommand", api) == Status::invalid);
+  assert(execute(&world_storage, expected_key, " \xC2\xA0 ", api) == Status::invalid);
+  assert(execute(&world_storage, expected_key, "bad\xC2\x85" "command", api) == Status::invalid);
+  assert(execute(&world_storage, expected_key, "bad\xE2\x80\xA8" "command", api) == Status::invalid);
   assert(execute(&world_storage, expected_key, "\xC0\xAF", api) == Status::invalid);
   assert(execute(&world_storage, expected_key, "\xED\xA0\x80", api) == Status::invalid);
   assert(execute(&world_storage, expected_key, std::string(4097, 'x'), api) == Status::invalid);

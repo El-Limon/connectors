@@ -79,13 +79,13 @@ export class NativeClient {
   }
   console(command: string, requestId?: string): Promise<{ success: boolean; rawResult: string; errorMessage: string | null }> {
     // A native 503 carries a valid CommandOutput failure, not a transport ack.
-    return this.request('POST', '/console', command, requestId, 'text/plain; charset=utf-8', 503);
+    return this.request('POST', '/console', command, requestId, 'text/plain; charset=utf-8', 503, true);
   }
   shutdown(requestId?: string): Promise<{ success: boolean }> {
     return this.request('POST', '/shutdown', '', requestId);
   }
 
-  private async request<T>(method: 'GET' | 'POST', route: string, text?: string, requestId?: string, contentType = 'text/plain; charset=utf-8', acceptedFailureStatus?: number): Promise<T> {
+  private async request<T>(method: 'GET' | 'POST', route: string, text?: string, requestId?: string, contentType = 'text/plain; charset=utf-8', acceptedFailureStatus?: number, strictConsoleStatus = false): Promise<T> {
     const signal = AbortSignal.timeout(this.timeoutMs);
     const traced = requestId !== undefined;
     const trace = (status: number | null, itemCount?: number): void => {
@@ -108,6 +108,13 @@ export class NativeClient {
       status = response.status;
       if (!response.ok && status !== acceptedFailureStatus) throw new NativeHttpError(status, route.split('?')[0]);
       const payload = (await response.json()) as T;
+      if (strictConsoleStatus) {
+        const success = (payload as { success?: unknown } | null)?.success;
+        if (typeof success !== 'boolean' || (status !== 200 && status !== 503) ||
+            (status === 200) !== success) {
+          throw new Error('Native console status does not match its acknowledgment');
+        }
+      }
       const page = payload as { items?: unknown };
       trace(status, route === '/locations' && Array.isArray(payload) ? payload.length :
         route.endsWith('/inventory') && Array.isArray(payload) ? payload.length :

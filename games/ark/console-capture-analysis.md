@@ -21,13 +21,18 @@ base vtable therefore provides a simpler capture device without that context.
 SysV argument (`RCX`) and returns a handled boolean. This boolean says nothing
 about a command's side effects.
 
-The separate `engine_exec_capture.hpp` helper copies all six base vtable
-entries and substitutes only `Serialize` with a no-throw fixed 8192-codepoint
-collector. It validates the exact constructor, resolver, free, and Exec
-function prologues and is currently restricted to `ListPlayers`. Output
-overflow fails closed as `output_truncated`; empty output and unhandled
-commands remain distinguishable. No game/runtime call has exercised this
-helper yet.
+The earlier `engine_exec_capture.hpp` probe copies all six base vtable entries
+and substitutes only `Serialize` with a no-throw fixed 8192-codepoint
+collector. It is restricted to `ListPlayers`; the v15 live probe did not
+verify an output or effect. The newer `general_console_bindings.hpp` uses the
+same bounded device with the game-owned `ShooterGameMode` manager at `+0x7D0`.
+The game's own path calls that manager's virtual `+0x200` command dispatcher,
+then falls back to `GEngine::Exec` when absent or unhandled. It validates
+class, weak lifetime, exact targets, and game thread before dispatch. A
+handled result acknowledges native dispatch, while command effects still
+require independent live evidence. Output overflow fails closed; empty output
+and unhandled commands remain distinguishable. The general route has passed
+isolated tests and has not yet been deployed or proven by a real client.
 
 Reproduce the referenced bytes offline:
 

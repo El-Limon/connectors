@@ -52,6 +52,7 @@ inline bool plausible(const void* p) {
 inline bool decode_command(std::string_view input, std::wstring& output) {
   if (input.empty() || input.size() > 4096 || sizeof(wchar_t) != 4) return false;
   output.clear();
+  bool has_nonspace = false;
   for (size_t i = 0; i < input.size();) {
     const uint8_t first = static_cast<uint8_t>(input[i]);
     uint32_t code = 0;
@@ -69,12 +70,17 @@ inline bool decode_command(std::string_view input, std::wstring& output) {
     }
     if ((length == 2 && code < 0x80) || (length == 3 && code < 0x800) ||
         (length == 4 && code < 0x10000) || code > 0x10FFFF ||
-        (code >= 0xD800 && code <= 0xDFFF) || code < 0x20 || code == 0x7F) return false;
+        (code >= 0xD800 && code <= 0xDFFF) || code < 0x20 ||
+        (code >= 0x7F && code <= 0x9F) || code == 0x2028 || code == 0x2029) return false;
+    const bool space = code == 0x20 || code == 0xA0 ||
+        (code >= 0x2000 && code <= 0x200A) || code == 0x202F ||
+        code == 0x205F || code == 0x3000 || code == 0xFEFF;
+    if (!space) has_nonspace = true;
     output.push_back(static_cast<wchar_t>(code));
     if (output.size() > 1024) return false;
     i += length;
   }
-  return !output.empty();
+  return has_nonspace;
 }
 
 inline Status execute(void* world, WeakWorld key, std::string_view command,

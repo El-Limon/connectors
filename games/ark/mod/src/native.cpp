@@ -7,6 +7,7 @@
 #include "death_bindings.hpp"
 #include "entity_bindings.hpp"
 #include "engine_exec_capture.hpp"
+#include "general_console_bindings.hpp"
 #include "gate_http.hpp"
 #include "inventory_bindings.hpp"
 #include "log_tail.hpp"
@@ -777,34 +778,27 @@ void tick_hook(void* loop) {
         } else if (action->kind == gate::Action::Kind::console) {
           void* world = resolve_live_world();
           const uint64_t packed = g_world_weak.load(std::memory_order_acquire);
-          ark_engine_capture::Status console_status = ark_engine_capture::Status::invalid;
+          ark_general_console::Status console_status = ark_general_console::Status::rejected;
           if (world && packed) {
-            ark_engine_capture::Api api{};
+            ark_general_console::Api api{};
             api.game_thread_tid = tid;
             const ark_engine_exec::WeakWorld key{
                 static_cast<int32_t>(packed >> 32), static_cast<int32_t>(packed & 0xffffffffu)};
-            const auto result = ark_engine_capture::list_players(world, key, api);
+            const auto result = ark_general_console::execute(world, key, action->command, api);
             console_status = result.status;
             action->output = result.output;
-            if (result.status == ark_engine_capture::Status::handled) {
-              for (const auto& id : g_gate->player_ids()) {
-                if (resolve_live_controller(id) && action->output.find(id) != std::string::npos) {
-                  success = true;
-                  break;
-                }
-              }
-            }
+            success = result.status == ark_general_console::Status::handled;
           }
-          const char* status_name = console_status == ark_engine_capture::Status::handled
-              ? "handled" : console_status == ark_engine_capture::Status::unhandled
-              ? "unhandled" : console_status == ark_engine_capture::Status::output_truncated
+          const char* status_name = console_status == ark_general_console::Status::handled
+              ? "handled" : console_status == ark_general_console::Status::unhandled
+              ? "unhandled" : console_status == ark_general_console::Status::output_truncated
               ? "output-truncated" : "invalid";
           char console_label[192];
           std::snprintf(console_label, sizeof(console_label),
-              "native-console-listplayers status=%s output-bytes=%zu player-id-present=%d",
-              status_name, action->output.size(), success ? 1 : 0);
+              "native-console-dispatch status=%s output-bytes=%zu",
+              status_name, action->output.size());
           enqueue(console_label);
-          enqueue(success ? "native-console-listplayers-verified" : "native-console-listplayers-unverified");
+          enqueue(success ? "native-console-handled-effect-unverified" : "native-console-unhandled-or-rejected");
         } else if (action->kind == gate::Action::Kind::kick ||
                    action->kind == gate::Action::Kind::ban ||
                    action->kind == gate::Action::Kind::unban) {

@@ -30,7 +30,9 @@ at `0x2F260F0`. The thunk reads the three parameters and directly calls
 The native implementation clears the output count, resolves the world from
 the caller's context, checks the class hierarchy, iterates actors, skips
 pending-kill objects, and appends matches. The installed APlayerStart class
-getter is `0x2E42CA0`. Its reflected `PlayerStartTag` FName is at `+0x494`
+getter is `0x2E42C80`. Address `0x2E42CA0` lands inside a later call
+instruction and must never be used as a function entry. Its reflected
+`PlayerStartTag` FName is at `+0x494`
 and `SpawnPointRegion` int32 at `+0x49C`, per property registration
 `0x2E42CF1–0x2E42DFF`. The `GetActorBounds` ASCII registration
 at `0x2D79E60` points to exec thunk `0x2F4BBC0`, which calls native

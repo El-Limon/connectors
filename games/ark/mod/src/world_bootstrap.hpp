@@ -21,7 +21,7 @@ using ClassGetter = void* (*)();
 
 struct Api {
   void* const* engine_global = reinterpret_cast<void* const*>(0x59958F8);
-  ClassGetter world_class = reinterpret_cast<ClassGetter>(0x2D1DF50);
+  ClassGetter world_class = reinterpret_cast<ClassGetter>(0x2D1E730);
   ClassGetter game_mode_class = reinterpret_cast<ClassGetter>(0x13CCDA0);
   CreateWeak create_weak = reinterpret_cast<CreateWeak>(0x1D56970);
   ResolveWeak resolve_weak = reinterpret_cast<ResolveWeak>(0x1D56C70);
@@ -35,7 +35,7 @@ struct Api {
   uintptr_t expected_engine_reference = 0x81FF53;
   uintptr_t expected_context_lookup = 0x2933F90;
   uintptr_t expected_game_context_creation = 0x263010D;
-  uintptr_t expected_world_class = 0x2D1DF50;
+  uintptr_t expected_world_class = 0x2D1E730;
   uintptr_t expected_mode_class = 0x13CCDA0;
   uintptr_t expected_create_weak = 0x1D56970;
   uintptr_t expected_resolve_weak = 0x1D56C70;
@@ -44,8 +44,9 @@ struct Api {
                                                 0x8B, 0x8F, 0x28, 0x09, 0x00, 0x00};
   std::array<uint8_t, 10> game_context_bytes{0xBE, 0x01, 0x00, 0x00, 0x00,
                                               0xE8, 0xF9, 0xED, 0x2F, 0x00};
-  std::array<uint8_t, 8> world_class_bytes{0x55, 0x48, 0x89, 0xE5,
-                                            0x48, 0x8B, 0x05, 0xE5};
+  std::array<uint8_t, 14> world_class_bytes{0x55, 0x48, 0x89, 0xE5,
+                                              0x48, 0x8B, 0x05, 0x4D, 0x97, 0xC8, 0x02,
+                                              0x48, 0x85, 0xC0};
   std::array<uint8_t, 8> mode_class_bytes{0x55, 0x48, 0x89, 0xE5,
                                            0x48, 0x8B, 0x05, 0x25};
   std::array<uint8_t, 10> create_weak_bytes{0x55, 0x48, 0x89, 0xE5,

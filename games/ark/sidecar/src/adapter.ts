@@ -90,6 +90,21 @@ function itemQuality(value: unknown): number {
   return quality;
 }
 
+function consoleCommand(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || Buffer.byteLength(value, 'utf8') > 4096) {
+    throw new Error('executeConsoleCommand requires nonempty text within 4096 UTF-8 bytes');
+  }
+  let codepoints = 0;
+  for (const scalar of value) {
+    const code = scalar.codePointAt(0)!;
+    if (++codepoints > 1024 || code < 0x20 || (code >= 0x7f && code <= 0x9f) ||
+        (code >= 0xd800 && code <= 0xdfff) || code === 0x2028 || code === 0x2029) {
+      throw new Error('executeConsoleCommand contains controls or exceeds 1024 code points');
+    }
+  }
+  return value;
+}
+
 export class ArkAdapter {
   constructor(private readonly native: NativeClient) {}
 
@@ -307,14 +322,13 @@ export class ArkAdapter {
         });
       }
       case 'executeConsoleCommand': {
-        if (args.command !== 'ListPlayers') {
-          throw new Error('Only the verified native ListPlayers console command is available on this build');
-        }
-        const output = await this.native.console('ListPlayers', requestId);
+        const output = await this.native.console(consoleCommand(args.command), requestId);
         if (!output || typeof output.success !== 'boolean' || typeof output.rawResult !== 'string' ||
+            Buffer.byteLength(output.rawResult, 'utf8') > 32768 ||
             (output.errorMessage !== null && typeof output.errorMessage !== 'string') ||
             (output.success && output.errorMessage !== null) ||
-            (!output.success && !output.errorMessage)) {
+            (!output.success && !output.errorMessage?.trim()) ||
+            (typeof output.errorMessage === 'string' && Buffer.byteLength(output.errorMessage, 'utf8') > 1024)) {
           throw new Error('Native console output is invalid');
         }
         return { success: output.success, rawResult: output.rawResult, errorMessage: output.errorMessage };
