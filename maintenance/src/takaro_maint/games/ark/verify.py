@@ -79,7 +79,7 @@ def start_sidecar(run: Any, fake: Any) -> Container:
             *docker_command(),
             "build",
             "-f",
-            "Dockerfile",
+            str(source / "Dockerfile"),
             "-t",
             image,
             "--label",

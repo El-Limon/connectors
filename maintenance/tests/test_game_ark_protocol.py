@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from takaro_maint.catalog import schema
 from takaro_maint.games.ark import verify as ark_verify
 from takaro_maint.verify.report import GAME_PROTOCOL_CHECKS, build_report, level_for
 
@@ -51,6 +52,75 @@ def test_ark_report_keeps_artifact_and_runner_revisions_separate(tmp_path: Path)
     assert report["source"] == {"repo": "unknown", "revision": "artifact-commit", "dirty": False}
     assert report["coverage"]["verificationRunner"] == {"revision": "unknown", "dirty": True}
     assert report["coverage"]["readOnlyBase"] == {"readOnlyMount": True, "steamBuild": "21241282"}
+
+
+def test_ark_readonly_report_provenance_validates_against_published_schema(tmp_path: Path) -> None:
+    target = SimpleNamespace(
+        game="ark",
+        id="pinned-ark",
+        fingerprint="a" * 64,
+        record={
+            "inputs": {},
+            "runtime": {"container": {"image": "server", "tag": "pinned", "digest": "sha256:" + "b" * 64}},
+        },
+    )
+    provenance = {
+        "path": str(tmp_path),
+        "readOnlyMount": True,
+        "steamApp": "376030",
+        "steamBuild": "21241282",
+        "depotManifests": {"376031": "6366771435093287465"},
+        "appManifestSha256": "c" * 64,
+    }
+    report = build_report(
+        target=target,
+        game_record={},
+        manifest={"version": "1.0", "sourceRevision": "artifact-commit", "dirty": False, "artifacts": []},
+        artifacts_dir=tmp_path,
+        runtime={"readOnlyBase": provenance},
+        checks=[{**row, "durationMs": 0, "detail": {}} for row in _rows()],
+        started_at="2026-09-24T00:00:00Z",
+        logs=[],
+        repo_root=tmp_path,
+    )
+    assert schema.errors_for("verify-report.schema.json", report) == []
+    report["coverage"]["readOnlyBase"]["readOnlyMount"] = False
+    assert any("readOnlyMount" in error for error in schema.errors_for("verify-report.schema.json", report))
+
+
+def test_sidecar_build_uses_packaged_dockerfile_outside_repository_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = tmp_path / "data"
+    out = tmp_path / "out"
+    out.mkdir()
+    source = data / ark_verify.SIDECAR_FOLDER
+    (source / "dist").mkdir(parents=True)
+    for name in ("Dockerfile", "dist/index.js", "package-lock.json"):
+        (source / name).write_text("fixture", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def failed_build(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        calls.append(argv)
+        return SimpleNamespace(returncode=1, stdout="", stderr="fixture build refusal")
+
+    monkeypatch.setattr(ark_verify.subprocess, "run", failed_build)
+    monkeypatch.setattr(ark_verify, "docker_command", lambda: ["docker"])
+    run = SimpleNamespace(data_dir=data, out=out, options=SimpleNamespace(run_id="fixture"))
+    with pytest.raises(RuntimeError, match="sidecar image build failed"):
+        ark_verify.start_sidecar(run, None)
+    assert calls[0] == [
+        "docker",
+        "build",
+        "-f",
+        str(source / "Dockerfile"),
+        "-t",
+        "takaro-ark-sidecar:tm-fixture",
+        "--label",
+        "tm.run=fixture",
+        str(source),
+    ]
 
 
 @pytest.mark.parametrize(
