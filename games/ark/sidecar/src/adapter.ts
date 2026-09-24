@@ -283,17 +283,28 @@ export class ArkAdapter {
       case 'kickPlayer':
       case 'banPlayer':
       case 'unbanPlayer': {
-        if (typeof args.reason === 'string' && args.reason.trim()) {
-          throw new Error(`${action} reason is unsupported by this native route`);
-        }
         if (args.reason != null && typeof args.reason !== 'string') {
           throw new Error(`${action} reason must be text`);
+        }
+        const reason = typeof args.reason === 'string' ? args.reason : '';
+        if (action === 'kickPlayer') {
+          if (Buffer.byteLength(reason, 'utf8') > 1000 || [...reason].length > 480 ||
+              /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ud800-\udfff]/u.test(reason)) {
+            throw new Error('kickPlayer reason must be a single line of at most 480 characters');
+          }
+        } else if (reason.trim()) {
+          throw new Error(`${action} reason is unsupported by this native route`);
         }
         if (action === 'banPlayer' && args.expiresAt != null) {
           throw new Error('Timed bans are unsupported by this native route');
         }
         const nativeAction = action === 'kickPlayer' ? 'kick' : action === 'banPlayer' ? 'ban' : 'unban';
-        const ack = await this.native.moderate(playerId(args), nativeAction, requestId);
+        const id = playerId(args);
+        if (action === 'kickPlayer' && reason.trim()) {
+          const notice = await this.native.messageTo(id, `Kick reason: ${reason}`, requestId);
+          if (!notice || notice.success !== true) throw new Error('Native kick reason notice was not queued');
+        }
+        const ack = await this.native.moderate(id, nativeAction, requestId);
         if (!ack || ack.success !== true) {
           throw new Error(typeof ack?.errorMessage === 'string' && ack.errorMessage.trim() ? ack.errorMessage :
             `Native ${nativeAction} effect was not verified`);
