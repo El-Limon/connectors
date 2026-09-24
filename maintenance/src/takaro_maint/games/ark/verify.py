@@ -47,7 +47,7 @@ CHECK_IDS = (
 )
 READY_LINE = re.compile(r"ARK_NATIVE_DIAG .*main-loop-tick count=1")
 SHUTDOWN_SAVE_LINE = re.compile(r"native-shutdown-synchronous-save-completed-before-ack")
-SHUTDOWN_EXIT_LINE = re.compile(r"ARK_NATIVE_SHUTDOWN engine-exit-handled")
+SHUTDOWN_REQUEST_LINE = re.compile(r"ARK_NATIVE_SHUTDOWN native-exit-requested$")
 SHUTDOWN_MARKER_TIMEOUT = 8.0
 UNSUPPORTED_CHECKS = {
     "connector-load": "ARK native /health is checked by native-health",
@@ -198,9 +198,9 @@ def _fresh_shutdown_markers(log_file: Path, device: int, inode: int, offset: int
             stream.seek(offset)
             lines = stream.read().decode("utf-8", errors="replace").splitlines()
         save = next((line for line in lines if SHUTDOWN_SAVE_LINE.search(line)), None)
-        exit_line = next((line for line in lines if SHUTDOWN_EXIT_LINE.search(line)), None)
-        if (save and exit_line) or time.monotonic() >= deadline:
-            return {"save": save, "exit": exit_line}
+        request_line = next((line for line in lines if SHUTDOWN_REQUEST_LINE.search(line)), None)
+        if (save and request_line) or time.monotonic() >= deadline:
+            return {"save": save, "request": request_line}
         time.sleep(0.2)
 
 
@@ -422,9 +422,9 @@ async def after_shutdown(run: Any, fake: Any, ws_url: str, ledger_inputs: list[d
             else:
                 exit_code = await asyncio.to_thread(run.container.wait_for_exit, 45)
                 shutdown_detail["exitCode"] = exit_code
-                # This exact ARK build calls RequestExit(true) during its normal
-                # teardown, which aborts with status 134. The fresh native markers
-                # distinguish that path from an unrelated abort or crash.
+                # The exact build's main loop calls RequestExit(true) after the
+                # guarded native exit request, normally aborting with status 134.
+                # Fresh markers distinguish that path from an unrelated abort.
                 markers = await asyncio.to_thread(_fresh_shutdown_markers, run.server_log, *log_identity)
                 for label, marker in markers.items():
                     shutdown_detail[f"{label}Marker"] = marker

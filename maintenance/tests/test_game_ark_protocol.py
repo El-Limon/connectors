@@ -306,7 +306,7 @@ def test_ark_native_shutdown_requires_sidecar_ack_and_clean_native_exit(
             with log.open("a", encoding="utf-8") as stream:
                 stream.write(
                     "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
-                    "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
+                    "ARK_NATIVE_SHUTDOWN native-exit-requested\n"
                 )
             return ack
 
@@ -368,7 +368,7 @@ def test_ark_shutdown_rejects_unattributed_abort(tmp_path: Path, monkeypatch: py
     log = tmp_path / "server.log"
     log.write_text(
         "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
-        "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
+        "ARK_NATIVE_SHUTDOWN native-exit-requested\n"
     )
     monkeypatch.setattr(ark_verify, "SHUTDOWN_MARKER_TIMEOUT", 0)
 
@@ -397,7 +397,44 @@ def test_ark_shutdown_rejects_unattributed_abort(tmp_path: Path, monkeypatch: py
     asyncio.run(ark_verify.after_shutdown(run, FakeTakaro(), "", []))
     assert run.results[0].status == "fail"
     assert "native shutdown save completion marker is missing" in run.results[0].detail["problems"]
-    assert "native shutdown exit completion marker is missing" in run.results[0].detail["problems"]
+    assert "native shutdown request completion marker is missing" in run.results[0].detail["problems"]
+
+
+def test_ark_shutdown_rejects_old_engine_exec_exit_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log = tmp_path / "server.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setattr(ark_verify, "SHUTDOWN_MARKER_TIMEOUT", 0)
+
+    class FakeTakaro:
+        async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
+            assert (name, args) == ("shutdown", {})
+            with log.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
+                    "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
+                )
+            return {}
+
+    class FakeRun:
+        container = SimpleNamespace(wait_for_exit=lambda timeout: 134)
+        server_log = log
+
+        def __init__(self) -> None:
+            self.results: list[object] = []
+
+        def wanted(self, name: str) -> bool:
+            return name == "native-shutdown"
+
+        def record(self, result: object) -> None:
+            self.results.append(result)
+
+        def skip(self, name: str, reason: str) -> None:
+            del name, reason
+
+    run = FakeRun()
+    asyncio.run(ark_verify.after_shutdown(run, FakeTakaro(), "", []))
+    assert run.results[0].status == "fail"
+    assert "native shutdown request completion marker is missing" in run.results[0].detail["problems"]
 
 
 def test_ark_shutdown_log_rotation_fails_closed(tmp_path: Path) -> None:
@@ -407,7 +444,7 @@ def test_ark_shutdown_log_rotation_fails_closed(tmp_path: Path) -> None:
     log.rename(tmp_path / "server.log.1")
     log.write_text(
         "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
-        "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
+        "ARK_NATIVE_SHUTDOWN native-exit-requested\n"
     )
     with pytest.raises(RuntimeError, match="rotated or truncated"):
         ark_verify._fresh_shutdown_markers(log, before.st_dev, before.st_ino, before.st_size)
@@ -425,7 +462,7 @@ def test_ark_readonly_shutdown_requires_fresh_owned_save(tmp_path: Path, write_s
             with log.open("a") as stream:
                 stream.write(
                     "ARK_NATIVE_DIAG native-shutdown-synchronous-save-completed-before-ack\n"
-                    "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
+                    "ARK_NATIVE_SHUTDOWN native-exit-requested\n"
                 )
             if write_save:
                 save.parent.mkdir(parents=True)
