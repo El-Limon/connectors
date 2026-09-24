@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine_exec_bindings.hpp"
+#include "shutdown_request_bindings.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -982,6 +983,12 @@ class Server {
       std::wstring decoded_command;
       if (!ark_engine_exec::decode_command(body, decoded_command)) {
         reply(c, 400, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"invalid command\"}"); return;
+      }
+      if (ark_shutdown_request::is_termination_command(body)) {
+        reply(c, 400, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"Use the dedicated shutdown action\"}"); return;
+      }
+      if (ark_shutdown_request::contains_unicode_space(body)) {
+        reply(c, 400, "{\"success\":false,\"rawResult\":\"\",\"errorMessage\":\"Unsupported command whitespace\"}"); return;
       }
       auto action = std::make_shared<Action>();
       action->kind = Action::Kind::console;

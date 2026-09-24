@@ -74,6 +74,9 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
     g++ -std=c++20 -Wall -Wextra -Werror -pthread games/ark/mod/tests/general_console_bindings_test.cpp \
       -o games/ark/_data/build/general_console_bindings_test
     games/ark/_data/build/general_console_bindings_test
+    g++ -std=c++20 -Wall -Wextra -Werror -pthread games/ark/mod/tests/shutdown_request_bindings_test.cpp \
+      -o games/ark/_data/build/shutdown_request_bindings_test
+    games/ark/_data/build/shutdown_request_bindings_test
     cd games/ark/sidecar
     npm ci --no-audit --no-fund
     npm run typecheck

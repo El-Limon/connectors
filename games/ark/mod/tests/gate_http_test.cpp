@@ -322,6 +322,15 @@ int main() {
           "empty console command is rejected before dispatch");
     check(status(request(port, "/console", token, "ListPlayers\nExit", "POST"), 400),
           "multi-line console command is rejected before dispatch");
+    for (const std::string command : {"Exit", " quit now", "DoExit", "admincheat doexit",
+                                      "GetAll Foo; CHEAT EXIT"}) {
+      const auto rejection = request(port, "/console", token, command, "POST");
+      check(status(rejection, 400) &&
+            rejection.find("Use the dedicated shutdown action") != std::string::npos,
+            "engine and cheat shutdown aliases require dedicated shutdown action");
+    }
+    check(status(request(port, "/console", token, "\xc2\xa0" "Exit", "POST"), 400),
+          "non-ASCII command whitespace is rejected before dispatch");
     auto console_request = std::async(std::launch::async, [&] {
       return request(port, "/console", token, "ServerChat ARK CONSOLE TEST", "POST");
     });

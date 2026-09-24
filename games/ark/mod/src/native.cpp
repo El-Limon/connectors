@@ -12,6 +12,7 @@
 #include "inventory_bindings.hpp"
 #include "log_tail.hpp"
 #include "save_bindings.hpp"
+#include "shutdown_request_bindings.hpp"
 #include "location_bindings.hpp"
 #include "list_bans_bindings.hpp"
 #include "world_bootstrap.hpp"
@@ -546,19 +547,18 @@ void tick_hook(void* loop) {
     const auto now = std::chrono::steady_clock::now();
     if (g_pending_shutdown->response_sent.load(std::memory_order_acquire) &&
         now - g_shutdown_staged_at >= std::chrono::milliseconds(200)) {
-      void* world = resolve_live_world();
-      const uint64_t packed = g_world_weak.load(std::memory_order_acquire);
-      ark_engine_exec::Api api{};
+      ark_shutdown_request::Api api{};
       api.game_thread_tid = tid;
-      const ark_engine_exec::WeakWorld key{
-          static_cast<int32_t>(packed >> 32), static_cast<int32_t>(packed & 0xffffffffu)};
-      const auto outcome = world && packed
-          ? ark_engine_exec::execute(world, key, "Exit", api)
-          : ark_engine_exec::Status::invalid;
-      const char* marker = outcome == ark_engine_exec::Status::handled
-          ? "ARK_NATIVE_SHUTDOWN engine-exit-handled\n"
-          : "ARK_NATIVE_SHUTDOWN engine-exit-unhandled\n";
+      const auto outcome = ark_shutdown_request::request_after_ack(
+          true, g_pending_shutdown->response_sent.load(std::memory_order_acquire), api);
+      const char* marker = outcome == ark_shutdown_request::Status::requested
+          ? "ARK_NATIVE_SHUTDOWN native-exit-requested\n"
+          : "ARK_NATIVE_SHUTDOWN native-exit-request-rejected\n";
       (void)write(STDERR_FILENO, marker, strlen(marker));
+      if (outcome == ark_shutdown_request::Status::requested) {
+        g_pending_shutdown.reset();
+        return;
+      }
       g_pending_shutdown.reset();
     } else if (now - g_shutdown_staged_at > std::chrono::seconds(5)) {
       enqueue("native-shutdown-ack-not-flushed-or-expired");
@@ -748,7 +748,7 @@ void tick_hook(void* loop) {
         bool success = false;
         bool pending = false;
         if (action->kind == gate::Action::Kind::shutdown) {
-          if (!g_pending_shutdown) {
+          if (!g_pending_shutdown && ark_shutdown_request::signature_matches()) {
             ark_save::Api api{};
             api.game_thread_tid = tid;
             const auto outcome = ark_save::save_world(resolve_live_world(), api);
@@ -779,7 +779,11 @@ void tick_hook(void* loop) {
           void* world = resolve_live_world();
           const uint64_t packed = g_world_weak.load(std::memory_order_acquire);
           ark_general_console::Status console_status = ark_general_console::Status::rejected;
-          if (world && packed) {
+          if (ark_shutdown_request::is_termination_command(action->command)) {
+            enqueue("native-console-termination-requires-shutdown-action");
+          } else if (ark_shutdown_request::contains_unicode_space(action->command)) {
+            enqueue("native-console-unicode-space-rejected");
+          } else if (world && packed) {
             ark_general_console::Api api{};
             api.game_thread_tid = tid;
             const ark_engine_exec::WeakWorld key{
@@ -931,7 +935,8 @@ bool preflight_bindings() {
                 sizeof(give_item_prologue)) == 0 &&
          memcmp(reinterpret_cast<const void*>(kTeleport), teleport_prologue,
                 sizeof(teleport_prologue)) == 0 &&
-         memcmp(reinterpret_cast<const void*>(kClientChatRpc), rpc_prologue, sizeof(rpc_prologue)) == 0;
+         memcmp(reinterpret_cast<const void*>(kClientChatRpc), rpc_prologue, sizeof(rpc_prologue)) == 0 &&
+         ark_shutdown_request::signature_matches();
 }
 
 std::string boot_id() {
