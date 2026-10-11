@@ -27,6 +27,7 @@ struct TimedBan {
 struct ActionView {
     std::vector<JsonValue> knownPlayers;  // Takaro-shaped players this connector has seen
     std::map<std::string, TimedBan> timedBans;
+    std::string mapDir;         // map tile pack directory (maptiles.h)
     std::string banStoreError;  // non-empty: the timed-ban store is unreadable; timed bans and listBans refuse
 };
 

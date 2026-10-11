@@ -77,6 +77,14 @@
     },
     "shutdown": {
       "status": "proven"
+    },
+    "getMapInfo": {
+      "status": "proven",
+      "note": "from the tile pack manifest takaro/map/map.json (mod/tools/map-tiles); enabled:false with the reason when no pack is installed. Live on staging 2026-10-11: GET /gameserver/{id}/map/info enabled:true, maxZoom 4, mapSizeX/Z 10240"
+    },
+    "getMapTile": {
+      "status": "proven",
+      "note": "base64 PNG from takaro/map/<z>/<x>/<y>.png (rendered offline from the client's map height data); outside the world answers outside.png; zoom >4 refused. Live on staging 2026-10-11: tile byte-identical through Takaro, takaro-player-map renders tiles and the player marker at the right spot"
     }
   },
   "events": {

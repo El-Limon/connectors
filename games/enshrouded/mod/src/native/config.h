@@ -20,6 +20,7 @@ struct NativeConfig {
     std::string identityToken, registrationToken;
     std::string serverName;
     std::string caFile;  // resolved against the exe dir; empty = system trust
+    std::string mapDir;  // getMapInfo/getMapTile tile pack (maptiles.h); default <exe dir>\takaro\map
     unsigned reconnectBaseMs = 2000, reconnectMaxMs = 60000;
 
     LogEventsMode logEvents = LogEventsMode::Filtered;

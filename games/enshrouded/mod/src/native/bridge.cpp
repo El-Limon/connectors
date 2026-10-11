@@ -507,6 +507,7 @@ std::shared_ptr<const ActionView> Bridge::View() {
         }
         v->timedBans = o_.store->TimedBans();
         v->banStoreError = o_.store->BanStoreError();
+        v->mapDir = o_.config.mapDir;
         view_ = v;
         viewDirty_ = false;
     }

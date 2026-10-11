@@ -23,7 +23,7 @@ struct NativeError : std::runtime_error {
 };
 [[noreturn]] void Fail(const std::string& message);  // ActionError
 
-extern const char* const kGameServerActions[17];
+extern const char* const kGameServerActions[19];
 extern const char* const kGameEventTypes[6];
 bool IsGameEventType(const std::string& type);
 

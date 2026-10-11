@@ -2,6 +2,7 @@
 
 #include "native/json_util.h"
 #include "native/mapping.h"
+#include "native/maptiles.h"
 
 #include <cstdio>
 #include <cstring>
@@ -231,6 +232,8 @@ public:
             }
             return list;
         }
+        if (action == "getMapInfo") return MapInfoPayload(view_.mapDir);
+        if (action == "getMapTile") return JStr(MapTileBase64(view_.mapDir, args));
         if (action == "shutdown") {
             plugin_.Post("/shutdown", "{}");
             return JObj();

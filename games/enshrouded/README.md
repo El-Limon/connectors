@@ -40,8 +40,8 @@ client and Takaro. ✅ = works, ⚠️ = works with a caveat or not re-verified,
 | Player death event | ✅ | Falls and creature kills, with the position; the creature that killed the player is named in the message the same way as in the entity catalogue, e.g. "Limon was killed by Rat". |
 | Entity kill event | ⚠️ | Real kills reach Takaro, once each, with the weapon's in-game name (melee and bow tested). The creature is named the same way as in the entity catalogue, e.g. "Rat". Kills with magic are not tested yet. Destroyed props are not reported. |
 | Log events | ⚠️ | Sent, but Takaro does not store server log lines as events. |
-| Map info | ⚠️ | Not verified in a live test. |
-| Map tiles | ❌ | Takaro does not support map tiles for Generic game servers. |
+| Map info | ✅ | Needs the map tile pack (see below); without it the map reports itself as off. |
+| Map tiles | ✅ | A map of the whole world drawn from the game's own height data, served from the tile pack in `takaro/map/`. Player positions line up with it. |
 | Modules: chat commands | ✅ | In-game `@` commands reach the module and answer in chat. |
 | Modules: hooks | ✅ | Chat and join hooks fire and run their code. |
 | Modules: cronjobs | ✅ | Scheduled and triggered runs message the server. |

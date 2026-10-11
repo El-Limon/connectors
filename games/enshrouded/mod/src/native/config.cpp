@@ -56,6 +56,8 @@ NativeConfig LoadNativeConfig(const std::string& baseDir, const EnvFn& env, cons
 
     std::string ca = pick("caFile", {"TAKARO_CA_FILE"}, "caFile", "");
     c.caFile = ResolvePath(baseDir, ca);
+    std::string md = pick("mapDir", {"TAKARO_MAP_DIR"}, "mapDir", "");
+    c.mapDir = md.empty() ? JoinPath(JoinPath(baseDir, "takaro"), "map") : ResolvePath(baseDir, md);
 
     c.reconnectBaseMs = ParseUnsigned(Trim(env("TAKARO_RECONNECT_BASE_MS")), 2000, 500, 600000, "TAKARO_RECONNECT_BASE_MS", c.warnings);
     c.reconnectMaxMs = ParseUnsigned(Trim(env("TAKARO_RECONNECT_MAX_MS")), 60000, 500, 3600000, "TAKARO_RECONNECT_MAX_MS", c.warnings);
@@ -111,6 +113,7 @@ std::string ConfigSummaryJson(const NativeConfig& c) {
         .S("url", c.url)
         .S("serverName", c.serverName)
         .S("caFile", c.caFile)
+        .S("mapDir", c.mapDir)
         .B("identityTokenSet", !c.identityToken.empty())
         .B("registrationTokenSet", !c.registrationToken.empty())
         .N("reconnectBaseMs", c.reconnectBaseMs)

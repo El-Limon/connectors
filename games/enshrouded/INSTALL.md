@@ -66,6 +66,12 @@ server's own network (inside the container for Docker) shows each capability's s
 `diagnostics.native`, the connection state, the event outbox and the timed bans. The port listens on
 loopback only.
 
+Map tiles (optional): the connector serves Takaro's map from a tile pack in `takaro/map/` (`map.json`
+plus `<z>/<x>/<y>.png`; `TAKARO_MAP_DIR` or `mapDir` in `plugin.json` moves it). The server has no
+map art of its own, so the pack is rendered from a game client install with
+`mod/tools/map-tiles/` (see its README). It is read on every request, so it can be added while the
+server runs. Without it the map shows as disabled in Takaro.
+
 The connector keeps its state in `takaro/connector-state/` (`TAKARO_STATE_DIR` moves it): the event
 outbox, the online and known players, timed bans and the ban journal. Keep that folder across
 restarts and upgrades. A file there that is damaged is never overwritten or treated as empty: the

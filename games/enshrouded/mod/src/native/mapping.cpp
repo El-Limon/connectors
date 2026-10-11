@@ -11,10 +11,11 @@
 
 namespace native {
 
-const char* const kGameServerActions[17] = {
+const char* const kGameServerActions[19] = {
     "getPlayer",    "getPlayers",   "getPlayerLocation", "getPlayerInventory", "giveItem",   "listItems",
     "listEntities", "listLocations", "executeConsoleCommand", "sendMessage", "teleportPlayer", "testReachability",
-    "kickPlayer",   "banPlayer",    "unbanPlayer",       "listBans",           "shutdown"};
+    "kickPlayer",   "banPlayer",    "unbanPlayer",       "listBans",           "shutdown",
+    "getMapInfo",   "getMapTile"};
 const char* const kGameEventTypes[6] = {"log", "player-connected", "player-disconnected", "chat-message",
                                         "player-death", "entity-killed"};
 
