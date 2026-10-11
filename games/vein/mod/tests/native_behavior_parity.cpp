@@ -1,5 +1,6 @@
 #include "native_behavior.h"
 #include "native_log.h"
+#include "native_map.h"
 #include "actions.h"
 #include "state.h"
 #include "gamethread.h"
@@ -150,6 +151,45 @@ int main(){
     Check(run("listItems",Json::object())[0]["code"]=="MRE","items");
     Check(run("listEntities",Json::object())[0]["type"]=="hostile","entity mapping");
     Check(run("listLocations",Json::object())[0]["position"]["z"]==3,"locations");
+    {
+        // getMapInfo / getMapTile from a pre-rendered tile directory (TAKARO_MAP_DIR).
+        const fs::path mapDir=fs::temp_directory_path()/"vein-native-map-test";
+        fs::remove_all(mapDir);
+        setenv("TAKARO_MAP_DIR",mapDir.c_str(),1);
+        auto failText=[&](const std::string& name,const Json& args){auto p=engine.PrepareAction("m",name,args.dump(),1);return NativeBehavior::Engine::ExecuteAction(p).errorText;};
+        const Json off=run("getMapInfo",Json::object());
+        Check(off["enabled"]==false&&off["maxZoom"].is_number()&&off["mapBlockSize"].is_number()&&off["mapSizeX"].is_number()&&
+              off["mapSizeY"].is_number()&&off["mapSizeZ"].is_number()&&off.size()==6,"map info without tiles is a full DTO with enabled=false");
+        Check(failText("getMapTile",Json{{"x",0},{"y",0},{"z",0}}).find("not installed")!=std::string::npos,"tile without map says not installed");
+        fs::create_directories(mapDir/"0"/"-1");fs::create_directories(mapDir/"2");
+        {std::ofstream(mapDir/"map.json")<<R"({"maxZoom":2,"mapBlockSize":37500,"mapSizeX":1200000,"mapSizeY":1200000,"mapSizeZ":100000,"extra":"ignored"})";}
+        const std::string png=std::string("\x89PNG\r\n\x1a\n",8)+std::string("tile-0/-1/0",11);
+        {std::ofstream(mapDir/"0"/"-1"/"0.png",std::ios::binary)<<png;}
+        const Json on=run("getMapInfo",Json::object());
+        Check(on==Json{{"enabled",true},{"mapBlockSize",37500},{"maxZoom",2},{"mapSizeX",1200000},{"mapSizeY",1200000},{"mapSizeZ",100000}},
+              "map info reports exactly the six DTO fields from map.json");
+        const Json tile=run("getMapTile",Json{{"x",-1},{"y",0},{"z",0}});
+        Check(tile.is_string()&&tile.get<std::string>()==NativeMap::Base64(png),"tile answers the file as base64");
+        Check(run("getMapTile",Json{{"x","-1"},{"y","0"},{"z","0"}})==tile,"numeric string tile indices accepted");
+        Check(failText("getMapTile",Json{{"x",5},{"y",5},{"z",0}}).find("not been rendered")!=std::string::npos,"missing tile without blank.png is an error");
+        const std::string blank=std::string("\x89PNG\r\n\x1a\n",8)+"blank";
+        {std::ofstream(mapDir/"blank.png",std::ios::binary)<<blank;}
+        Check(run("getMapTile",Json{{"x",5},{"y",5},{"z",0}}).get<std::string>()==NativeMap::Base64(blank),"tile beyond the image answers blank.png");
+        Check(failText("getMapTile",Json{{"x",0},{"y",0},{"z",3}}).find("outside 0..2")!=std::string::npos,"zoom above maxZoom refused");
+        Check(failText("getMapTile",Json{{"x",0.5},{"y",0},{"z",0}}).find("integer")!=std::string::npos,"fractional index refused");
+        Check(failText("getMapTile",Json{{"x","../../etc"},{"y",0},{"z",0}}).find("integer")!=std::string::npos,"path-like index refused");
+        Check(failText("getMapTile",Json{{"y",0},{"z",0}}).find("integer 'x'")!=std::string::npos,"missing index refused");
+        {std::ofstream(mapDir/"0"/"-1"/"1.png",std::ios::binary)<<"not a png";}
+        Check(failText("getMapTile",Json{{"x",-1},{"y",1},{"z",0}}).find("not a PNG")!=std::string::npos,"non-PNG tile file refused");
+        fs::remove_all(mapDir/"2");
+        Check(run("getMapInfo",Json::object())["enabled"]==false,"map without its deepest zoom level is disabled");
+        {std::ofstream(mapDir/"map.json")<<R"({"maxZoom":"4","mapBlockSize":37500,"mapSizeX":1,"mapSizeY":1,"mapSizeZ":1})";}
+        fs::create_directories(mapDir/"4");
+        Check(run("getMapInfo",Json::object())["enabled"]==false,"malformed map.json is disabled, never a bad DTO");
+        Check(NativeMap::Base64("")==""&&NativeMap::Base64("f")=="Zg=="&&NativeMap::Base64("fo")=="Zm8="&&NativeMap::Base64("foo")=="Zm9v"&&
+              NativeMap::Base64("foobar")=="Zm9vYmFy","RFC 4648 base64 vectors");
+        unsetenv("TAKARO_MAP_DIR");fs::remove_all(mapDir);
+    }
     Check(run("executeConsoleCommand",Json{{"command","bad"}})["success"]==false,"command error DTO");
     Check(run("executeConsoleCommand",Json{{"command","save"}})["rawResult"]=="saved","command output");
     Check(run("sendMessage",Json{{"message","hi"},{"opts",{{"senderNameOverride","Captain"},{"recipient",{{"gameId",id}}}}}}).empty()&&lastSender=="Captain"&&lastRecipient==id,"sender/recipient");

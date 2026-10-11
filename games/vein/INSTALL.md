@@ -58,6 +58,25 @@ On the first native start after a sidecar upgrade, the connector imports legacy 
 
 An interrupted ban or unban can leave `ban-intent.json` with the intended canonical ban state, including expiry and reason, while the game and plugin ban files disagree. The connector keeps that intent, reports `banRecoveryPending=true` and degraded health when it cannot prove the result. Inspect the current game ban, plugin `bans.json`, timed metadata and journal, then retry the **intended canonical ban or unban** through Takaro after resolving any ambiguity. Do not delete the journal to silence the warning, and do not copy an old ban file over current state.
 
+## Map tiles (optional)
+
+Takaro and map viewers ask the connector for map tiles (`getMapInfo`, `getMapTile`). The dedicated
+server's files contain no map image, so render the tiles once from the in-game map texture of your
+own VEIN client and copy them next to the plugin:
+
+1. On the PC with the game installed, extract the map texture with
+   [repak](https://github.com/trumank/repak) from `Vein/Content/Paks/pakchunk200-Windows.pak`:
+   `repak get pakchunk200-Windows.pak Vein/Content/Vein/UI/Map/T_ChamplainValley_Oct30_2026.uexp > map.uexp`
+   and the same for `.uasset` (`> map.uasset`).
+2. Run `python3 scripts/build-map-tiles.py --texture map.uexp --out map` (needs Pillow). It writes
+   `map/map.json`, 1364 tiles in `map/<z>/<x>/<y>.png` and `map/blank.png`.
+3. Copy the `map` folder into `TAKARO_PLUGIN_DATA_DIR` (for example
+   `Vein/Binaries/Linux/takaro/map`), or point `TAKARO_MAP_DIR` at it. No restart is needed.
+
+Tile `x` grows east (world +Y) and tile `y` grows north (world +X); one zoom-4 tile covers 375 m.
+Without the folder, `getMapInfo` answers `enabled: false`. The texture belongs to the game's
+publisher: render the tiles from your own copy and do not redistribute them.
+
 ## Rollback
 
 For a planned rollback, stop admissions and drain the **current** native outbox first. Require `queues.outbox`, `queues.actions`, `queues.runningActions`, `queues.inbound` and `queues.outbound` to be zero, `outboxDurabilityPending=false`, `banRecoveryPending=false`, no active persistence error, and no unresolved `ban-intent.json` before restoring the legacy connector. The old sidecar cannot interpret a native ban intent. Save a copy of current state and record any undelivered entries.

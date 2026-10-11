@@ -1,5 +1,6 @@
 #include "native_behavior.h"
 #include "native_log.h"
+#include "native_map.h"
 #include "actions.h"
 #include "actions_util.h"
 #include "common.h"
@@ -453,7 +454,9 @@ ActionOutcome Engine::ExecuteAction(const PreparedAction& p){
             Json pending=Array(Parse(p.view->timedBansJson)),mapped=Json::array();std::map<std::string,Json> byId;for(auto& b:pending)byId[Str(Object(b),"gameId")]=b;
             for(auto& row:Rows(call(Actions::Bans()),"bans")){Json b=Ban(row);std::string key=Str(b["player"],"gameId");auto it=byId.find(key);if(it!=byId.end()){b["expiresAt"]=it->second.value("expiresAt",Json());if(Str(b,"reason").empty())b["reason"]=Str(it->second,"reason");byId.erase(it);}mapped.push_back(b);}
             for(auto& kv:byId)mapped.push_back(Json{{"player",Player(Json{{"gameId",kv.first}})},{"reason",Str(kv.second,"reason")},{"expiresAt",kv.second.value("expiresAt",Json())}});out.payloadJson=mapped.dump();
-        }else if(action=="shutdown"){out.payloadJson="{}";out.deferredShutdown=true;}
+        }else if(action=="getMapInfo")out.payloadJson=NativeMap::InfoJson(NativeMap::Directory());
+        else if(action=="getMapTile")out.payloadJson=NativeMap::TileJson(NativeMap::Directory(),a.dump());
+        else if(action=="shutdown"){out.payloadJson="{}";out.deferredShutdown=true;}
         else throw std::runtime_error("Unknown Takaro action '"+action+"'");
     }catch(const std::exception& e){out.errorText=e.what();}
     return out;

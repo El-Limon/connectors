@@ -88,9 +88,9 @@ const ROWS = [
     notes: { partial: 'Forwarded with secrets redacted, but Takaro does not store log events.',
              failed: 'The connector forwards server log lines (redacted), but Takaro does not store log lines as events, so they cannot be searched or used in modules.' } },
 
-  // ---- not applicable to this connector type ----
-  { label: 'Map info', fixed: NO, note: 'Takaro does not support map info for Generic game servers.' },
-  { label: 'Map tiles', fixed: NO, note: 'Takaro does not support map tiles for Generic game servers.' },
+  // ---- map: served from tiles the operator renders from their own client ----
+  { label: 'Map info', fixed: CAVEAT, note: 'Works once map tiles are installed (see below); reports the 12 km map and its tile scale.' },
+  { label: 'Map tiles', fixed: CAVEAT, note: 'The in-game map, served as tiles. The server files carry no map image, so you render the tiles once from your own game client with `scripts/build-map-tiles.py` ([INSTALL.md](INSTALL.md#map-tiles-optional)).' },
 
   // ---- modules (7 capabilities, 5 rows) ----
   { label: 'Modules: chat commands', keys: ['modules.command'],
