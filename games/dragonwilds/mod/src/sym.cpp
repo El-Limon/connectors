@@ -161,6 +161,11 @@ constexpr Want kWanted[] = {
     {"UEnum::GetValueByName", "UEnum::GetValueByName(FName, EGetByNameFlags) const"},
     {"ULoadoutComponent::StaticClass", nullptr},
     {"UEquipment::StaticClass", nullptr},
+    // --- debug map survey (POST /debug/map/survey): top-down collision traces ---
+    {"UWorld::LineTraceSingleByChannel", "UWorld::LineTraceSingleByChannel(FHitResult&, UE::Math::TVector<double> const&, UE::Math::TVector<double> const&, ECollisionChannel, FCollisionQueryParams const&, FCollisionResponseParams const&) const"},
+    {"FCollisionQueryParams::FCollisionQueryParams", "FCollisionQueryParams::FCollisionQueryParams(FName, TStatId const&, bool, AActor const*)"},
+    {"AActor::GetActorBounds", "AActor::GetActorBounds(bool, UE::Math::TVector<double>&, UE::Math::TVector<double>&, bool) const"},
+    {"ALandscapeProxy::StaticClass", nullptr},
 };
 const size_t kWantedCount = sizeof(kWanted) / sizeof(kWanted[0]);
 

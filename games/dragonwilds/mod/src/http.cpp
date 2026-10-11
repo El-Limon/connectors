@@ -5,6 +5,7 @@
 #include "events.h"
 #include "gamethread.h"
 #include "hooks.h"
+#include "mapsurvey.h"
 #include "native_bridge.h"
 #include "perf.h"
 #include "reflect.h"
@@ -352,6 +353,16 @@ Response Route(const Request& r) {
             JsonValue body;
             if (!r.body.empty() && !JsonParse(r.body, body)) return Err(400, "body must be JSON");
             return FromAction(Actions::KillNearest(body));
+        }
+        if (p.size() == 3 && p[1] == "map" && p[2] == "survey") {
+            if (GET) return {200, MapSurvey::Status()};
+            if (r.method != "POST") return Err(405, "method not allowed");
+            JsonValue body;
+            if (!r.body.empty() && (!JsonParse(r.body, body) || body.type != JsonValue::Object))
+                return Err(400, "body must be a JSON object");
+            std::string out;
+            int status = MapSurvey::Start(body, out);
+            return {status, out};
         }
         if (!GET) return Err(405, "method not allowed");
         if (p.size() == 2 && p[1] == "gamethread") return DebugGameThread();

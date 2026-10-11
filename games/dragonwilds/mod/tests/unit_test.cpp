@@ -1,5 +1,6 @@
 // Host-side unit tests: the .sym parser (against a synthetic fixture), JSON, the event ring buffer
 // and password redaction. No game process involved.
+#include "mapsurvey.h"
 #include "common.h"
 #include "config_file.h"
 #include "perf.h"
@@ -530,6 +531,23 @@ static void TestConfigResolve() {
     rmdir(dir);
 }
 
+static void TestMapSurveyGrid() {
+    MapSurvey::Grid g;
+    CHECK(MapSurvey::PlanGrid(-1000, 1000, -500, 700, 100, 8192, g), "a normal box must plan");
+    CHECK(g.w == 20 && g.h == 12, "grid is %dx%d, want 20x12", g.w, g.h);
+    CHECK(g.minX == -1000 && g.minY == -500 && g.step == 100, "grid origin/step not kept");
+    CHECK(MapSurvey::PlanGrid(0, 1050, 0, 10, 100, 8192, g) && g.w == 11 && g.h == 1,
+          "a partial sample must round up (got %dx%d)", g.w, g.h);
+    MapSurvey::Grid keep = g;
+    CHECK(!MapSurvey::PlanGrid(0, 0, 0, 10, 100, 8192, g), "an empty box must be refused");
+    CHECK(!MapSurvey::PlanGrid(10, 0, 0, 10, 100, 8192, g), "an inverted box must be refused");
+    CHECK(!MapSurvey::PlanGrid(0, 10, 0, 10, 0, 8192, g), "a zero step must be refused");
+    CHECK(!MapSurvey::PlanGrid(0, 10, 0, 10, -5, 8192, g), "a negative step must be refused");
+    CHECK(!MapSurvey::PlanGrid(0, 1e9, 0, 10, 100, 8192, g), "more than maxSide samples must be refused");
+    CHECK(!MapSurvey::PlanGrid(0, NAN, 0, 10, 100, 8192, g), "NaN bounds must be refused");
+    CHECK(g.w == keep.w && g.h == keep.h, "a refused plan must leave the grid untouched");
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && strcmp(argv[1], "--exit-flush-child") == 0) return ExitFlushChild(argv[2]);
     TestSymParser();
@@ -544,6 +562,7 @@ int main(int argc, char** argv) {
     TestCharacterNameCache();
     TestLogFlushAtExit();
     TestConfigResolve();
+    TestMapSurveyGrid();
     printf("%s: %d checks, %d failed\n", g_failed ? "FAILED" : "PASSED", g_ran, g_failed);
     return g_failed ? 1 : 0;
 }
