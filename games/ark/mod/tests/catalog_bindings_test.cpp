@@ -1,17 +1,26 @@
 #include "../src/catalog_bindings.hpp"
 #include <cassert>
 #include <cstring>
+#include <cwchar>
 #include <unordered_map>
 
 using namespace ark_catalog;
 namespace {
 int freed = 0;
-alignas(8) unsigned char base_class[0x38]{};
+alignas(8) unsigned char base_class[0x48]{};
 alignas(8) unsigned char item_class[0x100]{};
 alignas(8) unsigned char wrong_class[0x38]{};
-alignas(8) unsigned char item_cdo[0x20]{};
+alignas(8) unsigned char item_cdo[0x40]{};
+alignas(8) unsigned char string_type[0x40]{};
+alignas(8) unsigned char base_name_prop[0x60]{};
 std::unordered_map<void*, std::wstring> paths;
 void* primal_item_class() { return base_class; }
+void* string_property_class() { return string_type; }
+ark_entity::FName* make_name(ark_entity::FName* out, const wchar_t* text, int, int) {
+  assert(std::wcscmp(text, L"DescriptiveNameBase") == 0);
+  *out = {7, 0};
+  return out;
+}
 ark_inventory::FString* class_path(ark_inventory::FString* out, void* klass) {
   auto it = paths.find(klass);
   assert(it != paths.end());
@@ -51,6 +60,16 @@ int main() {
   paths[item_class] = L"/Game/Items/Stone.PrimalItemResource_Stone_C";
   void* engine_ptr = engine;
   Api api{&engine_ptr, primal_item_class, class_path, game_free, syscall(SYS_gettid)};
+  api.string_property_class = string_property_class;
+  api.make_name = make_name;
+  // UPrimalItem::DescriptiveNameBase: a StrProperty at CDO+0x18.
+  put(item_class, 0x38, static_cast<void*>(base_name_prop));
+  put(item_class, 0x40, int32_t{0x40});
+  put(base_name_prop, 0x10, static_cast<void*>(string_type));
+  put(base_name_prop, 0x18, ark_entity::FName{7, 0});
+  put(base_name_prop, 0x4C, int32_t{0x18});
+  static const wchar_t shotgun[] = L"Shotgun";
+  put(item_cdo, 0x18, ark_inventory::FString{const_cast<wchar_t*>(shotgun), 8, 8});
   Page out;
   assert(page(0, 2, out, api) == Status::ok);
   assert(out.identity.count == 3 && out.items.size() == 1);
@@ -58,14 +77,26 @@ int main() {
   assert(out.items[0].class_name == "Stone.PrimalItemResource_Stone_C");
   NamedPage named;
   assert(named_page(0, 2, named, api, short_name) == Status::ok);
-  assert(named.items.size() == 1 && named.items[0].name == "Stone" &&
+  assert(named.items.size() == 1 && named.items[0].name == "Shotgun" &&
          named.items[0].code == "/Game/Items/Stone.PrimalItemResource_Stone_C");
+  // Empty base name: the short name is the fallback, never an empty catalog name.
+  put(item_cdo, 0x18, ark_inventory::FString{nullptr, 0, 0});
+  assert(named_page(0, 2, named, api, short_name) == Status::ok && named.items[0].name == "Stone");
+  // A property of another type is not trusted as the base name.
+  put(base_name_prop, 0x10, static_cast<void*>(wrong_class));
+  put(item_cdo, 0x18, ark_inventory::FString{const_cast<wchar_t*>(shotgun), 8, 8});
+  assert(named_page(0, 2, named, api, short_name) == Status::ok && named.items[0].name == "Stone");
+  // An offset outside the class default object is not read.
+  put(base_name_prop, 0x10, static_cast<void*>(string_type));
+  put(base_name_prop, 0x4C, int32_t{0x38});
+  assert(named_page(0, 2, named, api, short_name) == Status::ok && named.items[0].name == "Stone");
+  put(base_name_prop, 0x4C, int32_t{0x18});
   put(item_class, 0xF8, static_cast<void*>(nullptr));
   assert(named_page(0, 2, named, api, short_name) == Status::not_ready && named.items.empty());
   put(item_class, 0xF8, static_cast<void*>(item_cdo));
   const Identity id = out.identity;
   assert(page(2, 2, out, api, &id) == Status::ok && out.items.empty());
-  assert(freed == 4);
+  assert(freed == 9);
   Identity stale = id; ++stale.count;
   assert(page(0, 2, out, api, &stale) == Status::changed);
   classes[0] = wrong_class;

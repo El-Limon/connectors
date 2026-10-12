@@ -3,6 +3,7 @@
 // ShooterGameServer 21241282, SHA-256 7e7ded49...7c520 only.
 // A bounded view of PrimalGameData::MasterItemList. This does not claim that
 // every installed asset or mod-only blueprint is represented in that list.
+#include "entity_bindings.hpp"
 #include "inventory_bindings.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -30,7 +31,11 @@ struct Page {
 };
 struct NamedItem {
   std::string code;
-  std::string name; // PrimalItem::GetItemShortName on an already-loaded class default object
+  // UPrimalItem::DescriptiveNameBase read by reflection on the already-loaded
+  // class default object; GetItemShortName only when that property cannot be
+  // verified. The short name of a default object carries its default quality
+  // and durability ("Primitive Shotgun (Broken)"), which is not the item.
+  std::string name;
 };
 struct NamedPage {
   Identity identity;
@@ -48,6 +53,10 @@ struct Api {
       reinterpret_cast<ark_inventory::FString* (*)(ark_inventory::FString*, void*)>(0x1293230);
   void (*game_free)(const void*) = reinterpret_cast<void (*)(const void*)>(0x1AF8E30);
   long game_thread_tid = 0;
+  // Reflection used for the base display name (same exact-build addresses as ark_entity::Api).
+  void* (*string_property_class)() = reinterpret_cast<void* (*)()>(0x1D2B470);
+  ark_entity::FName* (*make_name)(ark_entity::FName*, const wchar_t*, int, int) =
+      reinterpret_cast<ark_entity::FName* (*)(ark_entity::FName*, const wchar_t*, int, int)>(0x1C892D0);
 };
 
 inline bool plausible(const void* p) { return ark_inventory::plausible_pointer(p); }
@@ -133,6 +142,10 @@ inline Status named_page(int32_t offset, int32_t limit, NamedPage& out, const Ap
   ark_inventory::Api conversion{};
   conversion.game_free = api.game_free;
   void* base_class = api.primal_item_class();
+  void* string_class = api.string_property_class ? api.string_property_class() : nullptr;
+  ark_entity::FName base_name_field{};
+  if (api.make_name && plausible(string_class))
+    api.make_name(&base_name_field, L"DescriptiveNameBase", 1, 1);
   for (int32_t i = offset; i < end; ++i) {
     void* klass = class_rows[i];
     if (!klass || klass == base_class) continue;
@@ -141,11 +154,25 @@ inline Status named_page(int32_t offset, int32_t limit, NamedPage& out, const Ap
     if (!plausible(cdo) ||
         *reinterpret_cast<void* const*>(reinterpret_cast<uintptr_t>(cdo) + 0x10) != klass)
       return Status::not_ready;
-    ark_inventory::FString raw{};
     std::string name;
-    get_short_name(&raw, cdo);
-    if (!ark_inventory::copy_and_free(raw, conversion, name) || name.size() > 256)
-      return Status::unverified_class;
+    if (base_name_field.index > 0) {
+      void* property = ark_entity::find_property(klass, base_name_field, string_class);
+      const int32_t object_size = *reinterpret_cast<const int32_t*>(reinterpret_cast<uintptr_t>(klass) + 0x40);
+      const int32_t field = property
+          ? *reinterpret_cast<const int32_t*>(reinterpret_cast<uintptr_t>(property) + 0x4C) : -1;
+      if (field >= 0 && object_size > 0 && object_size <= 65536 &&
+          field <= object_size - static_cast<int32_t>(sizeof(ark_inventory::FString))) {
+        const auto* base = reinterpret_cast<const ark_inventory::FString*>(
+            reinterpret_cast<uintptr_t>(cdo) + field);
+        if (!ark_entity::copy_borrowed_string(*base, name)) name.clear();
+      }
+    }
+    if (name.empty()) {
+      ark_inventory::FString raw{};
+      get_short_name(&raw, cdo);
+      if (!ark_inventory::copy_and_free(raw, conversion, name) || name.size() > 256)
+        return Status::unverified_class;
+    }
     pending.items.push_back({codes.items[next_code++].code, std::move(name)});
   }
   if (next_code != codes.items.size()) return Status::changed;
