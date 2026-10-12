@@ -644,6 +644,7 @@ void test_protocol_v1() {
   const std::string state = temp_dir();
   auto config = config_for(takaro, state);
   config.ping_interval = 5000ms;  // pongs must not confirm anything on v1
+  config.map_name = "TheIsland";
   takaro::Bridge bridge(config, gate, [](const std::string&) {});
   bridge.start();
   auto identify = takaro.wait_for([](const json::Value& m) { return is_type(m, "identify"); });
@@ -652,9 +653,16 @@ void test_protocol_v1() {
   if (identify)
     for (const auto& c : identify->get("payload")->get("capabilities")->as_array()) {
       locations |= c.get("name")->as_string() == "locations.list";
-      map |= c.get("name")->as_string() == "map";
+      if (c.get("name")->as_string() != "map") continue;
+      const auto& dim = c.get("parameters")->get("dimensions")->as_array()[0];
+      map = dim.get("id")->as_string() == "TheIsland" &&
+            dim.get("bounds")->get("horizontal")->get("min")->as_number() == -400000 &&
+            dim.get("bounds")->get("vertical")->get("max")->as_number() == 400000 &&
+            dim.get("axes")->get("vertical")->get("direction")->as_string() == "down" &&
+            dim.get("source")->get("type")->as_string() == "none";
     }
-  CHECK(locations && !map);
+  CHECK(locations && map);
+  CHECK(!takaro::map_dimension("Ragnarok"));  // no declared map without a verified calibration
   CHECK(eventually([&] { return bridge.identified(); }));
   // Structured errors instead of silence.
   auto kick = takaro.request("v1-kick", "kickPlayer", json::obj({{"gameId", json::str(kId)}}), 2000ms);

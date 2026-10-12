@@ -54,10 +54,29 @@ struct Config {
   // Generic protocol versions offered in identify; Takaro picks the highest shared one.
   // A Takaro that predates versioning ignores the field and speaks version 0.
   std::vector<int> protocol_versions{0, 1};
+  // The loaded map (from the server command line). Only maps with a verified
+  // world<->lat/long calibration get a declared map Dimension.
+  std::string map_name;
 };
 
-// What this connector really does, declared on protocol version 1. No map: ARK has no
-// Takaro map source. Capabilities not listed here are refused by Takaro before sending.
+// TheIsland: lat = 50 + y/8000, lon = 50 + x/8000 (verified against the client GPS),
+// so lat/long 0..100 (the in-game map's frame) is x, y in [-400000, 400000],
+// x to the right and y downwards. The image comes from an operator upload.
+inline std::optional<json::Value> map_dimension(const std::string& map_name) {
+  if (map_name != "TheIsland") return std::nullopt;
+  auto range = [](double min, double max) { return json::obj({{"min", json::num(min)}, {"max", json::num(max)}}); };
+  return json::obj({
+      {"id", json::str("TheIsland")},
+      {"name", json::str("The Island")},
+      {"bounds", json::obj({{"horizontal", range(-400000, 400000)}, {"vertical", range(-400000, 400000)}})},
+      {"axes", json::obj({{"horizontal", json::obj({{"field", json::str("x")}, {"direction", json::str("right")}})},
+                          {"vertical", json::obj({{"field", json::str("y")}, {"direction", json::str("down")}})}})},
+      {"source", json::obj({{"type", json::str("none")}})}});
+}
+
+// What this connector really does, declared on protocol version 1. The map capability is
+// added separately for maps with a verified calibration (no tiles: operator upload).
+// Capabilities not listed here are refused by Takaro before sending.
 inline const std::vector<std::string>& capability_manifest() {
   static const std::vector<std::string> names = {
       "players.list", "players.get", "players.location", "players.inventory", "players.teleport",
@@ -290,6 +309,11 @@ class Bridge {
       payload.set("protocolVersions", std::move(versions));
       json::Value manifest = json::Value::array();
       for (const auto& name : capability_manifest()) manifest.push(json::obj({{"name", json::str(name)}}));
+      if (auto dimension = map_dimension(config_.map_name)) {
+        json::Value dimensions = json::Value::array();
+        dimensions.push(std::move(*dimension));
+        manifest.push(json::obj({{"name", json::str("map")}, {"parameters", json::obj({{"dimensions", dimensions}})}}));
+      }
       payload.set("capabilities", std::move(manifest));
     }
     return json::dump(json::obj({{"type", json::str("identify")}, {"payload", payload}}));

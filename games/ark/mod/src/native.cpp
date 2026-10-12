@@ -1215,6 +1215,24 @@ std::string server_root() {
   return path;
 }
 
+// The first server argument is "<Map>?listen?...". Read once from /proc.
+std::string server_map_name() {
+  const int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return {};
+  std::string cmdline(65536, '\0');
+  const ssize_t n = read(fd, cmdline.data(), cmdline.size());
+  close(fd);
+  if (n <= 0) return {};
+  cmdline.resize(static_cast<size_t>(n));
+  size_t at = cmdline.find('\0');  // skip argv[0]
+  if (at == std::string::npos || at + 1 >= cmdline.size()) return {};
+  const std::string first = cmdline.substr(at + 1, cmdline.find('\0', at + 1) - at - 1);
+  const std::string map = first.substr(0, first.find('?'));
+  if (map.empty() || map.size() > 64 || map.find_first_not_of(
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) return {};
+  return map;
+}
+
 // Settings: non-empty environment variables win over takaro.cfg next to the
 // plugin. Token values are never logged.
 std::optional<takaro::Config> load_bridge_config() {
@@ -1229,6 +1247,7 @@ std::optional<takaro::Config> load_bridge_config() {
   config.ca_file = ark_config::get(file, "TAKARO_CA_FILE");
   config.ban_file = ark_config::get(file, "TAKARO_BAN_METADATA_FILE");
   config.wire_debug = ark_config::get(file, "TAKARO_WIRE_DEBUG") == "1";
+  config.map_name = server_map_name();
   config.state_dir = ark_config::get(file, "TAKARO_STATE_DIR");
   if (config.state_dir.empty()) {
     const std::string root = server_root();
@@ -1255,6 +1274,7 @@ std::optional<takaro::Config> load_bridge_config() {
     config.server_name = "ARK (" + config.identity_token.substr(0, std::min<size_t>(12, config.identity_token.size())) + ")";
   enqueue(("takaro-config file=" + std::string(file.found ? "found" : "absent") +
            " url=" + config.url + " state=" + config.state_dir +
+           " map=" + (config.map_name.empty() ? "unknown" : config.map_name) +
            " registration=" + (config.registration_token.empty() ? "missing" : "set")).c_str());
   if (config.registration_token.empty()) {
     enqueue("takaro-registration-token-missing; Takaro connection disabled");
