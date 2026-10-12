@@ -1,6 +1,7 @@
-import { DuneAdapter, playerId } from './dune/adapter.js';
+import { DuneAdapter, playerId, UnsupportedActionError } from './dune/adapter.js';
 import type { CursorStore } from './dune/cursorStore.js';
 import { EventPoller } from './dune/eventPoller.js';
+import { DEFAULT_DIMENSION } from './dune/mapDimensions.js';
 import type { OnlineStore } from './dune/onlineStore.js';
 import type { Position, TakaroPlayer } from './dune/types.js';
 import { logger } from './logger.js';
@@ -21,7 +22,7 @@ export const EVENT_LOCATION_FALLBACK_MS = 60_000;
  * sidecar never grows without bound.
  */
 export const MAX_PENDING_EVENTS = 5000;
-const ORIGIN: Position = { x: 0, y: 0, z: 0 };
+const ORIGIN: Position = { x: 0, y: 0, z: 0, dimension: DEFAULT_DIMENSION };
 
 /**
  * How old a queued `chat-message` may be when Takaro comes back. A chat line is only interesting while the
@@ -205,7 +206,7 @@ export class Bridge {
     // Takaro validates inbound gameEvents with `forbidNonWhitelisted: true`, so ONE extra key destroys the whole
     // event (measured: an `entity-killed` lost to `entityCode … whitelistValidation`). Every event passes through
     // here, so this is the one place that can guarantee it, and what was stripped is logged rather than hidden.
-    const { data, removed } = sanitizeGameEvent(type, rawData);
+    const { data, removed } = sanitizeGameEvent(type, this.withDimension(type, rawData));
     if (removed.length) {
       logger.debug(`Stripped ${removed.length} non-DTO field(s) from ${type} before sending: ${removed.join(', ')}`);
       this.strippedFields += removed.length;
@@ -230,6 +231,19 @@ export class Bridge {
     if (!this.confirms) return true;
     this.trackUnconfirmed({ type, data, seq });
     return 'queued';
+  }
+
+  /**
+   * A death position names the map it happened on (protocol v1 draws a position only on its own Dimension). The
+   * plugin's position does not know the map, so it takes the player's last answered location's, else the default.
+   */
+  private withDimension(type: GameEventType, rawData: unknown): unknown {
+    if (type !== 'player-death') return rawData;
+    const data = rawData as { player?: { gameId?: unknown }; position?: Position } | null;
+    if (!data?.position || data.position.dimension) return rawData;
+    const gameId = typeof data.player?.gameId === 'string' ? data.player.gameId : '';
+    const dimension = this.lastPositions.get(gameId)?.dimension ?? DEFAULT_DIMENSION;
+    return { ...data, position: { ...data.position, dimension } };
   }
 
   /** Opens the location fallback window and keeps the online set / known cache in step with what Takaro was told. */
@@ -268,7 +282,7 @@ export class Bridge {
     const pos = payload as Position | null;
     if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number' || typeof pos.z !== 'number') return;
     try {
-      this.lastPositions.set(playerId(args), { x: pos.x, y: pos.y, z: pos.z });
+      this.lastPositions.set(playerId(args), { x: pos.x, y: pos.y, z: pos.z, ...(pos.dimension ? { dimension: pos.dimension } : {}) });
     } catch {
       /* no identifier: nothing to remember */
     }
@@ -328,7 +342,7 @@ export class Bridge {
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       logger.warn(`Takaro request ${message.requestId} failed: ${text}`);
-      reply = createErrorResponse(message.requestId, text);
+      reply = createErrorResponse(message.requestId, { code: err instanceof UnsupportedActionError ? 'unsupported' : 'game_error', message: text });
     }
     this.options.takaro.send(reply);
     return reply;

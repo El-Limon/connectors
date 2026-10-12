@@ -133,6 +133,11 @@ export interface SidecarConfig {
   takaroRequestTimeoutMs: number;
   /** Safety margin subtracted from `takaroRequestTimeoutMs` to leave room for the reply to travel. */
   takaroRequestMarginMs: number;
+  /**
+   * `TAKARO_PROTOCOL`: 1 (default) offers protocol versions [0, 1], declaring the map Dimensions; Takaro picks the
+   * highest it speaks. 0 offers version 0 only, exactly as before.
+   */
+  takaroProtocol: 0 | 1;
   /** Max age of a `chat-message` queued during a Takaro outage; older lines are dropped instead of replayed. */
   outageChatMaxAgeMs: number;
 
@@ -293,6 +298,7 @@ export function loadConfig(env: Env = process.env): SidecarConfig {
     banKickCooldownMs: int(env.DUNE_BAN_KICK_COOLDOWN_MS, 15000),
     takaroRequestTimeoutMs: int(env.TAKARO_REQUEST_TIMEOUT_MS, 10000),
     takaroRequestMarginMs: int(env.TAKARO_REQUEST_MARGIN_MS, 1500),
+    takaroProtocol: env.TAKARO_PROTOCOL?.trim() === '0' ? 0 : 1,
     outageChatMaxAgeMs: int(env.DUNE_OUTAGE_CHAT_MAX_AGE_MS, 600000),
 
     dataDir,
