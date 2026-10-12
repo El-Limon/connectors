@@ -468,11 +468,12 @@ void death_hook(void* victim, void* context, void* killer_character, void* other
         ark_weapon::Api weapon_api{};
         weapon_api.game_thread_tid = api.game_thread_tid;
         std::string weapon;
-        const auto held = ark_weapon::held_weapon_name(killer, weapon, weapon_api);
+        const char* failed_step = "";
+        const auto held = ark_weapon::held_weapon_name(killer, weapon, weapon_api, &failed_step);
         if (held != ark_weapon::Status::ok) weapon.clear();
-        enqueue(held == ark_weapon::Status::ok ? "native-killer-weapon-verified"
-                : held == ark_weapon::Status::unarmed ? "native-killer-unarmed"
-                : "native-killer-weapon-unverified");
+        if (held == ark_weapon::Status::ok) enqueue("native-killer-weapon-verified");
+        else if (held == ark_weapon::Status::unarmed) enqueue("native-killer-unarmed");
+        else enqueue((std::string("native-killer-weapon-unverified step=") + failed_step).c_str());
         return ark_death::Event{ark_death::Type::entity_killed,
                                 std::move(code), std::move(entity_name),
                                 std::move(attacker_id), key, std::move(weapon)};

@@ -50,6 +50,9 @@ int main() {
   live(pawn.bytes.data(), 1);
   live(weapon.bytes.data(), 2);
   live(item.bytes.data(), 3);
+  // The engine assigns weak serials lazily: a held weapon and its item have none.
+  put<int32_t>(chunk.bytes.data(), 2 * 16 + 8, 0);
+  put<int32_t>(chunk.bytes.data(), 3 * 16 + 8, 0);
   put<void*>(pawn.bytes.data(), 0x10, pawn_class.bytes.data());
   put<void*>(weapon.bytes.data(), 0x10, weapon_class.bytes.data());
   put<void*>(item.bytes.data(), 0x10, item_class.bytes.data());
@@ -85,9 +88,12 @@ int main() {
   put<void*>(pawn.bytes.data(), 0x100, weapon.bytes.data());
 
   // A pointer that is not a live object-array entry is never followed.
-  put<int32_t>(chunk.bytes.data(), 2 * 16 + 8, 0);
+  put<void*>(chunk.bytes.data(), 2 * 16, item.bytes.data());
   assert(ark_weapon::held_weapon_name(pawn.bytes.data(), name, api) == ark_weapon::Status::unverified && name.empty());
-  put<int32_t>(chunk.bytes.data(), 2 * 16 + 8, 1);
+  put<void*>(chunk.bytes.data(), 2 * 16, weapon.bytes.data());
+  put<int32_t>(weapon.bytes.data(), 0x0C, 99);
+  assert(ark_weapon::held_weapon_name(pawn.bytes.data(), name, api) == ark_weapon::Status::unverified);
+  put<int32_t>(weapon.bytes.data(), 0x0C, 2);
 
   // An item that does not derive from PrimalItem is not named.
   put<void*>(item_class.bytes.data(), 0x30, nullptr);
@@ -99,9 +105,11 @@ int main() {
   assert(ark_weapon::held_weapon_name(pawn.bytes.data(), name, api) == ark_weapon::Status::unverified);
   put<void*>(base_name.bytes.data(), 0x10, string_type.bytes.data());
 
-  // Missing field and misaligned offset.
+  // Missing field and misaligned offset; the failing step is reported.
   put<ark_entity::FName>(current_weapon.bytes.data(), 0x18, {99, 0});
-  assert(ark_weapon::held_weapon_name(pawn.bytes.data(), name, api) == ark_weapon::Status::unverified);
+  const char* step = "";
+  assert(ark_weapon::held_weapon_name(pawn.bytes.data(), name, api, &step) == ark_weapon::Status::unverified);
+  assert(std::string(step) == "CurrentWeapon");
   put<ark_entity::FName>(current_weapon.bytes.data(), 0x18, {11, 0});
   put<int32_t>(current_weapon.bytes.data(), 0x4C, 0x101);
   assert(ark_weapon::held_weapon_name(pawn.bytes.data(), name, api) == ark_weapon::Status::unverified);
