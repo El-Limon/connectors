@@ -42,7 +42,7 @@ int main() {
       [&](void* object, void* killer, ObjectKey key) -> std::optional<Event> {
         ++captures;
         assert(object == victim && killer == attacker);
-        return Event{Type::player_death, "76561198000000000", "Survivor", "76561198000000001", key};
+        return Event{Type::player_death, "76561198000000000", "Survivor", "76561198000000001", key, {}};
       },
       [&](const Event& event) { events.push_back(event); }, syscall(SYS_gettid), objects);
   hook = &support;

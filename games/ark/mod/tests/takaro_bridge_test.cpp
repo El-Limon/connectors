@@ -462,6 +462,22 @@ void test_events_cursor_and_outage_replay() {
   CHECK(death && death->get("payload")->get("data")->get("position") &&
         death->get("payload")->get("data")->get("position")->get("x")->as_number() == 5);
 
+  // entity-killed carries the held weapon's display name; unarmed stays empty.
+  CHECK(eventually([&] { return gate.entities().has_value(); }));
+  gate.record_entity_killed(kId, "Dodo", "Dodo", "Sword");
+  auto armed = takaro.wait_for([](const json::Value& m) {
+    return is_type(m, "gameEvent") && m.get("payload")->get("type")->as_string() == "entity-killed";
+  });
+  CHECK(armed && armed->get("payload")->get("data")->get("weapon")->as_string() == "Sword" &&
+        armed->get("payload")->get("data")->get("entity")->as_string() == "Dodo");
+  const auto before_unarmed = takaro.messages().size();
+  gate.record_entity_killed(kId, "Raptor", "Raptor");
+  auto unarmed = takaro.wait_for([](const json::Value& m) {
+    return is_type(m, "gameEvent") && m.get("payload")->get("type")->as_string() == "entity-killed" &&
+           m.get("payload")->get("data")->get("entity")->as_string() == "Raptor";
+  }, 3000ms, before_unarmed);
+  CHECK(unarmed && unarmed->get("payload")->get("data")->get("weapon")->as_string().empty());
+
   // Player disconnect carries a position the location request can enrich.
   gate.record_position(kId, 10, 20, 30);
   gate.record_departure_position(kId, 11, 21, 31);

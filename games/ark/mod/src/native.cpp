@@ -7,6 +7,7 @@
 #include "moderation_bindings.hpp"
 #include "death_bindings.hpp"
 #include "entity_bindings.hpp"
+#include "weapon_bindings.hpp"
 #include "engine_exec_capture.hpp"
 #include "general_console_bindings.hpp"
 #include "config_file.hpp"
@@ -454,7 +455,7 @@ void death_hook(void* victim, void* context, void* killer_character, void* other
                                         key.index, key.serial);
           return ark_death::Event{ark_death::Type::player_death,
                                   std::move(victim_id), std::move(victim_name),
-                                  std::move(attacker_id), key};
+                                  std::move(attacker_id), key, {}};
         }
         if (attacker_id.empty()) return std::nullopt;
         ark_entity::Api api{};
@@ -464,16 +465,24 @@ void death_hook(void* victim, void* context, void* killer_character, void* other
           return std::nullopt;
         std::string entity_name = g_gate->entity_name_for_code(code);
         if (entity_name.empty()) return std::nullopt;
+        ark_weapon::Api weapon_api{};
+        weapon_api.game_thread_tid = api.game_thread_tid;
+        std::string weapon;
+        const auto held = ark_weapon::held_weapon_name(killer, weapon, weapon_api);
+        if (held != ark_weapon::Status::ok) weapon.clear();
+        enqueue(held == ark_weapon::Status::ok ? "native-killer-weapon-verified"
+                : held == ark_weapon::Status::unarmed ? "native-killer-unarmed"
+                : "native-killer-weapon-unverified");
         return ark_death::Event{ark_death::Type::entity_killed,
                                 std::move(code), std::move(entity_name),
-                                std::move(attacker_id), key};
+                                std::move(attacker_id), key, std::move(weapon)};
       },
       [](const ark_death::Event& event) {
         if (g_gate && event.type == ark_death::Type::player_death) {
           g_gate->record_player_death(event.victim_id, event.victim_name, event.attacker_id);
           enqueue("native-player-death-on-died-verified");
         } else if (g_gate && event.type == ark_death::Type::entity_killed) {
-          g_gate->record_entity_killed(event.attacker_id, event.victim_id, event.victim_name);
+          g_gate->record_entity_killed(event.attacker_id, event.victim_id, event.victim_name, event.weapon);
           enqueue("native-entity-killed-on-died-verified");
         }
       }, tid);

@@ -103,6 +103,7 @@ struct Event {
   std::string attacker_id;
   std::string entity_code;
   std::string entity_name;
+  std::string weapon; // entity-killed: held weapon display name, empty when unarmed or unverified
   std::string timestamp;
   // Actual game-thread position captured at the event, retained exactly as
   // long as this bounded event remains replayable.
@@ -239,7 +240,7 @@ class Server {
   }
 
   void record_entity_killed(const std::string& killer_id, const std::string& code,
-                            const std::string& entity_name) {
+                            const std::string& entity_name, const std::string& weapon = {}) {
     if (killer_id.empty() || code.empty() || entity_name.empty()) return;
     std::lock_guard<std::mutex> lock(mutex_);
     const auto killer = players_.find(killer_id);
@@ -253,6 +254,7 @@ class Server {
     event.type = "entity-killed";
     event.entity_code = code;
     event.entity_name = entity_name;
+    event.weapon = weapon.size() <= 128 ? weapon : std::string();
     event.timestamp = utc_now();
     event.seq = ++sequence_;
     events_.push_back(std::move(event));

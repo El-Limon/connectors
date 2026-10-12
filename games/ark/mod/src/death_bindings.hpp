@@ -74,6 +74,7 @@ struct Event {
   std::string victim_name;   // copied survivor display name before original; bounded to 128 bytes
   std::string attacker_id;   // Steam64 only when killer pawn matched fresh weak roster
   ObjectKey victim_key;
+  std::string weapon;        // display name of the killer's held weapon; empty when unarmed or unverified
 };
 using CaptureFn = std::function<std::optional<Event>(void* victim, void* killer_character, ObjectKey)>;
 using EmitFn = std::function<void(const Event&)>;
@@ -125,7 +126,7 @@ public:
     // the false guard; no actor dereference after original is required.
     if (!captured || captured->victim_id.empty() || captured->victim_id.size() > 512 ||
         captured->victim_name.size() > 128 ||
-        captured->attacker_id.size() > 64) return;
+        captured->attacker_id.size() > 64 || captured->weapon.size() > 128) return;
     try {
       if (!completed_.insert(id).second) return;
       completed_order_.push_back(id);

@@ -141,9 +141,9 @@ inline std::optional<json::Value> map_event(const gate::Event& e, KnownPlayers& 
   if (e.type == "entity-killed") {
     if (js_trim(e.entity_code).empty() || js_trim(e.entity_name).empty()) return std::nullopt;
     data.set("entity", json::str(js_trim(e.entity_code)));
-    // Takaro EventEntityKilled requires a string. Empty means the kill is
-    // verified but the weapon is not identified; never invent one.
-    data.set("weapon", json::str(""));
+    // Takaro EventEntityKilled requires a string: the held weapon's display
+    // name, or empty for an unarmed killer or an unverified weapon (never invented).
+    data.set("weapon", json::str(js_trim(e.weapon)));
   }
   if (!e.timestamp.empty()) data.set("timestamp", json::str(e.timestamp));
   return data;
