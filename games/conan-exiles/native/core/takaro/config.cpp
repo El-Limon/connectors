@@ -38,7 +38,7 @@ unsigned ParseUnsigned(const std::string& text, unsigned fallback, unsigned lo, 
 }
 
 const char* const kKnownKeys[] = {"url", "takaroWsUrl", "identityToken", "registrationToken", "name",
-                                  "serverName", "caFile", "stateDir"};
+                                  "serverName", "caFile", "stateDir", "protocol"};
 
 // A parsed JSON object, or the reason it is not one.
 JsonValue ParseObject(const std::string& text, std::string& error) {
@@ -99,7 +99,8 @@ Config ResolveConfig(const ConfigInput& in) {
             bool known = kv.first.compare(0, 1, "_") == 0;  // "_comment" and friends
             for (auto* k : kKnownKeys) known = known || kv.first == k;
             if (!known) c.warnings.push_back("takaro.json: unknown key '" + kv.first + "' ignored");
-            if (kv.second.type != JsonValue::String && known && kv.first[0] != '_')
+            bool number = kv.first == "protocol" && kv.second.type == JsonValue::Number;  // "protocol": 0
+            if (kv.second.type != JsonValue::String && !number && known && kv.first[0] != '_')
                 c.fileError = c.configFile + ": '" + kv.first + "' must be a string";
         }
         // A file with a wrong type is not applied at all; fields of it would be guesses.
@@ -166,6 +167,15 @@ Config ResolveConfig(const ConfigInput& in) {
     c.actionTimeoutMs = ParseUnsigned(Trim(env("TAKARO_ACTION_TIMEOUT_MS")), 15000, 1000, 600000,
                                       "TAKARO_ACTION_TIMEOUT_MS", c.warnings);
     c.actionWorkers = ParseUnsigned(Trim(env("TAKARO_ACTION_WORKERS")), 2, 1, 8, "TAKARO_ACTION_WORKERS", c.warnings);
+    // The highest protocol version offered: 1 (default) offers [0, 1], 0 sends the protocol 0 identify.
+    std::string protocol = Trim(env("TAKARO_PROTOCOL"));
+    const char* protocolName = "TAKARO_PROTOCOL";
+    if (protocol.empty()) {
+        const JsonValue* v = file.get("protocol");
+        if (v && (v->type == JsonValue::Number || v->type == JsonValue::String)) protocol = Trim(v->str);
+        protocolName = "takaro.json protocol";
+    }
+    c.protocol = ParseUnsigned(protocol, 1, 0, 1, protocolName, c.warnings);
 
     if (Trim(env("TAKARO_CONAN_NATIVE_DISABLE")) == "1") {
         c.inert = true;
@@ -347,6 +357,7 @@ std::string ConfigSummaryJson(const Config& c) {
         .N("reconnectMaxMs", c.reconnectMaxMs)
         .N("actionTimeoutMs", c.actionTimeoutMs)
         .N("actionWorkers", c.actionWorkers)
+        .N("protocol", c.protocol)
         .Raw("sources", sources)
         .Raw("warnings", warnings)
         .Done();

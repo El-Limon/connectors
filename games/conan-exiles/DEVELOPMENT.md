@@ -133,7 +133,7 @@ native/
   `ConanSandbox/Saved/Config/Takaro/takaro.json` (`TAKARO_CONAN_CONFIG` moves it). It is not in
   the zip and an upgrade never touches it. Per field: environment (`TAKARO_IDENTITY_TOKEN`,
   `TAKARO_REGISTRATION_TOKEN`, `TAKARO_WS_URL`, `TAKARO_SERVER_NAME`, `TAKARO_CA_FILE`,
-  `TAKARO_STATE_DIR`; never written to disk), then the file, then the default.
+  `TAKARO_STATE_DIR`, `TAKARO_PROTOCOL`; never written to disk), then the file, then the default.
   - A missing file is created at load from `kConfigTemplate` (unless the environment carries both
     tokens). When neither env nor file sets an identity, a new UUID v4 (and, with no name set,
     `Conan Exiles (<first 8>)`) is written into the file; a save that empties it gets the running
@@ -170,10 +170,39 @@ native/
 - **Threads.** The libwebsockets service thread owns the socket; the bridge thread owns protocol
   state and the outbox; action workers run actions. The ProcessEvent detour only drains the
   game-thread queue when a job is pending, at most 4 jobs or 500 µs per drain.
+- **Protocol version.** identify offers `protocolVersions: [0, 1]` with a Capability Manifest and
+  speaks what `identifyResponse.protocolVersion` picks, per connection (missing = 0, so an older
+  Takaro keeps protocol 0). `"protocol": 0` in takaro.json (or `TAKARO_PROTOCOL=0`) sends the old
+  identify. The manifest (`Adapter::CapabilityManifest`) is built from the coverage registry: every
+  action with native code that is `live-supported` or `not-requested` (`locations.list` enables
+  Takaro's location markers), every live event, and `map` once the loaded map is known; a refused
+  build declares `[]`. The bridge compares it every 2 s and sends a `capabilities` replacement when
+  it changes (the world loads after identify, so the map arrives that way). On protocol 1: errors are
+  `{ code, message }` (`ActionResult.code`; unknown action `unsupported`, timeouts `game_error`),
+  void answers are `payload: null`, an unknown player's location is `payload: null`, and
+  `getPlayerLocation` carries `dimension`.
+- **Map** (`core/conan/map.*`). The dedicated server cook has no map art (the LinuxServer cook only
+  references the client texture `T_FullscreenMap`), so each Dimension is `source: none` and the
+  operator uploads the in-game map in Takaro. The bounds are the server's own calibration:
+  `Base/AlwaysCook/RegionDataTable`, struct `MapCoordinatesAndSpans`, holds two world <-> texture
+  reference points per map (rows `ExiledLands`, `IsleOfSiptah`); extended linearly to the full
+  4000 x 4000 texture they give `exiled_lands` x -342832.9..474770, y -445357.3..368713.7 and
+  `isle_of_siptah` x 1109298.9..2014173.4, y -400051.5..500990.5 (x right, y down). The loaded map
+  comes from the live GameState's path (`ReadService::CurrentRegion`); only that map is declared,
+  since one server runs one map. Live on staging 2026-10-12 (Exiled Lands, Linux): Takaro stored the
+  declared bounds, an image upload without settings took them, and two spots ~300 m apart landed
+  within ~4.5 in-game map pixels (~35 m) of the client's player icon. Siptah's texture size is
+  inferred from its encoded size (same as `T_FullscreenMap`) and not yet checked on a Siptah server.
 - **Delivery.** Every event goes through a durable outbox (`<Saved>/Takaro/state/event-outbox.json`,
-  tmp + fsync + rename) and leaves it only when the pong of a later WebSocket ping confirms it, so a
-  Takaro outage or a server restart replays the unconfirmed tail. Reconnect backoff doubles from
-  2 s to 60 s and resets after a successful identify. A health snapshot is written to
+  tmp + fsync + rename). On protocol 0 it leaves the outbox when the pong of a later WebSocket ping
+  confirms it; on protocol 1 only when an `eventAck` covers its `(streamId, seq)` (pongs are
+  ignored there: Takaro can read a frame and still fail to queue it). Each process sends its new
+  events in a fresh random stream, seq 1, 2, ...; events replayed from disk keep the stream and seq
+  they were first sent with (an outbox written before protocol 1 joins the current stream), so
+  Takaro's high-water deduplication drops what it already handled. Every identify resends the
+  unacknowledged tail in order. A Takaro outage or a server restart therefore replays it. Reconnect
+  backoff doubles from 2 s to 60 s and resets after a successful identify. A health snapshot
+  (including a `protocol` block: version, streamId, acks, the manifest sent) is written to
   `<Saved>/Takaro/state/health.json`.
 - **Toolchain.** `platform/linux/Dockerfile.build` is Debian buster pinned by digest, with
   packages from its dated snapshot, and builds OpenSSL 3.5.8 and libwebsockets 4.5.8 statically
@@ -183,7 +212,9 @@ native/
   the buster container: unit tests; the drift test (`capabilities.json` and `pins.json` equal the
   compiled tables); wire tests of the production Takaro half against a fake Takaro over TLS
   (identify, ping/pong, request correlation, every args shape, events, a forced 20 s outage with
-  outbox replay, a killed process replaying from disk, identify rejection, unknown-build refusal);
+  outbox replay, a killed process replaying from disk, identify rejection, unknown-build refusal,
+  and protocol 1: negotiation, manifest and map Dimension, streamId/seq, eventAck, resend after a
+  reconnect, `{ code, message }` errors, a manifest replacement, the protocol 0 fallbacks);
   and the real library preloaded into a stand-in server executable. With
   `CONAN_SERVER_BINARY=<25639945 ConanSandboxServer-Linux-Shipping>` it also checks that the scan
   reproduces the stage 1 addresses.

@@ -8,6 +8,7 @@
 #include "gtstats.h"
 #include "conan/adapter.h"
 #include "conan/coverage.h"
+#include "conan/map.h"
 #include "conan/text.h"
 #include "elfscan.h"
 #include "pins/pins.h"
@@ -752,8 +753,174 @@ static void TestGtStats() {
     ResetForTests();
 }
 
+
+// Protocol 1: wire shapes, the outbox streams and acks, the map calibration and the manifest.
+static void TestProtocolV1() {
+    using namespace takaro;
+    JsonValue v;
+    CHECK(JsonParse(CreateIdentify("i", "r", "n", "[{\"name\":\"players.list\"}]"), v), "v1 identify json");
+    EQ(JsonDump(v), "{\"type\":\"identify\",\"payload\":{\"identityToken\":\"i\",\"registrationToken\":\"r\",\"name\":\"n\","
+                    "\"protocolVersions\":[0,1],\"capabilities\":[{\"name\":\"players.list\"}]}}");
+    EQ(CreateResponseV1("r1", JsonValue()), "{\"type\":\"response\",\"requestId\":\"r1\",\"payload\":null}");
+    EQ(CreateResponseV1("r1", J("{\"x\":1}")), "{\"type\":\"response\",\"requestId\":\"r1\",\"payload\":{\"x\":1}}");
+    EQ(CreateErrorResponseV1("r2", "not_found", "gone"),
+       "{\"type\":\"response\",\"requestId\":\"r2\",\"error\":{\"code\":\"not_found\",\"message\":\"gone\"}}");
+    EQ(CreateErrorResponseV1("r3", "weird", ""),
+       "{\"type\":\"response\",\"requestId\":\"r3\",\"error\":{\"code\":\"game_error\",\"message\":\"Conan connector error\"}}");
+    EQ(CreateCapabilities("c1", "[]"), "{\"type\":\"capabilities\",\"requestId\":\"c1\",\"payload\":{\"capabilities\":[]}}");
+    std::string ev = CreateGameEvent("log", J("{\"msg\":\"}}\"}"));
+    EQ(WithStream(ev, "abc_1", 42),
+       "{\"type\":\"gameEvent\",\"payload\":{\"type\":\"log\",\"data\":{\"msg\":\"}}\"},\"streamId\":\"abc_1\",\"seq\":42}}");
+    CHECK(JsonParse(WithStream(ev, "abc_1", 42), v), "stream frame is JSON");
+    EQ(WithStream("{}", "s", 1), "{}");
+    CHECK(IsStreamId("4f0e9a1c-6c2b_X") && !IsStreamId("") && !IsStreamId("a b") && !IsStreamId(std::string(129, 'a')),
+          "stream id rule");
+    std::string a = NewStreamId(), b = NewStreamId();
+    CHECK(a.size() == 32 && IsStreamId(a) && a != b, "random stream ids %s %s", a.c_str(), b.c_str());
+
+    char tmpl[] = "/tmp/conan-outbox-v1-XXXXXX";
+    std::string dir = mkdtemp(tmpl);
+    {
+        Store s(dir + "/state", "streamA");
+        s.Load();
+        for (int i = 1; i <= 4; i++) s.Admit("chat-message", CreateGameEvent("chat-message", J("{\"msg\":\"m\"}")));
+        CHECK(s.Outbox().pending[0].stream == "streamA" && s.Outbox().pending[0].seq == 1 &&
+                  s.Outbox().pending[3].seq == 4,
+              "seq 1.. in this process's stream");
+        CHECK(s.Acknowledge("other", 9) == 0, "another stream's ack confirms nothing");
+        CHECK(s.Acknowledge("streamA", 2) == 2 && s.Outbox().pending.size() == 2 && s.Outbox().pending[0].seq == 3,
+              "cumulative ack");
+        CHECK(s.Acknowledge("streamA", 2) == 0, "ack is idempotent");
+        CHECK(s.SaveOutbox(), "save");
+    }
+    {
+        // A restart: the replayed tail keeps stream A and its seqs; new events start stream B at 1.
+        Store s(dir + "/state", "streamB");
+        s.Load();
+        s.Admit("log", CreateGameEvent("log", J("{\"msg\":\"new\"}")));
+        auto& p = s.Outbox().pending;
+        CHECK(p.size() == 3 && p[0].stream == "streamA" && p[0].seq == 3 && p[1].seq == 4 && p[2].stream == "streamB" &&
+                  p[2].seq == 1,
+              "replay keeps its stream, the new process starts its own");
+        CHECK(s.Acknowledge("streamB", 1) == 1 && p.size() == 2, "ack of the new stream leaves the old tail");
+        CHECK(s.Acknowledge("streamA", 4) == 2 && p.empty(), "old stream acked");
+    }
+    {
+        // An outbox written before protocol 1 (no stream/seq): its events join this process's stream.
+        std::string err;
+        CHECK(EnsureDirectory(dir + "/legacy", err) &&
+                  AtomicWriteFile(dir + "/legacy/event-outbox.json",
+                                  "{\"version\":1,\"nextId\":8,\"losses\":0,\"confirmedTotal\":5,\"pending\":["
+                                  "{\"id\":6,\"type\":\"log\",\"frame\":\"{}\"},{\"id\":7,\"type\":\"log\",\"frame\":\"{}\"}]}",
+                                  err),
+              "%s", err.c_str());
+        Store s(dir + "/legacy", "streamC");
+        s.Load();
+        s.Admit("log", "{}");
+        auto& p = s.Outbox().pending;
+        CHECK(s.OutboxUsable() && p.size() == 3 && p[0].stream == "streamC" && p[0].seq == 1 && p[1].seq == 2 &&
+                  p[2].seq == 3 && p[2].id == 8,
+              "legacy events get seq 1, 2 and new ones follow");
+    }
+    OutboxState o;
+    std::string err;
+    CHECK(!ParseOutbox("{\"version\":1,\"nextId\":3,\"pending\":[{\"id\":2,\"type\":\"log\",\"frame\":\"{}\","
+                       "\"stream\":\"bad id\",\"seq\":1}]}",
+                       o, err),
+          "a malformed stream fences");
+    CHECK(!ParseOutbox("{\"version\":1,\"nextId\":3,\"pending\":[{\"id\":2,\"type\":\"log\",\"frame\":\"{}\","
+                       "\"stream\":\"s\",\"seq\":0}]}",
+                       o, err),
+          "seq 0 fences");
+
+    // Map calibration: the server's RegionDataTable rows give the full texture frame.
+    const MapCalibration* el = MapForRegion("ExiledLands");
+    const MapCalibration* sip = MapForRegion("IsleOfSiptah");
+    CHECK(el && sip && !MapForRegion("") && !MapForRegion("Moon"), "regions");
+    MapBounds eb = BoundsOf(*el), sb = BoundsOf(*sip);
+    CHECK(eb.minX == -342832.9 && eb.maxX == 474770.0 && eb.minY == -445357.3 && eb.maxY == 368713.7,
+          "exiled lands bounds %f %f %f %f", eb.minX, eb.maxX, eb.minY, eb.maxY);
+    CHECK(sb.minX == 1109298.9 && sb.maxX == 2014173.4 && sb.minY == -400051.5 && sb.maxY == 500990.5,
+          "siptah bounds %f %f %f %f", sb.minX, sb.maxX, sb.minY, sb.maxY);
+    EQ(DimensionJson(*el),
+       "{\"id\":\"exiled_lands\",\"name\":\"The Exiled Lands\",\"axes\":{\"horizontal\":{\"field\":\"x\",\"direction\":"
+       "\"right\"},\"vertical\":{\"field\":\"y\",\"direction\":\"down\"}},\"bounds\":{\"horizontal\":{\"min\":-342832.9,"
+       "\"max\":474770},\"vertical\":{\"min\":-445357.3,\"max\":368713.7}},\"source\":{\"type\":\"none\"}}");
+    // A reference point maps back onto its own pixel of the 4000 px texture.
+    double px = (el->neWorld[0] - eb.minX) / (eb.maxX - eb.minX) * 4000, py = (el->neWorld[1] - eb.minY) / (eb.maxY - eb.minY) * 4000;
+    CHECK(px > 2347.99 && px < 2348.01 && py > 3057.99 && py < 3058.01, "round trip %f %f", px, py);
+
+    // Manifest and protocol 1 answers of the adapter.
+    std::string region;
+    AdapterOptions opts;
+    opts.ready = true;
+    opts.region = [&] { return region; };
+    opts.reads = [](const std::string& action, const JsonValue& args, ActionResult& out) {
+        if (action != "getPlayerLocation") return false;
+        if (Str(args.get("gameId")).value_or("") == "1") {
+            out.ok = true;
+            out.payload = J("{\"x\":1,\"y\":2,\"z\":3}");
+        } else {
+            out.error = "getPlayerLocation: player 2 is not online";
+            out.code = kNotFound;
+        }
+        return true;
+    };
+    Adapter ad(opts);
+    std::string m = ad.CapabilityManifest();
+    CHECK(JsonParse(m, v) && v.type == JsonValue::Array, "manifest is an array: %s", m.c_str());
+    std::vector<std::string> names;
+    for (auto& e : v.arr) names.push_back(Str(e.get("name")).value_or("?"));
+    std::string joined;
+    for (auto& n : names) joined += n + " ";
+    EQ(joined,
+       "players.get players.list players.location players.inventory items.give items.list entities.list "
+       "locations.list console.execute chat.send players.teleport moderation.kick moderation.ban moderation.unban "
+       "moderation.listBans server.shutdown events.player-connected events.player-disconnected events.chat-message "
+       "events.player-death events.entity-killed events.log ");
+    region = "ExiledLands";
+    m = ad.CapabilityManifest();
+    CHECK(m.find("{\"name\":\"map\",\"parameters\":{\"dimensions\":[{\"id\":\"exiled_lands\"") != std::string::npos,
+          "map declared once the world is known: %s", m.c_str());
+    for (auto& n : names) {
+        std::string pattern = "^[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9-]*)*$";  // the spec's rule, checked by hand
+        bool okName = !n.empty() && n[0] >= 'a' && n[0] <= 'z' && n.size() <= 128;
+        CHECK(okName, "capability name %s (%s)", n.c_str(), pattern.c_str());
+    }
+    auto r = ad.Execute("getPlayerLocation", J("{\"gameId\":\"1\"}"), 1);
+    EQ(JsonDump(r.payload), "{\"x\":1,\"y\":2,\"z\":3,\"dimension\":\"exiled_lands\"}");
+    r = ad.Execute("getPlayerLocation", J("{\"gameId\":\"1\"}"), 0);
+    EQ(JsonDump(r.payload), "{\"x\":1,\"y\":2,\"z\":3}");
+    r = ad.Execute("getPlayerLocation", J("{\"gameId\":\"2\"}"), 1);
+    CHECK(r.ok && r.payload.type == JsonValue::Null, "protocol 1: unknown player location is null");
+    r = ad.Execute("getPlayerLocation", J("{\"gameId\":\"2\"}"), 0);
+    CHECK(!r.ok, "protocol 0 keeps the error");
+    r = ad.Execute("bogus", J("{}"), 1);
+    CHECK(!r.ok && r.code == kUnsupported, "unknown action is unsupported");
+    region = "IsleOfSiptah";
+    r = ad.Execute("getPlayerLocation", J("{\"gameId\":\"1\"}"), 1);
+    CHECK(Str(r.payload.get("dimension")).value_or("") == "isle_of_siptah", "siptah dimension");
+
+    AdapterOptions refused;
+    refused.refusal = "unsupported server build (abc)";
+    refused.region = [] { return std::string("ExiledLands"); };
+    Adapter rf(refused);
+    EQ(rf.CapabilityManifest(), "[]");
+
+    Config c = LoadConfig("/nonexistent", [](const char* n) { return std::string(!strcmp(n, "TAKARO_PROTOCOL") ? "0" : ""); },
+                          "{}", true);
+    CHECK(c.protocol == 0, "TAKARO_PROTOCOL=0");
+    c = LoadConfig("/nonexistent", [](const char*) { return std::string(); }, "{\"protocol\": 0}", true);
+    CHECK(c.protocol == 0 && c.warnings.empty(), "takaro.json protocol 0");
+    c = LoadConfig("/nonexistent", [](const char*) { return std::string(); }, "{}", true);
+    CHECK(c.protocol == 1, "default offers protocol 1");
+    c = LoadConfig("/nonexistent", [](const char*) { return std::string(); }, "{\"protocol\": 7}", true);
+    CHECK(c.protocol == 1 && !c.warnings.empty(), "out of range warns");
+}
+
 int main() {
     TestProtocol();
+    TestProtocolV1();
     TestConfig();
     TestSetJsonString();
     TestConfigWatcher();

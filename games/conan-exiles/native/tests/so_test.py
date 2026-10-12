@@ -137,7 +137,8 @@ def config_reload(tmp, exe, lib, fake, url, cert):
     _, ident = fake.next_frame(lambda v: isinstance(v, dict) and v.get('type') == 'identify', timeout=15,
                                what='identify after the token was saved')
     check(ident['payload'] == {'identityToken': identity, 'registrationToken': REGISTRATION,
-                               'name': 'Conan Exiles (' + identity[:8] + ')'},
+                               'name': 'Conan Exiles (' + identity[:8] + ')', 'protocolVersions': [0, 1],
+                               'capabilities': []},
           'token saved while running: identifies with the generated identity, no restart', ident['payload'])
     eventually(lambda: 'connected to Takaro as' in s.console(), what='connected line')
     check(sorted(p.name for p in s.config.parent.iterdir()) == ['takaro.json']
@@ -247,8 +248,9 @@ def main():
             s.start({'TAKARO_SERVER_NAME': 'From Env'})
             _, ident = fake.next_frame(lambda v: isinstance(v, dict) and v.get('type') == 'identify',
                                        what='identify')
+            # Protocol 1 is offered; an unknown build declares nothing (it refuses every action anyway).
             check(ident['payload'] == {'identityToken': IDENTITY, 'registrationToken': REGISTRATION,
-                                       'name': 'From Env'},
+                                       'name': 'From Env', 'protocolVersions': [0, 1], 'capabilities': []},
                   'identifies with the takaro.json tokens; env wins over the file (name)', ident['payload'])
             eventually(lambda: events_of(fake.log), what='critical notice')
             notice = events_of(fake.log)

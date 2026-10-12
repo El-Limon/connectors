@@ -56,6 +56,7 @@ struct Config {
     unsigned reconnectBaseMs = 2000, reconnectMaxMs = 60000;
     unsigned actionTimeoutMs = 15000;
     unsigned actionWorkers = 2;
+    unsigned protocol = 1;  // highest protocol version offered (TAKARO_PROTOCOL / takaro.json "protocol")
 
     std::string configFile;  // the takaro.json path that was consulted
     // Where each setting came from ("env NAME", "takaro.json key", "default"); never values.
