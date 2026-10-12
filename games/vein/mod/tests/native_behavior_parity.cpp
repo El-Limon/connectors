@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 
 using Json=nlohmann::json;
 namespace fs=std::filesystem;
@@ -133,7 +134,7 @@ int main(){
     Check(!NativeBehavior::Engine::ExecuteAction(unavailable).errorText.empty(),"failed plugin and game HTTP getter reports error");
     playersDown=false;
     Check(run("getPlayer",Json{{"player",{{"gameId","steam:76561198000000003"}}}})["online"]==false,"unknown offline player gets minimal valid record");
-    Check(run("getPlayerLocation",Json{{"gameId",id}})==Json{{"x",1},{"y",2},{"z",3}},"location xyz DTO");
+    Check(run("getPlayerLocation",Json{{"gameId",id}})==Json{{"x",1},{"y",2},{"z",3},{"dimension",NativeMap::kDimensionId}},"location xyz DTO in the map Dimension");
     noPawn=true;
     auto missingLocation=engine.PrepareAction("missing","getPlayerLocation",Json{{"gameId",id}}.dump(),1);
     Check(!NativeBehavior::Engine::ExecuteAction(missingLocation).errorText.empty(),"outside event window must fail");
@@ -141,7 +142,7 @@ int main(){
     Check(store.AdmitSynthetic(join.frame),"durable join before observe");
     {NativePersistence::Store afterCrash;Check(afterCrash.Load(),"reload before legacy online mirror");NativeBehavior::Engine derived(afterCrash);Check(derived.Load(),"rebuild derived online after crash");Check(Parse(derived.Snapshot()->onlinePlayersJson).size()==1,"admitted join survives crash before mirror");}
     Check(engine.ObserveAdmitted(join),"observe join opens enrichment window");
-    Check(run("getPlayerLocation",Json{{"gameId",id}})==Json{{"x",1},{"y",2},{"z",3}},"cached location during join window");
+    Check(run("getPlayerLocation",Json{{"gameId",id}})==Json{{"x",1},{"y",2},{"z",3},{"dimension",NativeMap::kDimensionId}},"cached location during join window");
     noPawn=false;
     auto inv=run("getPlayerInventory",Json{{"gameId",id}});Check(inv.size()==2&&inv[0]["amount"]==2&&inv[0]["name"]=="Meal","inventory aggregation");
     Check(run("giveItem",Json{{"gameId",id},{"item","MRE"},{"quality",nullptr}}).empty()&&lastGiveCode=="MRE"&&lastGiveAmount==1,
@@ -152,43 +153,31 @@ int main(){
     Check(run("listEntities",Json::object())[0]["type"]=="hostile","entity mapping");
     Check(run("listLocations",Json::object())[0]["position"]["z"]==3,"locations");
     {
-        // getMapInfo / getMapTile from a pre-rendered tile directory (TAKARO_MAP_DIR).
-        const fs::path mapDir=fs::temp_directory_path()/"vein-native-map-test";
-        fs::remove_all(mapDir);
-        setenv("TAKARO_MAP_DIR",mapDir.c_str(),1);
-        auto failText=[&](const std::string& name,const Json& args){auto p=engine.PrepareAction("m",name,args.dump(),1);return NativeBehavior::Engine::ExecuteAction(p).errorText;};
+        // Protocol version 1 map: one `none` Dimension calibrated from the game's map widget.
+        const Json manifest=Parse(NativeBehavior::CapabilityManifestJson());
+        std::vector<std::string> names;for(const auto& c:manifest)names.push_back(c["name"].get<std::string>());
+        Check(std::set<std::string>(names.begin(),names.end()).size()==names.size(),"manifest has no duplicate names");
+        for(const char* name:{"players.list","players.location","moderation.listBans","server.shutdown","events.chat-message","events.log","map"})
+            Check(std::find(names.begin(),names.end(),name)!=names.end(),std::string("manifest declares ")+name);
+        Check(std::find(names.begin(),names.end(),"testReachability")==names.end(),"testReachability is not a capability");
+        const Json map=manifest.back();
+        Check(map["name"]=="map"&&map["parameters"]["dimensions"].size()==1,"one map Dimension");
+        const Json dim=map["parameters"]["dimensions"][0];
+        Check(dim["id"]==NativeMap::kDimensionId&&dim["source"]==Json{{"type","none"}},"Dimension id and none source");
+        Check(dim["axes"]==Json{{"horizontal",{{"field","y"},{"direction","right"}}},{"vertical",{{"field","x"},{"direction","up"}}}},
+              "east (+y) is right and north (+x) is up");
+        Check(dim["bounds"]==Json{{"horizontal",{{"min",-600000},{"max",600000}}},{"vertical",{{"min",-600000},{"max",600000}}}},
+              "bounds are MapMakerMarker OrthoWidth 1,200,000 cm around the origin");
         const Json off=run("getMapInfo",Json::object());
-        Check(off["enabled"]==false&&off["maxZoom"].is_number()&&off["mapBlockSize"].is_number()&&off["mapSizeX"].is_number()&&
-              off["mapSizeY"].is_number()&&off["mapSizeZ"].is_number()&&off.size()==6,"map info without tiles is a full DTO with enabled=false");
-        Check(failText("getMapTile",Json{{"x",0},{"y",0},{"z",0}}).find("not installed")!=std::string::npos,"tile without map says not installed");
-        fs::create_directories(mapDir/"0"/"-1");fs::create_directories(mapDir/"2");
-        {std::ofstream(mapDir/"map.json")<<R"({"maxZoom":2,"mapBlockSize":37500,"mapSizeX":1200000,"mapSizeY":1200000,"mapSizeZ":100000,"extra":"ignored"})";}
-        const std::string png=std::string("\x89PNG\r\n\x1a\n",8)+std::string("tile-0/-1/0",11);
-        {std::ofstream(mapDir/"0"/"-1"/"0.png",std::ios::binary)<<png;}
-        const Json on=run("getMapInfo",Json::object());
-        Check(on==Json{{"enabled",true},{"mapBlockSize",37500},{"maxZoom",2},{"mapSizeX",1200000},{"mapSizeY",1200000},{"mapSizeZ",100000}},
-              "map info reports exactly the six DTO fields from map.json");
-        const Json tile=run("getMapTile",Json{{"x",-1},{"y",0},{"z",0}});
-        Check(tile.is_string()&&tile.get<std::string>()==NativeMap::Base64(png),"tile answers the file as base64");
-        Check(run("getMapTile",Json{{"x","-1"},{"y","0"},{"z","0"}})==tile,"numeric string tile indices accepted");
-        Check(failText("getMapTile",Json{{"x",5},{"y",5},{"z",0}}).find("not been rendered")!=std::string::npos,"missing tile without blank.png is an error");
-        const std::string blank=std::string("\x89PNG\r\n\x1a\n",8)+"blank";
-        {std::ofstream(mapDir/"blank.png",std::ios::binary)<<blank;}
-        Check(run("getMapTile",Json{{"x",5},{"y",5},{"z",0}}).get<std::string>()==NativeMap::Base64(blank),"tile beyond the image answers blank.png");
-        Check(failText("getMapTile",Json{{"x",0},{"y",0},{"z",3}}).find("outside 0..2")!=std::string::npos,"zoom above maxZoom refused");
-        Check(failText("getMapTile",Json{{"x",0.5},{"y",0},{"z",0}}).find("integer")!=std::string::npos,"fractional index refused");
-        Check(failText("getMapTile",Json{{"x","../../etc"},{"y",0},{"z",0}}).find("integer")!=std::string::npos,"path-like index refused");
-        Check(failText("getMapTile",Json{{"y",0},{"z",0}}).find("integer 'x'")!=std::string::npos,"missing index refused");
-        {std::ofstream(mapDir/"0"/"-1"/"1.png",std::ios::binary)<<"not a png";}
-        Check(failText("getMapTile",Json{{"x",-1},{"y",1},{"z",0}}).find("not a PNG")!=std::string::npos,"non-PNG tile file refused");
-        fs::remove_all(mapDir/"2");
-        Check(run("getMapInfo",Json::object())["enabled"]==false,"map without its deepest zoom level is disabled");
-        {std::ofstream(mapDir/"map.json")<<R"({"maxZoom":"4","mapBlockSize":37500,"mapSizeX":1,"mapSizeY":1,"mapSizeZ":1})";}
-        fs::create_directories(mapDir/"4");
-        Check(run("getMapInfo",Json::object())["enabled"]==false,"malformed map.json is disabled, never a bad DTO");
-        Check(NativeMap::Base64("")==""&&NativeMap::Base64("f")=="Zg=="&&NativeMap::Base64("fo")=="Zm8="&&NativeMap::Base64("foo")=="Zm9v"&&
-              NativeMap::Base64("foobar")=="Zm9vYmFy","RFC 4648 base64 vectors");
-        unsetenv("TAKARO_MAP_DIR");fs::remove_all(mapDir);
+        Check(off==Json{{"enabled",false},{"mapBlockSize",128},{"maxZoom",0},{"mapSizeX",0},{"mapSizeY",0},{"mapSizeZ",0}},
+              "version 0 map info is a full DTO with enabled=false");
+        auto tile=engine.PrepareAction("m","getMapTile",Json{{"dimension",NativeMap::kDimensionId},{"zoom",0},{"x",0},{"y",0}}.dump(),1);
+        const std::string tileError=NativeBehavior::Engine::ExecuteAction(tile).errorText;
+        Check(NativeBehavior::ErrorCode(tileError)=="unsupported","no tiles: getMapTile is unsupported ("+tileError+")");
+        Check(NativeBehavior::ErrorCode("teleportPlayer requires numeric x, y, z")=="invalid_args"&&
+              NativeBehavior::ErrorCode("player not online")=="not_found"&&
+              NativeBehavior::ErrorCode("native action queue overloaded")=="internal"&&
+              NativeBehavior::ErrorCode("give failed: no inventory")=="game_error","version 1 error codes");
     }
     Check(run("executeConsoleCommand",Json{{"command","bad"}})["success"]==false,"command error DTO");
     Check(run("executeConsoleCommand",Json{{"command","save"}})["rawResult"]=="saved","command output");

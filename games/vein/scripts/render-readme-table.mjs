@@ -88,9 +88,9 @@ const ROWS = [
     notes: { partial: 'Forwarded with secrets redacted, but Takaro does not store log events.',
              failed: 'The connector forwards server log lines (redacted), but Takaro does not store log lines as events, so they cannot be searched or used in modules.' } },
 
-  // ---- map: served from tiles the operator renders from their own client ----
-  { label: 'Map info', fixed: CAVEAT, note: 'Works once map tiles are installed (see below); reports the 12 km map and its tile scale.' },
-  { label: 'Map tiles', fixed: CAVEAT, note: 'The in-game map, served as tiles. The server files carry no map image, so you render the tiles once from your own game client with `scripts/build-map-tiles.py` ([INSTALL.md](INSTALL.md#map-tiles-optional)).' },
+  // ---- map: protocol version 1 Dimension, picture uploaded by the operator ----
+  { label: 'Map info', fixed: OK, note: 'The connector declares the 12 km map area to Takaro, so player dots land in the right place.' },
+  { label: 'Map tiles', fixed: CAVEAT, note: 'The server files carry no map picture. Upload the in-game map once in the Takaro dashboard ([INSTALL.md](INSTALL.md#world-map)).' },
 
   // ---- modules (7 capabilities, 5 rows) ----
   { label: 'Modules: chat commands', keys: ['modules.command'],

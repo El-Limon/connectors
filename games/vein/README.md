@@ -79,8 +79,8 @@ Verified on the native connector (v0.3.0) with a real game client and Takaro on 
 | Player death event | ✅ | Position and cause included; falls and drowning have no attacker. |
 | Entity kill event | ✅ | Creature, player and held item. AI-on-AI kills are not reported. |
 | Log events | ⚠️ | Forwarded with secrets redacted, but Takaro does not store log events. |
-| Map info | ⚠️ | Works once map tiles are installed (see below); reports the 12 km map and its tile scale. |
-| Map tiles | ⚠️ | The in-game map, served as tiles. The server files carry no map image, so you render the tiles once from your own game client with `scripts/build-map-tiles.py` ([INSTALL.md](INSTALL.md#map-tiles-optional)). |
+| Map info | ✅ | The connector declares the 12 km map area to Takaro, so player dots land in the right place. |
+| Map tiles | ⚠️ | The server files carry no map picture. Upload the in-game map once in the Takaro dashboard ([INSTALL.md](INSTALL.md#world-map)). |
 | Modules: chat commands | ✅ | In-game commands reach the module and answer in chat. |
 | Modules: hooks | ✅ | Chat and join hooks fire and run their code. |
 | Modules: cronjobs | ✅ | Scheduled module runs fire and can message the server. |

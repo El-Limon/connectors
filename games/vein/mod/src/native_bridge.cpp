@@ -230,6 +230,16 @@ uint64_t requestCount = 0, protocolErrorCount = 0;
 std::string lastRequestAction;
 std::atomic<uint64_t> overloads{0};
 bool identified = false;
+// Protocol Version Takaro chose for the current connection (0 until a version 1 identifyResponse).
+std::atomic<int> protocolVersion{0};
+// Highest version 1 eventAck `upTo` for our stream, picked up by the bridge loop's confirmation.
+uint64_t ackedThrough = 0;
+// Highest seq sent on the current connection, and since when the oldest sent event waits for its
+// ack. Version 1 resends only after a reconnect, so a missing ack forces one.
+uint64_t highestSentSeq = 0;
+std::optional<Clock::time_point> unackedSince;
+constexpr auto kAckTimeout = std::chrono::seconds(30);
+uint64_t eventErrorCount = 0;
 bool liveEpoch = false;
 std::string lastError;
 struct Published {
@@ -380,9 +390,29 @@ Json MapEvent(const Json& e) {
     return {{"type", "gameEvent"}, {"payload", {{"type", type}, {"data", out}}}};
 }
 
+// Version 1 events and acks name this stream: one per process, as the protocol asks.
+std::string StreamId() { return "vein-" + BootId(); }
+
+// Version 0 keeps the free-form string; version 1 uses the standard { code, message } error.
+Json ErrorValue(const std::string& message) {
+    if (protocolVersion != 1) return message;
+    return {{"code", NativeBehavior::ErrorCode(message)},
+            {"message", message.empty() ? std::string("Game server returned an error") : message}};
+}
+
+// Version 1 gameEvent: the stored version 0 frame plus streamId and seq (the durable outbox id,
+// which only grows, so a resend after reconnect carries the same seq).
+NativeTransport::Frame StampEvent(const NativeTransport::Frame& frame, uint64_t seq) {
+    Json f = Json::parse(*frame, nullptr, false);
+    if (!f.is_object() || !f.contains("payload") || !f["payload"].is_object()) return frame;
+    f["payload"]["streamId"] = StreamId();
+    f["payload"]["seq"] = seq;
+    return std::make_shared<const std::string>(f.dump());
+}
+
 void SendError(const std::string& id, uint64_t epoch, const std::string& message) {
     if (id.empty()) return;
-    Json frame = {{"type", "response"}, {"requestId", id}, {"error", message}};
+    Json frame = {{"type", "response"}, {"requestId", id}, {"error", ErrorValue(message)}};
     auto result = NativeTransport::Queue({NativeTransport::Kind::CriticalResponse,
         std::make_shared<const std::string>(frame.dump()), epoch, 0, false});
     if (!result) {
@@ -421,9 +451,11 @@ void HandleFrame(const NativeTransport::Notice& n) {
     std::string type = Str(f, "type");
     if (type == "identifyResponse") {
         Json p = Record(f.value("payload", Json::object()));
-        if (p.contains("error") && !p["error"].is_null()) {
+        // Version 0 refusals sit in payload.error; version 1 refusals are a top-level error.
+        const bool refusedV1 = f.contains("error") && !f["error"].is_null() && f["error"] != false && f["error"] != "";
+        if (refusedV1 || (p.contains("error") && !p["error"].is_null())) {
             lastError = "Takaro rejected identity";
-            const Json& e = p["error"];
+            const Json& e = refusedV1 ? f["error"] : p["error"];
             // Only the name, message and HTTP status; the raw error object may echo tokens.
             std::string why = e.is_string() ? e.get<std::string>()
                             : e.is_object() ? Str(e, "message", Str(e, "name", "unknown error")) : "unknown error";
@@ -435,7 +467,9 @@ void HandleFrame(const NativeTransport::Notice& n) {
             return;
         }
         identified = true;
-        PluginLog("native: identified with Takaro (epoch %llu)", (unsigned long long)n.epoch);
+        protocolVersion = p.contains("protocolVersion") && p["protocolVersion"] == 1 ? 1 : 0;
+        PluginLog("native: identified with Takaro (epoch %llu, protocol version %d)", (unsigned long long)n.epoch,
+                  protocolVersion.load());
         if (!consoleLive) {
             consoleLive = true; consoleProblem.clear();
             ConsoleLine("connected to Takaro as \"%s\"; the server now shows as reachable in the dashboard",
@@ -455,6 +489,28 @@ void HandleFrame(const NativeTransport::Notice& n) {
         if (detail.size() > 512) detail.resize(512);
         lastError = "Takaro protocol error: " + detail;
         if (!identified) BannerRefused(detail);
+    } else if (type == "eventAck" && protocolVersion == 1) {
+        const Json p = Record(f.value("payload", Json::object()));
+        const Json upTo = p.value("upTo", Json());
+        // Never confirm past what this connection sent: a wrong ack must not drop unsent events.
+        if (Str(p, "streamId") == StreamId() && upTo.is_number_unsigned() && upTo.get<uint64_t>() > ackedThrough)
+            ackedThrough = std::min(upTo.get<uint64_t>(), highestSentSeq);
+        if (ackedThrough >= highestSentSeq) unackedSince.reset();
+        else unackedSince = Clock::now();
+    } else if (type == "eventError") {
+        // Takaro acknowledges a rejected event too, so it is never resent; keep the reason visible.
+        ++eventErrorCount;
+        const Json p = Record(f.value("payload", Json::object()));
+        const Json e = f.value("error", Json());
+        std::string why = e.is_object() ? Str(e, "code") + ": " + Str(e, "message") : e.is_string() ? e.get<std::string>() : "";
+        lastError = "Takaro rejected event seq " + p.value("seq", Json()).dump() + (why.empty() ? "" : " (" + why + ")");
+        PluginLog("native: %s", lastError.c_str());
+    } else if (type == "capabilitiesResponse") {
+        const Json e = f.value("error", Json());
+        if (!e.is_null()) {
+            lastError = "Takaro refused the capability manifest: " + (e.is_object() ? Str(e, "message") : e.dump());
+            PluginLog("native: %s", lastError.c_str());
+        }
     } else if (type == "ping") {
         if (!NativeTransport::Queue(NativeTransport::Kind::Control, R"({"type":"pong"})", 0, n.epoch))
             NativeTransport::RequestClose(n.epoch, 1013, "control queue full");
@@ -622,10 +678,15 @@ void FlushEvents() {
         if (!durable->EventOutboxDurable()) return;
         for (const auto& e : durable->Current().pending) {
             if (sentEpochByOutboxId[e.outboxId] == currentEpoch) continue;
-            auto queued = NativeTransport::Queue({NativeTransport::Kind::Event, e.frame,
+            auto queued = NativeTransport::Queue({NativeTransport::Kind::Event,
+                                                  protocolVersion == 1 ? StampEvent(e.frame, e.outboxId) : e.frame,
                                                   currentEpoch, e.outboxId, false});
             if (!queued) break;
             sentEpochByOutboxId[e.outboxId] = currentEpoch;
+            if (protocolVersion == 1) {
+                highestSentSeq = std::max(highestSentSeq, e.outboxId);
+                if (!unackedSince) unackedSince = Clock::now();
+            }
             Json frame = Json::parse(*e.frame, nullptr, false);
             if (frame.is_object()) {
                 Json payload = Record(frame.value("payload", Json::object()));
@@ -912,23 +973,33 @@ void BridgeLoop() {
             if (n.type == NativeTransport::NoticeType::Open || n.type == NativeTransport::NoticeType::Closed)
                 flushConfirm();
             if (n.type == NativeTransport::NoticeType::Open) {
-                currentEpoch = n.epoch; identified = false; liveEpoch = true;
+                currentEpoch = n.epoch; identified = false; liveEpoch = true; protocolVersion = 0; ackedThrough = 0;
+                highestSentSeq = 0; unackedSince.reset();
                 sentEpochByOutboxId.clear();
                 Json p = {{"identityToken", identity}};
                 if (!registration.empty()) p["registrationToken"] = registration;
                 if (!serverName.empty()) p["name"] = serverName;
+                // Offer version 1 with version 0 as fallback; older Takaro ignores both keys.
+                // TAKARO_PROTOCOL=0 keeps the plain version 0 identify. The gate path has no
+                // durable outbox ids to use as seq, so it stays on version 0.
+                const char* forced = ConfigFile::Get("TAKARO_PROTOCOL");
+                if (!gateMode && !(forced && strcmp(forced, "0") == 0)) {
+                    p["protocolVersions"] = {0, 1};
+                    p["capabilities"] = Json::parse(NativeBehavior::CapabilityManifestJson());
+                }
                 if (!NativeTransport::Queue(NativeTransport::Kind::Control,
                                             Json({{"type", "identify"}, {"payload", p}}).dump(), 0, n.epoch))
                     NativeTransport::RequestClose(n.epoch, 1013, "identify queue full");
             } else if (n.type == NativeTransport::NoticeType::Closed && n.epoch == currentEpoch) {
                 PluginLog("native: Takaro connection closed (epoch %llu%s%s)", (unsigned long long)n.epoch,
                           lastError.empty() ? "" : ", last error: ", lastError.c_str());
-                identified = false; liveEpoch = false;
+                identified = false; liveEpoch = false; protocolVersion = 0;
                 if (consoleLive && !stopping) { consoleLive = false; ConsoleLine("lost the connection to Takaro; reconnecting"); }
                 if (gateMode) for (auto& e : outbox) e.sentEpoch = 0;
                 else sentEpochByOutboxId.clear();
             } else if (n.type == NativeTransport::NoticeType::Frame && n.epoch == currentEpoch && liveEpoch) {
                 try { HandleFrame(n); } catch (const std::exception& ex) { lastError = ex.what(); }
+                if (ackedThrough > confirmThrough) { confirmThrough = ackedThrough; confirmEpoch = n.epoch; }
             } else if (n.type == NativeTransport::NoticeType::Written && shutdownResponse &&
                        n.pingAfterWrite && n.ticket.epoch == shutdownResponse->ticket.epoch &&
                        n.ticket.writeId == shutdownResponse->ticket.writeId) {
@@ -940,7 +1011,9 @@ void BridgeLoop() {
                         confirmedSeq = outbox.front().seq;
                         eventBytes -= outbox.front().frame.size(); outbox.pop_front();
                     }
-                } else if (n.outboxId > confirmThrough) {
+                } else if (protocolVersion != 1 && n.outboxId > confirmThrough) {
+                    // Version 0 has no acks: a pong after the write is the confirmation. Version 1
+                    // waits for Takaro's eventAck instead.
                     confirmThrough = n.outboxId; confirmEpoch = n.epoch;
                 }
                 if (shutdownResponse && shutdownResponse->written &&
@@ -1068,7 +1141,7 @@ void BridgeLoop() {
                 const std::string& error = completed.full ? applied.errorText : completed.error;
                 const std::string& payload = completed.full ? applied.payloadJson : completed.payload;
                 if (error.empty()) response["payload"] = Json::parse(payload, nullptr, false);
-                else response["error"] = error;
+                else response["error"] = ErrorValue(error);
                 std::string encoded = response.dump();
                 if (encoded.size() > 8*1024*1024) SendError(completed.id, currentEpoch, "response exceeds 8 MiB");
                 else if (completed.full && applied.deferredShutdown && error.empty()) {
@@ -1122,6 +1195,12 @@ void BridgeLoop() {
         }
         if (!gateMode && identified && Clock::now() >= nextReconcile) {
             ScheduleReconciliation(); nextReconcile = Clock::now() + std::chrono::seconds(30);
+        }
+        if (protocolVersion == 1 && identified && unackedSince && Clock::now() - *unackedSince > kAckTimeout) {
+            lastError = "no eventAck from Takaro for 30 s; reconnecting to resend";
+            PluginLog("native: %s", lastError.c_str());
+            unackedSince.reset();
+            NativeTransport::RequestClose(currentEpoch, 1013, "event ack timeout");
         }
         PrepareNextAction();
         FlushEvents();
@@ -1477,6 +1556,7 @@ std::string HealthJson() {
                {"lastError", published.error},
                {"requestCount", published.requests}, {"lastRequestAction", published.action},
                {"protocolErrorCount", published.protocolErrors},
+               {"protocolVersion", protocolVersion.load()},
                {"stateVersion", published.stateVersion},
                {"persistenceLastError", published.persistenceError},
                {"behavior", Json::parse(published.behaviorHealth, nullptr, false)},
