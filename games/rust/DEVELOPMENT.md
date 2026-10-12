@@ -234,6 +234,19 @@ The pure part lives between `takaro:config-begin` / `takaro:config-end`; `tests/
 compiles that region on its own against the pinned `Newtonsoft.Json.dll` and runs the fresh, upgrade,
 env-precedence, half-saved-file and identity cases (CI runs it in the `test` job).
 
+### World map (getMapInfo / getMapTile)
+
+The map is the game's own render (`MapImageRenderer.Render`, the code behind `world.rendermap`),
+drawn once per world on the main thread a moment after `OnServerInitialized` (about 3.6 s for a
+1000 m world) and kept as `carbon/data/TakaroConnector_map_<size>_<seed>_<hash>.png`. The hash covers
+`World.MapFileName` and `World.Checksum`, so a new seed, size, game protocol or custom map gets a new
+render and older renders are deleted; later starts and reloads only decode the PNG. Tiles use the
+7 Days to Die web-map layout the Takaro player map draws: 128 px tiles, signed indices centred on the
+world origin, x east, y north, one metre per pixel at `maxZoom` 4, served out to 512 m of ocean past
+the world edge. Errors start with `invalid_args`, `map_not_ready` or `tile_out_of_range`. The pure
+part lives between `takaro:map-begin` / `takaro:map-end`; `tests/map/run.sh` runs it the same way
+as the config harness.
+
 ### Environment variables
 
 | Variable | Description | Default |
