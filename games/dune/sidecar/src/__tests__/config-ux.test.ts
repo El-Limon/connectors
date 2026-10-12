@@ -100,7 +100,7 @@ describe('identity', () => {
     expect(fs.existsSync(path.join(i.dataDir, IDENTITY_FILE_NAME))).toBe(false);
   });
 
-  it('a failed save keeps the same generated identity for the run', () => {
+  it('a failed save keeps the same generated identity for the run and is retried', () => {
     const i = install({ file: 'TAKARO_REGISTRATION_TOKEN=r\n' });
     fs.rmSync(i.dataDir, { recursive: true });
     fs.writeFileSync(i.dataDir, 'not a directory');
@@ -109,6 +109,12 @@ describe('identity', () => {
     expect(first).toMatch(UUID);
     fs.writeFileSync(i.configFile, 'TAKARO_REGISTRATION_TOKEN=r2\n');
     expect(s.poll()?.identityToken).toBe(first);
+    // Once the data dir is writable again, the next read saves the same identity.
+    fs.rmSync(i.dataDir);
+    fs.mkdirSync(i.dataDir);
+    fs.writeFileSync(i.configFile, 'TAKARO_REGISTRATION_TOKEN=r3\n');
+    expect(s.poll()?.identityToken).toBe(first);
+    expect(i.saved()).toBe(first);
   });
 });
 

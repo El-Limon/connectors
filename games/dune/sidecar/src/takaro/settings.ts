@@ -182,28 +182,25 @@ export class TakaroSettingsSource {
    */
   private resolveIdentity(configured: string): string {
     const idFile = path.join(this.options.dataDir, IDENTITY_FILE_NAME);
-    let identity = configured;
-    let why = 'configured';
-    if (!identity) {
-      identity = readSavedIdentity(idFile);
-      why = `saved in ${idFile}`;
+    if (configured) return this.announce(configured, 'configured');
+    const saved = readSavedIdentity(idFile);
+    if (saved) return this.announce(saved, `saved in ${idFile}`);
+    // Not saved yet, or the last save failed: (re)try with this run's identity, so it never changes mid-run.
+    const fresh = !this.generated;
+    if (fresh) this.generated = randomUUID();
+    try {
+      fs.mkdirSync(this.options.dataDir, { recursive: true });
+      const tmp = `${idFile}.tmp`;
+      fs.writeFileSync(tmp, `${JSON.stringify({ identityToken: this.generated }, null, 2)}\n`);
+      fs.renameSync(tmp, idFile);
+      return this.announce(this.generated, `generated for this install and saved in ${idFile}`);
+    } catch (err) {
+      this.log.warn(`Could not save the Takaro identity to ${idFile}: ${(err as Error).message}. Keep TAKARO_DATA_DIR writable, or set TAKARO_IDENTITY_TOKEN.`);
+      return this.announce(this.generated, fresh ? 'generated for this run, not saved' : 'generated for this run, still not saved');
     }
-    if (!identity && this.generated) {
-      identity = this.generated;
-      why = 'generated for this run; not saved';
-    }
-    if (!identity) {
-      identity = this.generated = randomUUID();
-      why = `generated for this install and saved in ${idFile}`;
-      try {
-        fs.mkdirSync(this.options.dataDir, { recursive: true });
-        const tmp = `${idFile}.tmp`;
-        fs.writeFileSync(tmp, `${JSON.stringify({ identityToken: identity }, null, 2)}\n`);
-        fs.renameSync(tmp, idFile);
-      } catch (err) {
-        this.log.warn(`Could not save the Takaro identity to ${idFile}: ${(err as Error).message}. Keep TAKARO_DATA_DIR writable, or set TAKARO_IDENTITY_TOKEN.`);
-      }
-    }
+  }
+
+  private announce(identity: string, why: string): string {
     if (identity !== this.settings?.identityToken) this.log.info(`Takaro identity: ${identity} (${why})`);
     return identity;
   }
