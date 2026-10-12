@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
  * The Takaro connection settings, and the only part of the configuration that changes while the sidecar runs.
  *
  * Sources, per key:
- *  - the environment, which wins at start exactly as before (a Docker install gets it from compose's `--env-file`);
+ *  - the environment, which wins at start (a Docker install gets it from compose's `--env-file`);
  *  - the `.env` file the operator edits (`TAKARO_CONFIG_FILE`), re-read every few seconds. Once a key's value in the
  *    file differs from what the file said at start, the file wins for that key: Docker bakes the environment at
  *    container create, so the edited file is the newest word.
@@ -18,8 +18,6 @@ import { fileURLToPath } from 'node:url';
 export const RELOADABLE_KEYS = ['TAKARO_WS_URL', 'TAKARO_REGISTRATION_TOKEN', 'TAKARO_IDENTITY_TOKEN', 'TAKARO_SERVER_NAME'] as const;
 type ReloadableKey = (typeof RELOADABLE_KEYS)[number];
 
-/** The identity every install used before identities were generated. Existing installs on it keep it. */
-export const LEGACY_IDENTITY = 'dune';
 export const IDENTITY_FILE_NAME = 'takaro-identity.json';
 const DEFAULT_WS_URL = 'wss://connect.takaro.io/';
 
@@ -72,8 +70,6 @@ export interface SettingsSourceOptions {
   env: Env;
   configFile: string;
   dataDir: string;
-  /** Files whose presence in `dataDir` marks an install that ran before identities were generated. */
-  legacyStateFiles: string[];
   readFile?: (file: string) => string;
   log?: { info: (m: string) => void; warn: (m: string) => void };
 }
@@ -93,6 +89,8 @@ export class TakaroSettingsSource {
   private file: Partial<Record<ReloadableKey, string>> = {};
   private readonly overridden = new Set<ReloadableKey>();
   private settings: TakaroSettings;
+  /** This run's generated identity, so a failed save does not mean a new one on every read. */
+  private generated = '';
 
   constructor(private readonly options: SettingsSourceOptions) {
     this.env = options.env;
@@ -163,7 +161,7 @@ export class TakaroSettingsSource {
 
   private value(key: ReloadableKey): string {
     if (this.overridden.has(key)) return this.file[key] ?? '';
-    const fromEnv = blankComment(this.env[key]?.trim() ?? '');
+    const fromEnv = this.env[key]?.trim() ?? '';
     return fromEnv ? fromEnv : (this.file[key] ?? '');
   }
 
@@ -178,49 +176,34 @@ export class TakaroSettingsSource {
   }
 
   /**
-   * Configured identity > the one saved in the data volume > `dune` for an install that already has state from before
-   * identities were generated > a new UUID. Whatever is chosen is saved, so it survives upgrades and the key being
-   * removed from the file later; an identity an install already uses is never replaced.
+   * A configured identity wins and is used as is. Without one, the identity generated for this install is kept in
+   * `<dataDir>/takaro-identity.json`: the only identity the sidecar writes, because the `.env` it reads is mounted
+   * read-only in Docker, and `/data` is the volume every upgrade keeps (it also holds the bans).
    */
   private resolveIdentity(configured: string): string {
     const idFile = path.join(this.options.dataDir, IDENTITY_FILE_NAME);
+    if (configured) return this.announce(configured, 'configured');
     const saved = readSavedIdentity(idFile);
-    let identity: string;
-    let why: string;
-    if (configured) {
-      identity = configured;
-      why = 'configured';
-    } else if (saved) {
-      identity = saved;
-      why = `saved in ${idFile}`;
-    } else if (this.options.legacyStateFiles.some((f) => fs.existsSync(f))) {
-      identity = LEGACY_IDENTITY;
-      why = `existing install (state in ${this.options.dataDir}, no identity set)`;
-    } else {
-      identity = randomUUID();
-      why = 'generated for this new install';
+    if (saved) return this.announce(saved, `saved in ${idFile}`);
+    // Not saved yet, or the last save failed: (re)try with this run's identity, so it never changes mid-run.
+    const fresh = !this.generated;
+    if (fresh) this.generated = randomUUID();
+    try {
+      fs.mkdirSync(this.options.dataDir, { recursive: true });
+      const tmp = `${idFile}.tmp`;
+      fs.writeFileSync(tmp, `${JSON.stringify({ identityToken: this.generated }, null, 2)}\n`);
+      fs.renameSync(tmp, idFile);
+      return this.announce(this.generated, `generated for this install and saved in ${idFile}`);
+    } catch (err) {
+      this.log.warn(`Could not save the Takaro identity to ${idFile}: ${(err as Error).message}. Keep TAKARO_DATA_DIR writable, or set TAKARO_IDENTITY_TOKEN.`);
+      return this.announce(this.generated, fresh ? 'generated for this run, not saved' : 'generated for this run, still not saved');
     }
-    if (identity !== saved) {
-      try {
-        fs.mkdirSync(this.options.dataDir, { recursive: true });
-        const tmp = `${idFile}.tmp`;
-        fs.writeFileSync(tmp, `${JSON.stringify({ identityToken: identity, savedAt: new Date().toISOString() }, null, 2)}\n`);
-        fs.renameSync(tmp, idFile);
-      } catch (err) {
-        this.log.warn(`Could not save the Takaro identity to ${idFile}: ${(err as Error).message}. Keep TAKARO_DATA_DIR writable, or set TAKARO_IDENTITY_TOKEN.`);
-      }
-    }
+  }
+
+  private announce(identity: string, why: string): string {
     if (identity !== this.settings?.identityToken) this.log.info(`Takaro identity: ${identity} (${why})`);
     return identity;
   }
-}
-
-/**
- * compose reads `KEY=    # text` as the value `# text`, and the `.env.example` of 0.2.x had exactly that on its empty
- * token lines. No token or identity starts with `#`, so such a value means "empty".
- */
-function blankComment(value: string): string {
-  return value.startsWith('#') ? '' : value;
 }
 
 /**

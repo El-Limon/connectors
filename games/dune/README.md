@@ -125,8 +125,7 @@ the hook, the connector reports shutdown as unavailable.
 
 Unpack the new sidecar archive somewhere else, replace only the `sidecar` folder with it, then
 run the start command again. Keep `.env` and the sidecar `/data` volume; `/data` holds the
-identity and connector-managed bans. Also take the new `docker-compose.example.yml` (it adds the
-`.env` mount that applies token changes without a restart); the server keeps its identity. To upgrade the plugin, stop the map server, replace
+identity and connector-managed bans, so the server keeps its identity. To upgrade the plugin, stop the map server, replace
 the `.so` with one for the same server build, and start it again.
 
 ## What works, what doesn't
