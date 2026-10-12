@@ -8,7 +8,7 @@ import java.util.function.Function;
  * websocket threads read them.
  */
 public class TakaroConfig {
-    /** Used when the config file leaves the URL empty, as files written before 0.4 do. */
+    /** The URL a new config file is written with. */
     public static final String DEFAULT_WS_URL = "wss://connect.takaro.io/";
 
     private volatile String wsUrl;

@@ -216,14 +216,13 @@ the Paper module):
   domain) gets its own banner. Only the error's name, message and HTTP status are logged, never
   the error object (it can carry Takaro's internal request headers), and debug logging leaves out
   identify answers for the same reason.
-- An empty `url` means `wss://connect.takaro.io/` (files from 0.3 and earlier have `url` empty).
-- Identity: when neither the file nor `TAKARO_IDENTITY_TOKEN` has one, a UUID is generated and
-  written into the file (by a text edit, so comments survive; the file is replaced in one move,
-  and not at all when it changed since it was read). An identity removed from the file during the
-  run is put back rather than replaced. An existing identity is never replaced; Takaro rejects an empty identity (`No identityToken provided`), so no install that
-  ever connected runs without one.
-- Environment variables still win over the file, as before; with `TAKARO_IDENTITY_TOKEN` set the
-  file's identity is left untouched.
+- An empty `url` is not filled in: the log says no WebSocket URL is configured and nothing connects.
+- Identity: a file without one gets a UUID written into it (by a text edit, so comments survive;
+  the file is replaced in one move, and not at all when it changed since it was read). An identity
+  removed from the file during the run is put back rather than replaced; an existing one is never
+  replaced.
+- Environment variables still win over the file per field and are never written to it; with
+  `TAKARO_IDENTITY_TOKEN` set, the generated identity in the file is simply not used.
 
 **Paper** (`dev-servers/_data/minecraft/paper/plugins/TakaroMinecraft/config.yml`):
 

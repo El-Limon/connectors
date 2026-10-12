@@ -53,19 +53,19 @@ class ConfigFileTest {
     @Test
     void existingIdentityIsNeverReplaced() throws Exception {
         Path path = dir.resolve("takaro.properties");
-        Files.writeString(path, "takaro.websocket.url=\ntakaro.authentication.identity_token=my-smp\n"
+        Files.writeString(path, "takaro.websocket.url=ws://file/\ntakaro.authentication.identity_token=my-smp\n"
                 + "takaro.authentication.registration_token=tok\n");
         TakaroConfig c = file(path, new PropertiesConfigFormat()).load();
 
         assertEquals("my-smp", c.getIdentityToken());
         assertEquals("tok", c.getRegistrationToken());
-        assertEquals(TakaroConfig.DEFAULT_WS_URL, c.getWsUrl(), "pre-0.4 files have an empty url");
+        assertEquals("ws://file/", c.getWsUrl());
         assertEquals(0, generated);
         assertTrue(Files.readString(path).contains("identity_token=my-smp"));
     }
 
     @Test
-    void envIdentityMeansNoGeneratedOne() throws Exception {
+    void envIdentityWinsAndTheFileStillGetsOne() throws Exception {
         env.put("TAKARO_IDENTITY_TOKEN", "takaro-dev-fabric");
         env.put("TAKARO_REGISTRATION_TOKEN", "env-token");
         Path path = dir.resolve("takaro.json");
@@ -73,9 +73,7 @@ class ConfigFileTest {
 
         assertEquals("takaro-dev-fabric", c.getIdentityToken());
         assertEquals("env-token", c.getRegistrationToken());
-        assertEquals(0, generated);
-        assertEquals("", new JsonConfigFormat().parse(Files.readString(path)).getIdentityToken(),
-                "the file must stay untouched for docker installs");
+        assertEquals("generated-1", new JsonConfigFormat().parse(Files.readString(path)).getIdentityToken());
     }
 
     @Test
@@ -155,7 +153,14 @@ class ConfigFileTest {
         Files.writeString(path, "{ not json");
         TakaroConfig c = file(path, new JsonConfigFormat()).load();
         assertEquals("", c.getRegistrationToken());
-        assertEquals(TakaroConfig.DEFAULT_WS_URL, c.getWsUrl());
+    }
+
+    @Test
+    void anEmptyUrlStaysEmpty() throws Exception {
+        Path path = dir.resolve("takaro.properties");
+        Files.writeString(path, "takaro.websocket.url=\ntakaro.authentication.identity_token=id\n"
+                + "takaro.authentication.registration_token=tok\n");
+        assertEquals("", file(path, new PropertiesConfigFormat()).load().getWsUrl());
     }
 
     @Test

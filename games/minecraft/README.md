@@ -74,7 +74,8 @@ That is the whole install — one file, no extra libraries. On Fabric, keep the 
 
 ### 4. Configure
 
-Start the server. On its first start the connector writes its config file:
+Start the server. On its first start the connector writes its config file (you can also create
+it yourself before the first start, with the content below):
 
 | Your server | Config file |
 |---|---|
@@ -82,31 +83,63 @@ Start the server. On its first start the connector writes its config file:
 | NeoForge | `<server>/config/takaro.properties` |
 | Paper | `<server>/plugins/TakaroMinecraft/config.yml` |
 
-Open it and paste your Takaro **registration token**, then save. You can do this while the server
-runs: the connector checks the file every few seconds and connects as soon as the token is saved.
-No restart needed.
+Open it, paste your Takaro **registration token** between the quotes (or after the `=`), and save.
+Saving is enough: the connector checks the file every few seconds and connects as soon as the token
+is saved, no restart needed. Leave `identity_token` empty; the connector fills it in itself and it
+is how Takaro knows this server, so keep it when you move or copy the server.
 
 **Fabric** (`config/takaro.json`):
 
 ```json
-"registration_token": "your-registration-token-here"
+{
+  "websocket": {
+    "url": "wss://connect.takaro.io/"
+  },
+  "authentication": {
+    "identity_token": "",
+    "registration_token": ""
+  },
+  "reconnect": {
+    "enabled": true,
+    "delay": 5000,
+    "max_delay": 300000,
+    "backoff_multiplier": 1.5
+  },
+  "settings": {
+    "debug": false
+  }
+}
 ```
 
 **NeoForge** (`config/takaro.properties`):
 
 ```properties
-takaro.authentication.registration_token=your-registration-token-here
+takaro.websocket.url=wss://connect.takaro.io/
+takaro.authentication.identity_token=
+takaro.authentication.registration_token=
+takaro.reconnect.enabled=true
+takaro.reconnect.delay=5000
+takaro.reconnect.max_delay=300000
+takaro.reconnect.backoff_multiplier=1.5
+takaro.debug=false
 ```
 
 **Paper** (`plugins/TakaroMinecraft/config.yml`):
 
 ```yaml
-    registration_token: "your-registration-token-here"
+takaro:
+  websocket:
+    url: "wss://connect.takaro.io/"
+  authentication:
+    identity_token: ""
+    registration_token: ""
+  reconnect:
+    enabled: true
+    delay: 5000
+    max_delay: 300000
+    backoff_multiplier: 1.5
+  debug: false
 ```
-
-Leave the URL (`wss://connect.takaro.io/`), the `reconnect` values and `identity_token` as they
-are. The connector fills in `identity_token` by itself on the first start; it is how Takaro knows
-this server, so keep it when you move or copy the server.
 
 ### 5. Check that it worked
 
@@ -151,9 +184,6 @@ and `off` skips the check entirely, but neither makes an untested combination wo
 jar in its place, then start the server again. Leave the config file alone: it is not part of the
 jar, so your token and identity survive the upgrade and the server keeps its place in Takaro.
 Never swap the jar under a running server.
-
-Coming from a version whose config file has an empty `url`? Nothing to do; an empty `url` means
-`wss://connect.takaro.io/`.
 
 ## What works, what doesn't
 
