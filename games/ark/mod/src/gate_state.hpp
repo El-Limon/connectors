@@ -450,6 +450,12 @@ class Server {
     inventories_.erase(id);
   }
 
+  // True when the last validated native ban sample contains `id`.
+  bool is_banned(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return bans_ready_ && std::find(banned_ids_.begin(), banned_ids_.end(), id) != banned_ids_.end();
+  }
+
   std::vector<std::string> player_ids() {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> ids;

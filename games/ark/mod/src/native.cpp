@@ -370,6 +370,9 @@ void postlogin_hook(void* game_mode, void* controller) {
   std::string name;
   const std::string id = steam_id(controller, &name);
   if (id.empty()) { enqueue("native-postlogin-no-steam-id"); return; }
+  // ARK lets a banned player through PostLogin and kicks them in the same tick.
+  // Do not report that refused attempt to Takaro as a connect/disconnect pair.
+  if (g_gate && g_gate->is_banned(id)) { enqueue("native-postlogin-banned-player-ignored"); return; }
   { std::lock_guard<std::mutex> lock(g_latest_id_mutex); g_latest_id = id; }
   g_latest_controller.store(controller, std::memory_order_release);
   capture_world(controller);

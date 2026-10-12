@@ -71,6 +71,7 @@ int main() {
           "catalogs, locations and bans stay unavailable until sampled");
     server.record_bans({steam});
     check(server.bans() && server.bans()->size() == 1, "published native bans are readable");
+    check(server.is_banned(steam) && !server.is_banned("76561198000000099"), "ban membership lookup");
     server.clear_bans();
     check(!server.bans(), "failed ban snapshot cannot return stale data");
     server.record_bans({});
