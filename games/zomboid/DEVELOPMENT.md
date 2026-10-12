@@ -240,10 +240,38 @@ upgrade replaces only the jar, so the file is never overwritten. `-Dtakaro.confi
   until the file changes.
 
 Env overrides: `TAKARO_WS_URL`, `TAKARO_IDENTITY_TOKEN`, `TAKARO_REGISTRATION_TOKEN`,
-`TAKARO_DEBUG`, `TAKARO_LOG_EVENTS`, `TAKARO_SERVER_CHAT_NAME`, `TAKARO_DEBUG_CATALOG`.
+`TAKARO_DEBUG`, `TAKARO_LOG_EVENTS`, `TAKARO_SERVER_CHAT_NAME`, `TAKARO_DEBUG_CATALOG`,
+`TAKARO_PROTOCOL` (`0` = file key `protocol=0`: offer protocol 0 only, no map).
 
 `debugCatalog` logs the `listItems`/`listEntities`/`listLocations` sizes once at start — a
 server-side way to prove the catalogue when no Takaro REST driver is available.
+
+## Protocol v1 and the map
+
+`identify` offers `protocolVersions: [0, 1]` with a Capability Manifest (`core/Capabilities`:
+the 16 action capabilities, `server.shutdown`, the six `events.*`, and `map` once ready). The
+version Takaro returns in `identifyResponse` holds for that connection; a missing value is 0.
+
+- **Errors** on protocol 1 are `{error: {code, message}}` (`ProtocolException` codes;
+  `IllegalArgumentException` → `invalid_args`, `UnsupportedOperationException` → `unsupported`,
+  anything else → `game_error`). Void actions and an unknown player's `getPlayer` /
+  `getPlayerLocation` answer `payload: null`. Protocol 0 keeps the old string error and `{}`.
+- **Events** go through `core/EventOutbox` (one `streamId` per process, `seq` from 1, 1000
+  events, drop-oldest). They wait there until an `eventAck` covers them, and every identify
+  resends the rest in order, so events produced during an outage are no longer lost. Nothing
+  is sent before `identifyResponse`; if Takaro picks protocol 0 the buffer is flushed in the
+  old shape.
+- **Map:** `agent/MapService` reads the server's `Map=` option, finds
+  `<install>/media/maps/<map>/pyramid.zip` (the world-map raster the in-game map draws: 256 px
+  PNG tiles per level plus `pyramid.txt` with the world bounds), and on a low-priority thread
+  joins the most detailed level that fits Takaro's 8192 px limit into one JPEG (`PyramidMap`;
+  vanilla: level 2, 4992 x 4032, about 2.4 MB, about 17 s). It is cached as
+  `Takaro/map/<revision>.jpg` (revision = sha256 of the zip). Once it is ready, a `capabilities`
+  replacement declares one `image` Dimension, `knox-county` (x right, y down, bounds = the
+  pyramid bounds, 0..19968 x 0..16128), and Takaro pulls it with `getMapImage` chunks and cuts
+  its own tile pyramid. Positions carry no `dimension`, so they belong to that first Dimension.
+  The floor `z` is not part of the plane. Map mods are only drawn if their folder ships a
+  `pyramid.zip`.
 
 ## Takaro coverage
 
