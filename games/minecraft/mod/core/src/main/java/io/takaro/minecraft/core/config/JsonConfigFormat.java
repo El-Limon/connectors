@@ -41,6 +41,7 @@ public final class JsonConfigFormat implements ConfigFormat {
             config.setBackoffMultiplier(reconnect.get("backoff_multiplier").getAsDouble());
         }
         config.setDebugEnabled(present(settings, "debug") && settings.get("debug").getAsBoolean());
+        config.setMapEnabled(present(settings, "map") && settings.get("map").getAsBoolean());
         return config;
     }
 
