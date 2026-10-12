@@ -26,6 +26,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <thread>
@@ -50,7 +51,22 @@ struct Config {
   std::chrono::milliseconds pump_interval{250};
   std::chrono::milliseconds reconcile_interval{1000};
   size_t workers = 4;
+  // Generic protocol versions offered in identify; Takaro picks the highest shared one.
+  // A Takaro that predates versioning ignores the field and speaks version 0.
+  std::vector<int> protocol_versions{0, 1};
 };
+
+// What this connector really does, declared on protocol version 1. No map: ARK has no
+// Takaro map source. Capabilities not listed here are refused by Takaro before sending.
+inline const std::vector<std::string>& capability_manifest() {
+  static const std::vector<std::string> names = {
+      "players.list", "players.get", "players.location", "players.inventory", "players.teleport",
+      "items.list", "items.give", "entities.list", "locations.list", "chat.send", "console.execute",
+      "moderation.kick", "moderation.ban", "moderation.unban", "moderation.listBans", "server.shutdown",
+      "events.player-connected", "events.player-disconnected", "events.chat-message",
+      "events.player-death", "events.entity-killed", "events.log"};
+  return names;
+}
 
 using LogSink = std::function<void(const std::string&)>;
 
@@ -205,6 +221,7 @@ class Bridge {
   ws::Connection conn_;
   std::atomic<uint64_t> epoch_{0};
   std::atomic<bool> identified_{false};
+  std::atomic<int> protocol_version_{0};
   std::atomic<uint64_t> connections_{0};
   unsigned attempts_ = 0;
   uint64_t send_id_ = 0;
@@ -260,6 +277,15 @@ class Bridge {
     payload.set("identityToken", json::str(config_.identity_token));
     if (!config_.registration_token.empty()) payload.set("registrationToken", json::str(config_.registration_token));
     if (!config_.server_name.empty()) payload.set("name", json::str(config_.server_name));
+    if (std::find(config_.protocol_versions.begin(), config_.protocol_versions.end(), 1) !=
+        config_.protocol_versions.end()) {
+      json::Value versions = json::Value::array();
+      for (int v : config_.protocol_versions) versions.push(json::num(v));
+      payload.set("protocolVersions", std::move(versions));
+      json::Value manifest = json::Value::array();
+      for (const auto& name : capability_manifest()) manifest.push(json::obj({{"name", json::str(name)}}));
+      payload.set("capabilities", std::move(manifest));
+    }
     return json::dump(json::obj({{"type", json::str("identify")}, {"payload", payload}}));
   }
 
@@ -272,6 +298,7 @@ class Bridge {
     if (conn_.is_open()) log("takaro-ws-closed " + why);
     conn_.close_now();
     identified_ = false;
+    protocol_version_ = 0;
     ++epoch_;
     pings_.clear();
     in_flight_.clear();
@@ -411,7 +438,7 @@ class Bridge {
       // Ordered transport: our ping was processed after every frame written before it.
       const uint64_t up_to = pings_[i].up_to;
       pings_.erase(pings_.begin(), pings_.begin() + static_cast<long>(i) + 1);
-      if (up_to > confirmed_id_) confirm(up_to);
+      if (up_to > confirmed_id_ && protocol_version_.load() == 0) confirm(up_to);
       return;
     }
   }
@@ -424,6 +451,15 @@ class Bridge {
       in_flight_.pop_front();
     }
     if (seq > persisted_.load()) {
+      if (!cursor_path_.empty()) (void)save_cursor(cursor_path_, Cursor{gate_.boot_id(), seq});
+      persisted_ = seq;
+    }
+  }
+
+  // Version 1: Takaro acknowledged every event of this boot's stream up to `seq`.
+  void confirm_seq(uint64_t seq) {
+    while (!in_flight_.empty() && in_flight_.front().seq <= seq) in_flight_.pop_front();
+    if (seq > persisted_.load() && seq <= scan_.load()) {
       if (!cursor_path_.empty()) (void)save_cursor(cursor_path_, Cursor{gate_.boot_id(), seq});
       persisted_ = seq;
     }
@@ -445,8 +481,13 @@ class Bridge {
         continue;
       }
       if (!event.id.empty() && !event.name.empty()) known_.remember(event.id, event.name);
-      const std::string frame = json::dump(json::obj({{"type", json::str("gameEvent")},
-          {"payload", json::obj({{"type", json::str(event.type)}, {"data", *data}})}}));
+      json::Value payload = json::obj({{"type", json::str(event.type)}, {"data", *data}});
+      if (protocol_version_.load() >= 1) {
+        // At-least-once on a per-boot stream: Takaro dedupes by (streamId, seq) and acks.
+        payload.set("streamId", json::str(gate_.boot_id()));
+        payload.set("seq", json::num(static_cast<double>(event.seq)));
+      }
+      const std::string frame = json::dump(json::obj({{"type", json::str("gameEvent")}, {"payload", payload}}));
       if (config_.wire_debug) log("takaro-wire SEND " + redact_frame(frame));
       if (!conn_.send_text(frame)) break;  // buffer full: retry on the next pump
       ++send_id_;
@@ -454,9 +495,10 @@ class Bridge {
       in_flight_.push_back({send_id_, event.seq});
       sent = true;
     }
-    // Confirm promptly instead of waiting for the next heartbeat.
+    // Version 0 has no event acks: confirm promptly with a ping instead of waiting
+    // for the next heartbeat. Version 1 waits for Takaro's eventAck.
     const auto now = std::chrono::steady_clock::now();
-    if ((sent || (!in_flight_.empty() && pings_.empty())) && now - last_eager_ping_ >= std::chrono::milliseconds(1000)) {
+    if (protocol_version_.load() == 0 && (sent || (!in_flight_.empty() && pings_.empty())) && now - last_eager_ping_ >= std::chrono::milliseconds(1000)) {
       last_eager_ping_ = now;
       send_ping();
     }
@@ -470,8 +512,9 @@ class Bridge {
     const std::string kind = type && type->is_string() ? type->as_string() : std::string();
     if (kind == "identifyResponse") {
       const json::Value& payload = as_record(message->get("payload"));
-      if (payload.get("error")) {
-        log("takaro-identify-failed " + redact_frame(json::dump(*payload.get("error"))));
+      const json::Value* failure = message->get("error") ? message->get("error") : payload.get("error");
+      if (failure) {
+        log("takaro-identify-failed " + redact_frame(json::dump(*failure)));
         set_error("identify rejected");
         conn_.send_close(1000);
         return;
@@ -484,10 +527,27 @@ class Bridge {
         game_server_id_ = id;
         last_error_.clear();
       }
+      int version = 0;
+      if (const auto* v = payload.get("protocolVersion"); v && v->is_number() && v->as_number() == 1) version = 1;
+      protocol_version_ = version;
       attempts_ = 0;
       identified_ = true;
       next_pump_ = std::chrono::steady_clock::now();
-      log("takaro-identified gameServerId=" + id);
+      log("takaro-identified gameServerId=" + id + " protocolVersion=" + std::to_string(version));
+      return;
+    }
+    if (kind == "eventAck") {
+      const json::Value& payload = as_record(message->get("payload"));
+      const auto* stream = payload.get("streamId");
+      const auto* up_to = payload.get("upTo");
+      if (stream && stream->is_string() && stream->as_string() == gate_.boot_id() && up_to && up_to->is_number() &&
+          up_to->as_number() >= 0)
+        confirm_seq(static_cast<uint64_t>(up_to->as_number()));
+      return;
+    }
+    if (kind == "eventError") {
+      // Takaro rejected one event (validation); it still counts as handled in its ledger.
+      log("takaro-event-rejected " + redact_frame(raw));
       return;
     }
     if (kind == "request") {
@@ -536,8 +596,10 @@ class Bridge {
         if (!post(request.epoch, frame, after_write)) outcome = "connection-gone";
       } catch (const Withhold& w) {
         outcome = std::string("withheld: ") + w.what();
+        if (respond_error(request, w.code, w.what())) outcome = "error " + w.code + ": " + w.what();
       } catch (const std::exception& e) {
         outcome = std::string("withheld: internal ") + e.what();
+        if (respond_error(request, "internal", "internal connector error")) outcome = "error internal";
       }
       const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
       const std::string rid = request.request_id.size() <= 128 ? request.request_id : request.request_id.substr(0, 128);
@@ -547,12 +609,22 @@ class Bridge {
     }
   }
 
+  // Version 1 has a real failure shape; version 0 must stay silent (fail closed).
+  bool respond_error(const Request& request, const std::string& code, const std::string& message) {
+    if (protocol_version_.load() < 1) return false;
+    json::Value frame = json::obj({{"type", json::str("response")}, {"requestId", json::str(request.request_id)},
+                                   {"payload", json::Value::null()},
+                                   {"error", json::obj({{"code", json::str(code)}, {"message", json::str(message.substr(0, 512))}})}});
+    return post(request.epoch, json::dump(frame));
+  }
+
   void write_status() {
     if (config_.state_dir.empty()) return;
     json::Value status = json::Value::object();
     status.set("bootId", json::str(gate_.boot_id()));
     status.set("utc", json::str(gate::utc_now()));
     status.set("identified", json::Value::boolean(identified_.load()));
+    status.set("protocolVersion", json::num(protocol_version_.load()));
     status.set("connections", json::num(static_cast<double>(connections_.load())));
     {
       std::lock_guard<std::mutex> lock(status_mutex_);

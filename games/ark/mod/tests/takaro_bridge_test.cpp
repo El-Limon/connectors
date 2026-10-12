@@ -67,6 +67,8 @@ class FakeTakaro {
 
   std::atomic<bool> answer_pings{true};
   std::atomic<bool> auto_identify{true};
+  std::atomic<bool> v1{false};     // answer protocolVersion 1 when the connector offers it
+  std::atomic<bool> acks{true};    // v1: acknowledge events with eventAck
   std::atomic<int> connections{0};
 
   void send(const std::string& text) {
@@ -166,8 +168,19 @@ class FakeTakaro {
           if (!v) continue;
           { std::lock_guard<std::mutex> lock(mutex_); messages_.push_back(*v); }
           const auto* t = v->get("type");
-          if (t && t->as_string() == "identify" && auto_identify)
-            send(R"({"type":"identifyResponse","payload":{"gameServerId":"gs-1"}})");
+          if (t && t->as_string() == "identify" && auto_identify) {
+            bool offered = false;
+            if (const auto* versions = v->get("payload")->get("protocolVersions"))
+              for (const auto& ver : versions->as_array()) offered |= ver.as_number() == 1;
+            send(v1 && offered ? R"({"type":"identifyResponse","payload":{"gameServerId":"gs-1","protocolVersion":1}})"
+                               : R"({"type":"identifyResponse","payload":{"gameServerId":"gs-1"}})");
+          }
+          if (t && t->as_string() == "gameEvent" && v1 && acks) {
+            const auto* p = v->get("payload");
+            if (p && p->get("streamId") && p->get("seq"))
+              send(json::dump(json::obj({{"type", json::str("eventAck")}, {"payload", json::obj({
+                  {"streamId", *p->get("streamId")}, {"upTo", *p->get("seq")}})}})));
+          }
         }
       }
       const ssize_t n = recv(c, buf, sizeof(buf), 0);
@@ -599,6 +612,53 @@ void test_redaction_and_codec() {
   CHECK(takaro::iso_ms(*takaro::parse_iso_ms("2026-10-12T10:00:00.5Z")) == "2026-10-12T10:00:00.500Z");
 }
 
+void test_protocol_v1() {
+  FakeTakaro takaro;
+  takaro.v1 = true;
+  takaro.acks = false;
+  gate::Server gate("boot-v1");
+  FakeGame game(gate);
+  const std::string state = temp_dir();
+  auto config = config_for(takaro, state);
+  config.ping_interval = 5000ms;  // pongs must not confirm anything on v1
+  takaro::Bridge bridge(config, gate, [](const std::string&) {});
+  bridge.start();
+  auto identify = takaro.wait_for([](const json::Value& m) { return is_type(m, "identify"); });
+  CHECK(identify && identify->get("payload")->get("protocolVersions"));
+  bool locations = false, map = false;
+  if (identify)
+    for (const auto& c : identify->get("payload")->get("capabilities")->as_array()) {
+      locations |= c.get("name")->as_string() == "locations.list";
+      map |= c.get("name")->as_string() == "map";
+    }
+  CHECK(locations && !map);
+  CHECK(eventually([&] { return bridge.identified(); }));
+  // Structured errors instead of silence.
+  auto kick = takaro.request("v1-kick", "kickPlayer", json::obj({{"gameId", json::str(kId)}}), 2000ms);
+  CHECK(kick && kick->has_key("payload") && !kick->get("payload") &&
+        kick->get("error")->get("code")->as_string() == "game_error");
+  auto unknown = takaro.request("v1-unknown", "getMapImage", json::Value::object(), 2000ms);
+  CHECK(unknown && unknown->get("error")->get("code")->as_string() == "unsupported");
+  auto bad = takaro.request("v1-bad", "giveItem", json::obj({{"gameId", json::str(kId)}, {"item", json::str("Stone")}}), 2000ms);
+  CHECK(bad && bad->get("error")->get("code")->as_string() == "invalid_args");
+  auto noid = takaro.request("v1-noid", "getPlayer", json::Value::object(), 2000ms);
+  CHECK(noid && noid->get("error")->get("code")->as_string() == "invalid_args");
+  // Events carry the boot stream and native seq; only eventAck advances the cursor.
+  gate.record_login(kId, "Limon");
+  auto connected = takaro.wait_for([](const json::Value& m) {
+    return is_type(m, "gameEvent") && m.get("payload")->get("type")->as_string() == "player-connected";
+  });
+  CHECK(connected && connected->get("payload")->get("streamId")->as_string() == "boot-v1" &&
+        connected->get("payload")->get("seq")->as_number() == 1);
+  std::this_thread::sleep_for(1500ms);
+  CHECK(bridge.persisted_cursor() == 0);
+  takaro.acks = true;
+  gate.record_chat(kId, "Limon", "acked");
+  CHECK(eventually([&] { return bridge.persisted_cursor() == 2; }));
+  CHECK(takaro::load_cursor(state + "/event-cursor.json").seq == 2);
+  bridge.stop();
+}
+
 int main() {
   test_redaction_and_codec();
   test_identify_and_wire();
@@ -607,6 +667,7 @@ int main() {
   test_shutdown_response_then_exit_flag();
   test_game_thread_stall_withholds();
   test_identify_rejected_backs_off();
+  test_protocol_v1();
   if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
   std::cout << "takaro_bridge_test passed\n";
   return 0;

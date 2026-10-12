@@ -18,8 +18,24 @@
 
 namespace takaro {
 
+// A failed request. On Generic protocol version 0 no frame is sent for it (Takaro's
+// v0 void actions would resolve any frame as success); on version 1 it becomes a
+// structured error response with one of Takaro's codes.
 struct Withhold : std::runtime_error {
-  using std::runtime_error::runtime_error;
+  std::string code;
+  explicit Withhold(const std::string& why, std::string error_code = {})
+      : std::runtime_error(why), code(error_code.empty() ? classify(why) : std::move(error_code)) {}
+
+  static std::string classify(const std::string& why) {
+    if (why.find("is unavailable on this build") != std::string::npos ||
+        why.find("lookup is unavailable") != std::string::npos ||
+        why.find("dimension is unavailable") != std::string::npos)
+      return "unsupported";
+    for (const char* marker : {"must be", "requires", "is required", "accepts no", "contains controls", "exceeds 1024",
+                               "invalid JSON", "invalid console command", "identities conflict"})
+      if (why.find(marker) != std::string::npos) return "invalid_args";
+    return "game_error";
+  }
 };
 
 [[noreturn]] inline void withhold(const std::string& why) { throw Withhold(why); }
@@ -379,9 +395,9 @@ class Adapter {
   json::Value test_reachability() {
     const auto h = gate_.health();
     const bool ok = h.ready && !h.boot_id.empty();
+    // Chat hooks install on the first player's chat call, so "chat starting" before
+    // anyone joined is the normal state, not a degradation worth reporting.
     std::vector<std::string> degraded;
-    if (!h.chat) degraded.push_back("chat=starting");
-    if (!h.chat) degraded.push_back("sendMessage=starting");
     if (!h.items) degraded.push_back("items=unavailable");
     if (!h.entities) degraded.push_back("entities=unavailable");
     std::string reason;
