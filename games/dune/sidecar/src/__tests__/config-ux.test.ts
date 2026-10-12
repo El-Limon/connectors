@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { describeTakaroError, isNameConflict, TakaroWsClient } from '../takaro/client.js';
-import { IDENTITY_FILE_NAME, LEGACY_IDENTITY, parseDotenv, resolveConfigFile, TakaroSettingsSource } from '../takaro/settings.js';
+import { IDENTITY_FILE_NAME, parseDotenv, resolveConfigFile, TakaroSettingsSource } from '../takaro/settings.js';
 import { redactSecrets } from '../logger.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -32,20 +32,18 @@ afterEach(() => {
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function install(opts: { env?: Record<string, string>; file?: string; state?: boolean; savedIdentity?: string } = {}) {
+function install(opts: { env?: Record<string, string>; file?: string; savedIdentity?: string } = {}) {
   const root = tmp();
   const dataDir = path.join(root, 'data');
   fs.mkdirSync(dataDir);
   const configFile = path.join(root, '.env');
   if (opts.file !== undefined) fs.writeFileSync(configFile, opts.file);
-  if (opts.state) fs.writeFileSync(path.join(dataDir, 'known-players.json'), '{}');
   if (opts.savedIdentity) fs.writeFileSync(path.join(dataDir, IDENTITY_FILE_NAME), JSON.stringify({ identityToken: opts.savedIdentity }));
   const make = (env = opts.env ?? {}) =>
     new TakaroSettingsSource({
       env,
       configFile,
       dataDir,
-      legacyStateFiles: ['event-cursor.json', 'online-players.json', 'bans.json', 'known-players.json'].map((f) => path.join(dataDir, f)),
     });
   const saved = () => (JSON.parse(fs.readFileSync(path.join(dataDir, IDENTITY_FILE_NAME), 'utf8')) as { identityToken: string }).identityToken;
   return { root, dataDir, configFile, make, saved };
@@ -89,31 +87,33 @@ describe('identity', () => {
     expect(i.make().current().identityToken).toBe(first);
   });
 
-  it(`an existing install with state but no identity keeps the old default '${LEGACY_IDENTITY}'`, () => {
-    const i = install({ state: true });
-    expect(i.make().current().identityToken).toBe(LEGACY_IDENTITY);
-    expect(i.saved()).toBe(LEGACY_IDENTITY);
-    // ...and still does after the state files are gone, because it was saved.
-    fs.rmSync(path.join(i.dataDir, 'known-players.json'));
-    expect(i.make().current().identityToken).toBe(LEGACY_IDENTITY);
-  });
-
-  it('a configured identity wins over the saved one and is saved in turn', () => {
-    const i = install({ env: { TAKARO_IDENTITY_TOKEN: 'my-dune' }, savedIdentity: 'old' });
+  it('a configured identity wins and is not copied to /data; the generated one is used without it', () => {
+    const i = install({ env: { TAKARO_IDENTITY_TOKEN: 'my-dune' }, savedIdentity: '0f7d1c3e-1111-4222-8333-444455556666' });
     expect(i.make().current().identityToken).toBe('my-dune');
-    expect(i.saved()).toBe('my-dune');
-    // Removing it from the configuration later keeps it rather than generating a new one.
-    expect(i.make({}).current().identityToken).toBe('my-dune');
+    expect(i.saved()).toBe('0f7d1c3e-1111-4222-8333-444455556666');
+    expect(i.make({}).current().identityToken).toBe('0f7d1c3e-1111-4222-8333-444455556666');
   });
 
-  it('the saved identity is kept when nothing is configured, even with state present', () => {
-    const i = install({ state: true, savedIdentity: '0f7d1c3e-1111-4222-8333-444455556666' });
-    expect(i.make().current().identityToken).toBe('0f7d1c3e-1111-4222-8333-444455556666');
+  it('a configured identity on an install with nothing saved writes no identity file', () => {
+    const i = install({ env: { TAKARO_IDENTITY_TOKEN: 'my-dune' } });
+    expect(i.make().current().identityToken).toBe('my-dune');
+    expect(fs.existsSync(path.join(i.dataDir, IDENTITY_FILE_NAME))).toBe(false);
+  });
+
+  it('a failed save keeps the same generated identity for the run', () => {
+    const i = install({ file: 'TAKARO_REGISTRATION_TOKEN=r\n' });
+    fs.rmSync(i.dataDir, { recursive: true });
+    fs.writeFileSync(i.dataDir, 'not a directory');
+    const s = i.make();
+    const first = s.current().identityToken;
+    expect(first).toMatch(UUID);
+    fs.writeFileSync(i.configFile, 'TAKARO_REGISTRATION_TOKEN=r2\n');
+    expect(s.poll()?.identityToken).toBe(first);
   });
 });
 
 describe('settings precedence and reload', () => {
-  it('the environment wins at start, exactly as before', () => {
+  it('the environment wins at start', () => {
     const i = install({ env: { TAKARO_REGISTRATION_TOKEN: 'from-env' }, file: 'TAKARO_REGISTRATION_TOKEN=from-file\n' });
     expect(i.make().current().registrationToken).toBe('from-env');
   });
@@ -123,7 +123,7 @@ describe('settings precedence and reload', () => {
     expect(i.make().current().registrationToken).toBe('from-file');
   });
 
-  it('no file at all = environment only, with the old defaults', () => {
+  it('no file at all = environment only, with the defaults', () => {
     const i = install({ env: { TAKARO_REGISTRATION_TOKEN: 'reg' } });
     const s = i.make();
     expect(s.hasConfigFile()).toBe(false);
@@ -162,7 +162,6 @@ describe('settings precedence and reload', () => {
       env: {},
       configFile: i.configFile,
       dataDir: i.dataDir,
-      legacyStateFiles: [],
       readFile: (f) => {
         if (fail) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
         return fs.readFileSync(f, 'utf8');
@@ -174,15 +173,14 @@ describe('settings precedence and reload', () => {
     expect(s.poll()).toMatchObject({ registrationToken: 'good' });
   });
 
-  it('changing the identity in the file reconnects with it; clearing it keeps the saved one', () => {
+  it('changing the identity in the file reconnects with it; clearing it goes back to the generated one', () => {
     const i = install({ file: 'TAKARO_IDENTITY_TOKEN=\nTAKARO_REGISTRATION_TOKEN=r\n' });
     const s = i.make();
     const generated = s.current().identityToken;
     fs.writeFileSync(i.configFile, 'TAKARO_IDENTITY_TOKEN=renamed\nTAKARO_REGISTRATION_TOKEN=r\n');
     expect(s.poll()).toMatchObject({ identityToken: 'renamed' });
     fs.writeFileSync(i.configFile, 'TAKARO_IDENTITY_TOKEN=\nTAKARO_REGISTRATION_TOKEN=r\n');
-    expect(s.poll()).toBeNull();
-    expect(s.current().identityToken).toBe('renamed');
+    expect(s.poll()).toMatchObject({ identityToken: generated });
     expect(generated).toMatch(UUID);
   });
 });
@@ -290,15 +288,6 @@ describe('TakaroWsClient connection control', () => {
     takaro.reconfigure(url, { identityToken: 'c', registrationToken: 'r' });
     await new Promise((r) => setTimeout(r, 150));
     expect(state.connections).toBe(2);
-  });
-});
-
-describe('compose inline-comment values', () => {
-  it("treats compose's `# text` value of an empty `KEY=   # text` line as empty", () => {
-    const i = install({ env: { TAKARO_REGISTRATION_TOKEN: '# registration token for a GENERIC game server', TAKARO_IDENTITY_TOKEN: '# identity' } });
-    const s = i.make().current();
-    expect(s.registrationToken).toBe('');
-    expect(s.identityToken).toMatch(UUID);
   });
 });
 

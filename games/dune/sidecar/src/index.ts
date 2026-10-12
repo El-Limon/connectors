@@ -59,13 +59,10 @@ async function main(): Promise<void> {
   const catalogue = new Catalogue({ itemsFile: config.itemsFile, entitiesFile: config.entitiesFile });
   catalogue.load();
 
-  // Resolved before any event source starts writing to the data dir, so a fresh install is told apart from an existing
-  // one by the state files it already has.
   const settings = new TakaroSettingsSource({
     env: process.env,
     configFile: resolveConfigFile(process.env),
     dataDir: config.dataDir,
-    legacyStateFiles: [config.cursorFile, config.onlineFile, config.banFile, config.knownPlayersFile],
     log: logger,
   });
   const initial = settings.current();
