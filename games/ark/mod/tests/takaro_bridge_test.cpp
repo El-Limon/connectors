@@ -453,6 +453,15 @@ void test_events_cursor_and_outage_replay() {
   }, 5000ms));
   CHECK(eventually([&] { return bridge.persisted_cursor() == 5; }));
 
+  // A death with a captured position carries it in the event.
+  gate.record_death_position(kId, 5, 6, 7, 1, 1);
+  gate.record_player_death(kId, "Limon", "");
+  auto death = takaro.wait_for([](const json::Value& m) {
+    return is_type(m, "gameEvent") && m.get("payload")->get("type")->as_string() == "player-death";
+  });
+  CHECK(death && death->get("payload")->get("data")->get("position") &&
+        death->get("payload")->get("data")->get("position")->get("x")->as_number() == 5);
+
   // Player disconnect carries a position the location request can enrich.
   gate.record_position(kId, 10, 20, 30);
   gate.record_departure_position(kId, 11, 21, 31);

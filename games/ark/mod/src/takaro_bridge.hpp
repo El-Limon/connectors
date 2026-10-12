@@ -134,6 +134,10 @@ inline std::optional<json::Value> map_event(const gate::Event& e, KnownPlayers& 
   }
   if (e.type == "player-death" && valid_steam64(e.attacker_id) && e.attacker_id != e.id)
     data.set("attacker", player_json(e.attacker_id, known.name(e.attacker_id)));
+  if (e.type == "player-death" && e.position && std::isfinite(e.position->x) && std::isfinite(e.position->y) &&
+      std::isfinite(e.position->z))
+    data.set("position", json::obj({{"x", json::num(e.position->x)}, {"y", json::num(e.position->y)},
+                                    {"z", json::num(e.position->z)}}));
   if (e.type == "entity-killed") {
     if (js_trim(e.entity_code).empty() || js_trim(e.entity_name).empty()) return std::nullopt;
     data.set("entity", json::str(js_trim(e.entity_code)));
