@@ -38,7 +38,7 @@ internal static class Program
             Check(text == null || Config.IsFreshConfig(text), "fresh: '" + text + "' counts as a file the plugin never wrote");
         Check(!Config.IsFreshConfig("{ \"WebSocketUrl\": \"ws://10.0.0.5/\" }"), "fresh: a file with only a custom URL is kept");
         Check(!Config.IsFreshConfig("{ \"Debug\": true }"), "fresh: a file with only Debug is kept");
-        var fresh = Config.FirstConfig(NoEnv, () => "11111111-2222-3333-4444-555555555555");
+        var fresh = Config.FirstConfig(() => "11111111-2222-3333-4444-555555555555");
         Check(fresh.RegistrationToken == "", "fresh: registration token is empty");
         Check(fresh.IdentityToken == "11111111-2222-3333-4444-555555555555", "fresh: a new identity is generated");
         var freshText = Config.RenderConfigText(fresh);
@@ -50,22 +50,15 @@ internal static class Program
         Check(freshSettings.RegistrationToken == "" && !freshSettings.RegistrationFromEnv, "fresh: no token means no connection");
         Check(freshSettings.IdentityToken == fresh.IdentityToken, "fresh: the generated identity is used");
 
-        // Existing environment install upgraded to this version: it keeps the identity it
-        // was sending, including the empty one, and never gets a generated one.
-        var generated = false;
-        var envOnly = Config.FirstConfig(Env(Config.EnvRegistrationToken, "reg"), () => { generated = true; return "x"; });
-        Check(!generated && envOnly.IdentityToken == "", "env install: no identity is generated when the env token is set");
-        var envOnlySettings = Config.ResolveSettings(Config.ParseConfigText(Config.RenderConfigText(envOnly)),
-            Env(Config.EnvRegistrationToken, "reg"), null);
-        Check(envOnlySettings.RegistrationToken == "reg" && envOnlySettings.IdentityToken == "",
-            "env install: sends the env token and the empty identity, as before");
-        var envBoth = Config.FirstConfig(Env(Config.EnvIdentityToken, "my-rust-1"), () => { generated = true; return "x"; });
-        Check(!generated && envBoth.IdentityToken == "", "env install: no identity is generated when the env identity is set");
-        var envBothSettings = Config.ResolveSettings(envBoth,
+        // Env still wins field by field; the file gets its own identity all the same.
+        var envFresh = Config.FirstConfig(() => "gen-1");
+        Check(envFresh.IdentityToken == "gen-1", "env: a new file gets a generated identity even with env tokens set");
+        var envBothSettings = Config.ResolveSettings(envFresh,
             Env(Config.EnvRegistrationToken, "reg", Config.EnvIdentityToken, "my-rust-1", Config.EnvWsUrl, "ws://x/", Config.EnvDebug, "TRUE"), null);
         Check(envBothSettings.IdentityToken == "my-rust-1" && envBothSettings.IdentityFromEnv, "env: TAKARO_IDENTITY_TOKEN wins");
+        Check(envBothSettings.RegistrationToken == "reg" && envBothSettings.RegistrationFromEnv, "env: TAKARO_REGISTRATION_TOKEN wins");
         Check(envBothSettings.WsUrl == "ws://x/", "env: TAKARO_WS_URL wins");
-        Check(envBothSettings.Debug, "env: TAKARO_DEBUG=TRUE is true, as before");
+        Check(envBothSettings.Debug, "env: TAKARO_DEBUG=TRUE is true");
 
         // Env wins over the file field by field; an empty env var does not count as set.
         var file = Config.ParseConfigText(File("file-reg", "file-id"));
@@ -81,10 +74,16 @@ internal static class Program
         var upgradedSettings = Config.ResolveSettings(Config.ParseConfigText(upgraded), NoEnv, null);
         Check(upgradedSettings.RegistrationToken == "reg-1" && upgradedSettings.IdentityToken == "aaaa-bbbb",
             "upgrade: token and identity are kept");
-        var blankIdentity = File("reg-1", "");
-        Check(!Config.IsFreshConfig(blankIdentity) &&
-              Config.ResolveSettings(Config.ParseConfigText(blankIdentity), NoEnv, null).IdentityToken == "",
-            "upgrade: an existing empty identity stays empty (no new server record)");
+
+        // A file without an identity gets one written in; the other keys stay as they were.
+        var withId = Config.WithIdentity(File("reg-1", ""), "new-id");
+        var withIdValues = Config.ParseConfigText(withId);
+        Check(withIdValues.IdentityToken == "new-id" && withIdValues.RegistrationToken == "reg-1" &&
+              withIdValues.WsUrl == Config.DefaultWsUrl && withIdValues.Debug == false,
+            "identity: an empty IdentityToken is filled in, nothing else changes");
+        Check(withId.IndexOf("RegistrationToken") < withId.IndexOf("IdentityToken"), "identity: key order is kept");
+        Check(Config.ParseConfigText(Config.WithIdentity("{ \"RegistrationToken\": \"r\" }", "new-id")).IdentityToken == "new-id",
+            "identity: a missing IdentityToken key is added");
 
         // Token pasted while running: a reconnect, with trimmed values.
         ConfigFileValuesCheck(upgradedSettings);

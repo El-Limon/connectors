@@ -23,7 +23,7 @@ namespace Oxide.Plugins
         // takaro:config-begin
         // The plugin's config is <framework config dir>/TakaroConnector.json, created on first
         // load. Environment variables, when set and non-empty, win over the file field by
-        // field, so a Docker or systemd install that sets them behaves exactly as before.
+        // field and are never written to it.
         internal const string DefaultWsUrl = "wss://connect.takaro.io/";
         internal const string EnvWsUrl = "TAKARO_WS_URL";
         internal const string EnvRegistrationToken = "TAKARO_REGISTRATION_TOKEN";
@@ -119,21 +119,24 @@ namespace Oxide.Plugins
             catch { return false; }
         }
 
-        // The file a first load writes. A fresh install gets a new identity; an install that
-        // already connects through TAKARO_REGISTRATION_TOKEN or TAKARO_IDENTITY_TOKEN keeps the
-        // identity it has been sending (possibly the empty one), so its Takaro server record
-        // and players stay where they are.
-        internal static ConfigFileValues FirstConfig(Func<string, string> env, Func<string> newIdentity)
+        // The file a first load writes: no token yet and a new identity.
+        internal static ConfigFileValues FirstConfig(Func<string> newIdentity)
         {
-            var existingEnvInstall = !string.IsNullOrEmpty(env(EnvRegistrationToken))
-                || !string.IsNullOrEmpty(env(EnvIdentityToken));
             return new ConfigFileValues
             {
                 RegistrationToken = "",
-                IdentityToken = existingEnvInstall ? "" : newIdentity(),
+                IdentityToken = newIdentity(),
                 WsUrl = DefaultWsUrl,
                 Debug = false,
             };
+        }
+
+        // The file text with IdentityToken set; every other key stays as it was.
+        internal static string WithIdentity(string text, string identity)
+        {
+            var json = JObject.Parse(text);
+            json["IdentityToken"] = identity;
+            return json.ToString(Formatting.Indented) + "\n";
         }
 
         // `current` is what is in use (null on first load): an absent key while running is a
@@ -205,6 +208,8 @@ namespace Oxide.Plugins
         private string _configPath;
         private string _configText;
         private string _configProblem;
+        // The identity the file holds; put back when an edit removes it.
+        private string _fileIdentity;
         private Timer _tickTimer;
         private int _tickCount;
 
@@ -325,8 +330,8 @@ namespace Oxide.Plugins
             return File.Exists(path) ? File.ReadAllText(path) : null;
         }
 
-        // First load: an absent (or never-written) file is created with an empty token, and a
-        // new identity unless the environment already gives this install one.
+        // First load: an absent (or never-written) file is created with an empty token and a
+        // new identity; an existing file without an identity gets one written into it.
         private void LoadSettings()
         {
             string text;
@@ -345,16 +350,14 @@ namespace Oxide.Plugins
             ConfigFileValues file = null;
             if (text == null || IsFreshConfig(text))
             {
-                file = FirstConfig(EnvValue, () => Guid.NewGuid().ToString());
+                file = FirstConfig(() => Guid.NewGuid().ToString());
+                _fileIdentity = file.IdentityToken;
                 try
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(_configPath));
                     File.WriteAllText(_configPath, RenderConfigText(file));
                     text = File.ReadAllText(_configPath);
-                    if (!string.IsNullOrEmpty(file.IdentityToken))
-                        LogInfo($"Created {_configPath} with a new identity token");
-                    else
-                        LogInfo($"Created {_configPath}");
+                    LogInfo($"Created {_configPath} with a new identity token");
                 }
                 catch (Exception ex)
                 {
@@ -363,7 +366,11 @@ namespace Oxide.Plugins
             }
             else
             {
-                try { file = ParseConfigText(text); }
+                try
+                {
+                    file = ParseConfigText(text);
+                    text = EnsureIdentity(text, file);
+                }
                 catch (Exception ex)
                 {
                     _configProblem = text;
@@ -374,6 +381,37 @@ namespace Oxide.Plugins
 
             _configText = text;
             _settings = ResolveSettings(file, EnvValue, null);
+        }
+
+        // A file without an IdentityToken gets this server's identity (a new one if it never
+        // had one) written back. Returns the text now in the file.
+        private string EnsureIdentity(string text, ConfigFileValues file)
+        {
+            if (!string.IsNullOrEmpty(file.IdentityToken))
+            {
+                _fileIdentity = file.IdentityToken;
+                return text;
+            }
+            var generated = _fileIdentity == null;
+            if (generated) _fileIdentity = Guid.NewGuid().ToString();
+            file.IdentityToken = _fileIdentity;
+            try
+            {
+                var updated = WithIdentity(text, _fileIdentity);
+                // Replaced in one step, so a crash never leaves the token half written.
+                var tmp = _configPath + ".tmp";
+                File.WriteAllText(tmp, updated);
+                File.Replace(tmp, _configPath, null);
+                LogInfo(generated
+                    ? $"No IdentityToken in {_configPath}; generated one and saved it"
+                    : $"IdentityToken was removed from {_configPath}; putting this server's identity back");
+                return updated;
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"Could not save the IdentityToken in {_configPath} ({ex.Message}); using it for this run");
+                return text;
+            }
         }
 
         // Runs on the main thread every second: re-reads the config every few seconds and
@@ -418,7 +456,7 @@ namespace Oxide.Plugins
             }
 
             _configProblem = null;
-            _configText = text;
+            _configText = EnsureIdentity(text, file);
             var previous = _settings;
             var next = ResolveSettings(file, EnvValue, previous);
             _settings = next;

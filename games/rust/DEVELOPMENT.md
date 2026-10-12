@@ -212,12 +212,11 @@ the framework's `Config` object, because it needs the file's text to watch it:
 
 - **First load** (file absent, empty, or a JSON object with none of the four keys, e.g. `{}`; a file
   that exists but cannot be read is never recreated): the plugin writes it with an empty
-  `RegistrationToken` and a new UUID `IdentityToken`. If `TAKARO_REGISTRATION_TOKEN` or
-  `TAKARO_IDENTITY_TOKEN` is set, the install already exists under the identity the environment
-  gives it (possibly the empty one, which versions before the file sent), so `IdentityToken` is
-  written empty and nothing is generated.
-- **Precedence**: a non-empty environment variable wins over the file field, per field. An empty one
-  counts as unset.
+  `RegistrationToken` and a new UUID `IdentityToken`. A file whose `IdentityToken` is empty or
+  absent gets a UUID written into it (other keys untouched); an identity removed while running is
+  put back, not replaced.
+- **Precedence**: a non-empty environment variable wins over the file field, per field, and is never
+  written to the file. An empty one counts as unset.
 - **While running**: a 1 s main-thread tick re-reads the file every 5 s and compares the whole text.
   A change to the URL, the registration token or the identity drops the socket and connects at once
   (backoff reset, auth-close `_shouldReconnect = false` cleared). `Debug` applies without a
