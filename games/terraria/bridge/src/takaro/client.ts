@@ -1,6 +1,23 @@
+import { randomUUID } from 'node:crypto';
 import EventEmitter from 'node:events';
 import WebSocket from 'ws';
-import type { GameEventType, IdentifyPayload, RequestPayload, WsMessage } from './protocol.js';
+import type { GameEventType, IdentifyPayload, ProtocolErrorCode, RequestPayload, WsMessage } from './protocol.js';
+
+/** Version 1 event buffer: at least the 1,000 the protocol recommends. */
+export const EVENT_BUFFER_LIMIT = 2000;
+
+interface BufferedEvent {
+  seq: number;
+  type: GameEventType;
+  data: unknown;
+}
+
+export interface ProtocolOptions {
+  /** Offer protocol version 1 (with version 0 as fallback). */
+  offerV1: boolean;
+  /** The Capability Manifest to identify with; asked again on every connect. */
+  manifest: () => unknown[];
+}
 
 export class TakaroWsClient extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -8,14 +25,45 @@ export class TakaroWsClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private shuttingDown = false;
+  private protocolVersion = 0;
+  // Version 1 delivery: one stream per process, seq strictly increasing across reconnects.
+  private readonly streamId = randomUUID();
+  private nextSeq = 1;
+  private readonly buffer: BufferedEvent[] = [];
+  private dropped = 0;
 
   constructor(
     private url: string,
     private identifyPayload: IdentifyPayload,
     private readonly baseReconnectMs = 3000,
     private readonly maxReconnectMs = 60000,
+    private readonly protocol: ProtocolOptions = { offerV1: false, manifest: () => [] },
   ) {
     super();
+  }
+
+  /** The protocol version negotiated on the current connection (0 until identified). */
+  getProtocolVersion(): number {
+    return this.protocolVersion;
+  }
+
+  /** Events sent but not yet acknowledged by Takaro (version 1 only). */
+  unacknowledged(): number {
+    return this.buffer.length;
+  }
+
+  private identifyMessage(): IdentifyPayload {
+    if (!this.protocol.offerV1) return this.identifyPayload;
+    return { ...this.identifyPayload, protocolVersions: [0, 1], capabilities: this.protocol.manifest() };
+  }
+
+  /**
+   * Replaces the Capability Manifest on a version 1 connection, for example when the map
+   * image gets a new revision. A version 0 connection has nothing to replace.
+   */
+  sendCapabilities(): boolean {
+    if (!this.identified() || this.protocolVersion !== 1) return false;
+    return this.send({ type: 'capabilities', requestId: randomUUID(), payload: { capabilities: this.protocol.manifest() } });
   }
 
   /** Opens the socket, unless there is no registration token to identify with. */
@@ -29,7 +77,7 @@ export class TakaroWsClient extends EventEmitter {
     ws.on('open', () => {
       if (this.ws !== ws) return;
       this.reconnectAttempts = 0;
-      this.send({ type: 'identify', payload: this.identifyPayload });
+      this.send({ type: 'identify', payload: this.identifyMessage() });
     });
     ws.on('message', (data) => {
       if (this.ws !== ws) return;
@@ -101,6 +149,7 @@ export class TakaroWsClient extends EventEmitter {
 
   private markDisconnected(): void {
     this.gameServerId = null;
+    this.protocolVersion = 0;
     this.emit('disconnected');
   }
 
@@ -127,12 +176,40 @@ export class TakaroWsClient extends EventEmitter {
     this.send({ type: 'response', requestId, payload });
   }
 
-  sendError(requestId: string, message: string): void {
+  /** A failed request: the version 1 error shape, or the version 0 error frame. */
+  sendError(requestId: string, message: string, code: ProtocolErrorCode = 'game_error'): void {
+    if (this.protocolVersion === 1) {
+      this.send({ type: 'response', requestId, error: { code, message } });
+      return;
+    }
     this.send({ type: 'error', requestId, payload: { message } });
   }
 
+  /**
+   * Version 0: sent once, lost when the socket is down. Version 1: numbered, buffered until
+   * Takaro acknowledges it and resent after a reconnect; the oldest is dropped on overflow.
+   */
   sendGameEvent(type: GameEventType, data: unknown): boolean {
-    return this.send({ type: 'gameEvent', payload: { type, data } });
+    if (this.protocolVersion !== 1) return this.send({ type: 'gameEvent', payload: { type, data } });
+    const event = { seq: this.nextSeq++, type, data };
+    this.buffer.push(event);
+    if (this.buffer.length > EVENT_BUFFER_LIMIT) {
+      this.buffer.shift();
+      this.dropped += 1;
+      if (this.dropped === 1 || this.dropped % 100 === 0) this.emit('eventsDropped', this.dropped);
+    }
+    this.sendBuffered(event);
+    return true;
+  }
+
+  private sendBuffered(event: BufferedEvent): boolean {
+    return this.send({ type: 'gameEvent', payload: { type: event.type, data: event.data, streamId: this.streamId, seq: event.seq } });
+  }
+
+  private acknowledge(payload: unknown): void {
+    const { streamId, upTo } = (payload ?? {}) as { streamId?: unknown; upTo?: unknown };
+    if (streamId !== this.streamId || typeof upTo !== 'number') return;
+    while (this.buffer.length && this.buffer[0].seq <= upTo) this.buffer.shift();
   }
 
   private handle(message: WsMessage): void {
@@ -140,17 +217,39 @@ export class TakaroWsClient extends EventEmitter {
       case 'connected':
         break;
       case 'identifyResponse': {
-        const payload = message.payload as { gameServerId?: string; error?: unknown } | undefined;
+        // Version 1 failures carry a top-level error and close the socket (1008); the
+        // reconnect backoff keeps that from becoming a tight loop.
+        if (message.error) {
+          this.emit('identifyError', message.error);
+          return;
+        }
+        const payload = message.payload as { gameServerId?: string; protocolVersion?: number; error?: unknown } | undefined;
         if (payload?.error) {
           this.emit('identifyError', payload.error);
           return;
         }
         if (payload?.gameServerId) {
           this.gameServerId = payload.gameServerId;
+          this.protocolVersion = payload.protocolVersion === 1 ? 1 : 0;
+          if (this.protocolVersion === 1) {
+            for (const event of this.buffer) this.sendBuffered(event);
+          } else {
+            this.buffer.length = 0;
+          }
           this.emit('identified', payload.gameServerId);
         }
         break;
       }
+      case 'eventAck':
+        this.acknowledge(message.payload);
+        break;
+      case 'eventError':
+        this.emit('eventError', { ...(message.payload as object), error: message.error });
+        break;
+      case 'capabilitiesResponse':
+        if (message.error) this.emit('capabilitiesError', message.error);
+        else this.emit('capabilitiesAccepted');
+        break;
       case 'request':
         this.emit('request', {
           ...message,
