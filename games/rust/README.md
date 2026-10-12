@@ -90,7 +90,7 @@ on its own; no restart and no plugin reload.
 | Field | What it is |
 |---|---|
 | `RegistrationToken` | Your Takaro registration token. **Required.** |
-| `IdentityToken` | This server's unique name in Takaro. Generated on first load; do not change it, or Takaro sees a new server. |
+| `IdentityToken` | This server's unique name in Takaro. Left empty, the plugin generates one and saves it in the file; do not change it afterwards, or Takaro sees a new server. |
 | `WebSocketUrl` | Takaro WebSocket endpoint. Leave as is. |
 | `Debug` | `true` logs every message sent and received. |
 
@@ -130,9 +130,7 @@ reconnects within a few seconds.
 Replace `TakaroConnector.cs` in the plugin folder with the new file. Carbon and Oxide notice the
 changed file and reload the plugin by themselves; no server restart is needed. Leave
 `TakaroConnector.json` where it is: the new version reads it, so the server keeps its token and its
-identity. A server that was set up with environment variables before this config file existed keeps
-the identity it had; the file is created with an empty `IdentityToken` and the environment still
-wins.
+identity.
 
 ## What works, what doesn't
 

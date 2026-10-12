@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Compiles the connector's config region on its own and runs it against the install,
-# upgrade and edit-while-running cases: fresh install, existing environment install,
-# upgrade with an existing file, environment precedence, a half-saved file, identity
-# generation and preservation.
+# upgrade and edit-while-running cases: fresh install, upgrade with an existing file,
+# environment precedence, a half-saved file, identity generation and write-back.
 #
 # The region in mod/TakaroConnector.cs depends only on Newtonsoft.Json, so it compiles as a
 # plain console project inside the catalog target's pinned .NET SDK image, against the
