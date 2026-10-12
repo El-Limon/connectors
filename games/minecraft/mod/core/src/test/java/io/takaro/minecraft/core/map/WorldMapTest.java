@@ -187,8 +187,13 @@ class WorldMapTest {
             Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 5000));
             // Served at once from the old drawing while the region is redrawn behind it...
             assertEquals(shade(TestRegions.GRASS, 220), rgb(decode(map.tile("overworld", 4, 4, 4, 5000))[0]));
-            // ...and the next request has the saved change.
-            assertEquals(shade(TestRegions.STONE, 220), rgb(decode(map.tile("overworld", 4, 4, 4, 5000))[0]));
+            // ...and once the redraw lands, requests get the saved change.
+            int pixel = 0;
+            for (int i = 0; i < 100 && pixel != shade(TestRegions.STONE, 220); i++) {
+                Thread.sleep(50);
+                pixel = rgb(decode(map.tile("overworld", 4, 4, 4, 5000))[0]);
+            }
+            assertEquals(shade(TestRegions.STONE, 220), pixel);
         } finally {
             map.close();
         }

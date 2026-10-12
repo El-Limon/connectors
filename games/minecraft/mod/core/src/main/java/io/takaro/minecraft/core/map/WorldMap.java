@@ -61,17 +61,24 @@ public final class WorldMap {
     private final Consumer<String> log;
     private final Map<String, Frame> frames = new ConcurrentHashMap<>();
     private final Map<String, Future<byte[]>> inflight = new ConcurrentHashMap<>();
-    private final ExecutorService renderThread = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "takaro-map-render");
-        t.setDaemon(true);
-        t.setPriority(Thread.MIN_PRIORITY);
-        return t;
-    });
+    // Tiles are put together on one thread from cached region drawings; redrawing a region the
+    // server saved again takes seconds and runs on another, so it never holds up a tile.
+    private final ExecutorService renderThread = daemonThread("takaro-map-render");
+    private final ExecutorService redrawThread = daemonThread("takaro-map-redraw");
 
-    // Only the render thread touches these.
-    private final Map<String, Raster> rasters = lru(RASTER_CACHE);
+    private final Map<String, Raster> rasters = java.util.Collections.synchronizedMap(lru(RASTER_CACHE));
+    private final java.util.Set<String> refreshing = ConcurrentHashMap.newKeySet();
+    // Only the render thread touches this.
     private final Map<String, Tile> tiles = lru(TILE_CACHE);
-    private final java.util.Set<String> refreshing = new java.util.HashSet<>();
+
+    private static ExecutorService daemonThread(String name) {
+        return Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, name);
+            t.setDaemon(true);
+            t.setPriority(Thread.MIN_PRIORITY);
+            return t;
+        });
+    }
 
     public WorldMap(List<Dimension> dimensions, RegionRenderer.BlockColors colors, Consumer<String> log) {
         this.dimensions = List.copyOf(dimensions);
@@ -226,9 +233,10 @@ public final class WorldMap {
 
     public void close() {
         renderThread.shutdownNow();
+        redrawThread.shutdownNow();
     }
 
-    // --- render thread only ---
+    // --- render thread (tiles) and redraw thread (rasters) ---
 
     private byte[] renderTile(Dimension d, Frame frame, int zoom, int tx, int ty, String key) {
         int span = frame.size() >> zoom; // blocks across this tile
@@ -291,7 +299,7 @@ public final class WorldMap {
         if (cached == null) return null;
         long modified = modified(regionPath(d, rx, rz));
         if (modified != 0 && modified != cached.modified() && refreshing.add(key)) {
-            renderThread.submit(() -> {
+            redrawThread.submit(() -> {
                 try {
                     drawRaster(d, rx, rz);
                 } finally {
