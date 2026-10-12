@@ -39,8 +39,6 @@ CHECK_IDS = (
     "chat-in",
     "chat-out",
     "reconnect",
-    "ark-outage-replay",
-    "ark-freeze-resume",
     "inventory",
     "catalog",
     "entities",
@@ -48,6 +46,11 @@ CHECK_IDS = (
     "ark-targeted-offline",
     "ark-console",
     "ark-saveworld",
+    # After SaveWorld: the outage check appends a line to ShooterGame.log, and ARK writes
+    # at its own file offset (no O_APPEND), so its next lines overwrite the injected bytes
+    # behind the plugin's tail position. No later check depends on the game log.
+    "ark-outage-replay",
+    "ark-freeze-resume",
     "native-shutdown",
     "owned-save-reload",
     "event",
@@ -91,6 +94,8 @@ GAME_LOG = Path("ShooterGame/Saved/Logs/ShooterGame.log")
 FREEZE_SECONDS = 180.0
 #: Seconds to wait for the replayed outage event after the plugin re-identifies.
 OUTAGE_DELIVERY_TIMEOUT = 30.0
+#: Seconds native-health waits for the status file to report game-thread readiness.
+STATUS_READY_TIMEOUT = 60.0
 CONSOLE_SAFETY_PROBES = (
     ("Exit", "Use the dedicated shutdown action"),
     ("  qUiT extra", "Use the dedicated shutdown action"),
@@ -373,7 +378,11 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
             if check_id == "native-health":
                 reach = await _wait_native_protocol_ready(fake, alive)
                 detail["reachability"] = reach
-                status = await _wait_status(run, lambda value: bool(value.get("bootId")))
+                status = await _wait_status(
+                    run,
+                    lambda value: bool(value.get("bootId")) and value.get("gameReady") is True,
+                    timeout=STATUS_READY_TIMEOUT,
+                )
                 detail["status"] = status
                 if run.options.ark_readonly_base is not None:
                     if run.container is None:

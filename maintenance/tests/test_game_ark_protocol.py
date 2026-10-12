@@ -623,7 +623,10 @@ def test_native_health_timeout_keeps_starting_result() -> None:
 
 
 @pytest.mark.parametrize(("game_ready", "expected"), [(True, "pass"), (False, "fail")])
-def test_ark_native_health_uses_reachability_and_status_file(tmp_path: Path, game_ready: bool, expected: str) -> None:
+def test_ark_native_health_uses_reachability_and_status_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, game_ready: bool, expected: str
+) -> None:
+    monkeypatch.setattr(ark_verify, "STATUS_READY_TIMEOUT", 0.0)
     run = ProtocolRun(
         tmp_path,
         "native-health",
