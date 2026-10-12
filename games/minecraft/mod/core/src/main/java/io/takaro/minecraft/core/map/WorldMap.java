@@ -71,6 +71,7 @@ public final class WorldMap {
     // Only the render thread touches these.
     private final Map<String, Raster> rasters = lru(RASTER_CACHE);
     private final Map<String, Tile> tiles = lru(TILE_CACHE);
+    private final java.util.Set<String> refreshing = new java.util.HashSet<>();
 
     public WorldMap(List<Dimension> dimensions, RegionRenderer.BlockColors colors, Consumer<String> log) {
         this.dimensions = List.copyOf(dimensions);
@@ -111,7 +112,7 @@ public final class WorldMap {
     public boolean refreshFrames() {
         boolean changed = false;
         for (Dimension d : dimensions) {
-            Frame next = computeFrame(d.regionDir());
+            Frame next = computeFrame(d.regionDir(), frames.get(d.id()));
             Frame previous = frames.put(d.id(), next);
             changed |= !next.equals(previous);
         }
@@ -119,6 +120,15 @@ public final class WorldMap {
     }
 
     static Frame computeFrame(Path regionDir) {
+        return computeFrame(regionDir, null);
+    }
+
+    /**
+     * The frame for the saved regions. A {@code previous} frame that still holds every region
+     * is kept, so tile coordinates (and every cache keyed on them) only change when the world
+     * outgrows the map.
+     */
+    static Frame computeFrame(Path regionDir, Frame previous) {
         int minRX = Integer.MAX_VALUE, minRZ = Integer.MAX_VALUE;
         int maxRX = Integer.MIN_VALUE, maxRZ = Integer.MIN_VALUE;
         if (regionDir != null && Files.isDirectory(regionDir)) {
@@ -139,6 +149,14 @@ public final class WorldMap {
         if (minRX == Integer.MAX_VALUE) {
             minRX = minRZ = -MIN_SIDE_REGIONS / 2;
             maxRX = maxRZ = MIN_SIDE_REGIONS / 2 - 1;
+        }
+        if (previous != null) {
+            int pMinRX = Math.floorDiv(previous.minX(), RegionFile.BLOCKS);
+            int pMinRZ = Math.floorDiv(previous.minZ(), RegionFile.BLOCKS);
+            int pSide = previous.size() / RegionFile.BLOCKS;
+            if (minRX >= pMinRX && minRZ >= pMinRZ && maxRX < pMinRX + pSide && maxRZ < pMinRZ + pSide) {
+                return previous;
+            }
         }
         int extent = Math.max(maxRX - minRX + 1, maxRZ - minRZ + 1);
         int side = MIN_SIDE_REGIONS;
@@ -219,10 +237,13 @@ public final class WorldMap {
         int rx0 = Math.floorDiv(x0, RegionFile.BLOCKS), rx1 = Math.floorDiv(x0 + span - 1, RegionFile.BLOCKS);
         int rz0 = Math.floorDiv(z0, RegionFile.BLOCKS), rz1 = Math.floorDiv(z0 + span - 1, RegionFile.BLOCKS);
 
+        // Keyed on the rasters the tile is drawn from: a stale raster still being refreshed
+        // gives the old fingerprint, so the tile is redrawn once the fresh raster lands.
         long fingerprint = 17;
         for (int rz = rz0; rz <= rz1; rz++) {
             for (int rx = rx0; rx <= rx1; rx++) {
-                fingerprint = fingerprint * 31 + modified(regionPath(d, rx, rz));
+                Raster cachedRaster = refreshIfStale(d, rx, rz);
+                fingerprint = fingerprint * 31 + (cachedRaster != null ? cachedRaster.modified() : modified(regionPath(d, rx, rz)));
             }
         }
         Tile cached = tiles.get(key);
@@ -253,20 +274,49 @@ public final class WorldMap {
         return png;
     }
 
+    /**
+     * The region's pixels. A region the server saved again since it was drawn is served from
+     * the old drawing at once and redrawn in the background: a redraw takes seconds, and Takaro
+     * shows a blank placeholder for any tile that is not ready in time.
+     */
     private Raster raster(Dimension d, int rx, int rz) {
+        Raster cached = refreshIfStale(d, rx, rz);
+        return cached != null ? cached : drawRaster(d, rx, rz);
+    }
+
+    /** The cached drawing of a region, queueing a redraw when the server saved it since. */
+    private Raster refreshIfStale(Dimension d, int rx, int rz) {
+        String key = rasterKey(d, rx, rz);
+        Raster cached = rasters.get(key);
+        if (cached == null) return null;
+        long modified = modified(regionPath(d, rx, rz));
+        if (modified != 0 && modified != cached.modified() && refreshing.add(key)) {
+            renderThread.submit(() -> {
+                try {
+                    drawRaster(d, rx, rz);
+                } finally {
+                    refreshing.remove(key);
+                }
+            });
+        }
+        return cached;
+    }
+
+    private Raster drawRaster(Dimension d, int rx, int rz) {
         Path path = regionPath(d, rx, rz);
         long modified = modified(path);
         if (modified == 0) return null;
-        String key = d.id() + "/" + rx + "/" + rz;
-        Raster cached = rasters.get(key);
-        if (cached != null && cached.modified() == modified) return cached;
         try {
             Raster fresh = new Raster(renderer.render(RegionFile.read(path), d.ceiling()), modified);
-            rasters.put(key, fresh);
+            rasters.put(rasterKey(d, rx, rz), fresh);
             return fresh;
         } catch (IOException e) {
-            return cached;
+            return rasters.get(rasterKey(d, rx, rz));
         }
+    }
+
+    private static String rasterKey(Dimension d, int rx, int rz) {
+        return d.id() + "/" + rx + "/" + rz;
     }
 
     private static Path regionPath(Dimension d, int rx, int rz) {

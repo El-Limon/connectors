@@ -102,6 +102,27 @@ class WorldMapTest {
     }
 
     @Test
+    void frameStaysPutWhileTheWorldStillFitsAndGrowsWhenItDoesNot() throws Exception {
+        Path regions = dir.resolve("region");
+        Files.createDirectories(regions);
+        for (String name : List.of("r.-1.-1.mca", "r.0.0.mca")) Files.write(regions.resolve(name), new byte[9000]);
+        WorldMap.Frame first = WorldMap.computeFrame(regions, null);
+        assertEquals(new WorldMap.Frame(-1024, -1024, 2048, 4), first);
+
+        // A new region inside the frame: same frame, no re-centring.
+        Files.write(regions.resolve("r.1.0.mca"), new byte[9000]);
+        assertSame(first, WorldMap.computeFrame(regions, first));
+        // Re-computed from scratch it would have moved.
+        assertNotEquals(first, WorldMap.computeFrame(regions, null));
+
+        // A region outside it: the frame grows to cover everything.
+        Files.write(regions.resolve("r.5.0.mca"), new byte[9000]);
+        WorldMap.Frame grown = WorldMap.computeFrame(regions, first);
+        assertEquals(4096, grown.size());
+        assertTrue(grown.minX() <= -512 && grown.maxX() >= 6 * 512);
+    }
+
+    @Test
     void emptyWorldGetsADefaultFrameAroundSpawn() {
         WorldMap.Frame frame = WorldMap.computeFrame(dir.resolve("missing"));
         assertEquals(new WorldMap.Frame(-1024, -1024, 2048, 4), frame);
@@ -164,6 +185,9 @@ class WorldMapTest {
             chunks.put(0, TestRegions.chunk(0, 0, "minecraft:stone", (x, z) -> 64, false));
             TestRegions.writeRegion(file, chunks);
             Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 5000));
+            // Served at once from the old drawing while the region is redrawn behind it...
+            assertEquals(shade(TestRegions.GRASS, 220), rgb(decode(map.tile("overworld", 4, 4, 4, 5000))[0]));
+            // ...and the next request has the saved change.
             assertEquals(shade(TestRegions.STONE, 220), rgb(decode(map.tile("overworld", 4, 4, 4, 5000))[0]));
         } finally {
             map.close();
