@@ -152,6 +152,12 @@ class Bridge {
               known_),
         adapter_(gate_, bans_, known_) {
     if (!config_.state_dir.empty()) cursor_path_ = config_.state_dir + "/event-cursor.json";
+    adapter_.set_delivery_waiter([this](uint64_t seq, std::chrono::milliseconds timeout) {
+      const auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (persisted_.load() < seq && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      return persisted_.load() >= seq;
+    });
     const Cursor saved = cursor_path_.empty() ? Cursor{} : load_cursor(cursor_path_);
     if (saved.boot_id == gate_.boot_id()) { scan_ = persisted_ = saved.seq; }
   }

@@ -150,6 +150,20 @@ inline bool unsigned_decimal(const std::string& t) {
   return i == t.size();
 }
 
+// TheIsland's PlayerStarts carry no PlayerStartTag, so the native name is the object
+// path. Players know these as numbered spawn points: ".PlayerStart_10" -> "Spawn point 10".
+inline std::string location_name(const std::string& code, const std::string& name) {
+  if (name != code) return name;
+  const size_t dot = code.rfind('.');
+  const std::string actor = dot == std::string::npos ? code : code.substr(dot + 1);
+  constexpr std::string_view prefix = "PlayerStart_";
+  if (actor.rfind(prefix, 0) == 0 && actor.size() > prefix.size() &&
+      actor.find_first_not_of("0123456789", prefix.size()) == std::string::npos)
+    return "Spawn point " + actor.substr(prefix.size());
+  if (actor == "PlayerStart") return "Spawn point";
+  return actor.empty() ? name : actor;
+}
+
 inline bool no_options(const json::Value& args) {
   for (const auto& [key, value] : args.as_object()) if (!value.is_null()) return false;
   return true;
@@ -328,6 +342,10 @@ class Adapter {
  public:
   Adapter(gate::Server& gate, BanManager& bans, KnownPlayers& known) : gate_(gate), bans_(bans), known_(known) {}
 
+  // Blocks until the event stream has delivered up to `seq` or the timeout passes.
+  using DeliveryWaiter = std::function<bool(uint64_t, std::chrono::milliseconds)>;
+  void set_delivery_waiter(DeliveryWaiter waiter) { wait_delivered_ = std::move(waiter); }
+
   // Called after the response for `shutdown` is written to the socket.
   using AfterWrite = std::function<void()>;
 
@@ -391,6 +409,7 @@ class Adapter {
   gate::Server& gate_;
   BanManager& bans_;
   KnownPlayers& known_;
+  DeliveryWaiter wait_delivered_;
 
   json::Value test_reachability() {
     const auto h = gate_.health();
@@ -518,7 +537,7 @@ class Adapter {
           row.size_x <= 1e9f && row.size_y <= 1e9f && row.size_z <= 1e9f;
       if (!ok) withhold("native spawn-point bounds are invalid");
       if (!seen.insert(row.code).second) withhold("native spawn-point snapshot has duplicate codes");
-      out.push(json::obj({{"code", json::str(row.code)}, {"name", json::str(row.name)},
+      out.push(json::obj({{"code", json::str(row.code)}, {"name", json::str(location_name(row.code, row.name))},
                           {"position", json::obj({{"x", json::num(row.x)}, {"y", json::num(row.y)}, {"z", json::num(row.z)}})},
                           {"sizeX", json::num(row.size_x)}, {"sizeY", json::num(row.size_y)}, {"sizeZ", json::num(row.size_z)}}));
     }
@@ -643,6 +662,12 @@ class Adapter {
     action->kind = gate::Action::Kind::shutdown;
     const auto outcome = run(gate_, action);
     if (outcome.status != gate::Server::Submit::done || !outcome.success) withhold("native shutdown was not acknowledged");
+    // ARK does not run Logout for players still online at exit. The world is saved
+    // and the exit is staged, so report their departures now and give the event
+    // stream a bounded moment to deliver them before the acknowledged exit.
+    bool departures = false;
+    for (const auto& player : gate_.players()) { gate_.record_logout(player.id); departures = true; }
+    if (departures && wait_delivered_) (void)wait_delivered_(gate_.latest_sequence(), std::chrono::milliseconds(3000));
     // The exit is requested on a later game tick only after this response
     // has been handed to the socket.
     if (after_write) *after_write = [action] { action->response_sent.store(true, std::memory_order_release); };

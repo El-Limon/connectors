@@ -377,6 +377,15 @@ void test_identify_and_wire() {
   CHECK(exit && !exit->get("payload")->get("success")->as_bool() &&
         exit->get("payload")->get("errorMessage")->as_string() == "Use the dedicated shutdown action");
 
+  // Locations: native object paths become human spawn-point names; tags win.
+  gate.record_locations({{"/Game/Maps/TheIsland.TheIsland:PersistentLevel.PlayerStart_10",
+                          "/Game/Maps/TheIsland.TheIsland:PersistentLevel.PlayerStart_10", 1, 2, 3, 10, 10, 10},
+                         {"/Game/Maps/TheIsland.TheIsland:PersistentLevel.PlayerStart_11", "North Coast", 4, 5, 6, 10, 10, 10}});
+  auto locations = takaro.request("locations", "listLocations", json::Value::object());
+  CHECK(locations && locations->get("payload")->as_array().size() == 2 &&
+        locations->get("payload")->as_array()[0].get("name")->as_string() == "Spawn point 10" &&
+        locations->get("payload")->as_array()[1].get("name")->as_string() == "North Coast");
+
   // Kick with reason: notice then verified departure.
   auto kick = takaro.request("kick", "kickPlayer", json::obj({{"gameId", json::str(kId)}, {"reason", json::str("bye")}}));
   CHECK(kick);
@@ -520,9 +529,23 @@ void test_shutdown_response_then_exit_flag() {
   takaro::Bridge bridge(config_for(takaro, temp_dir()), gate, [](const std::string&) {});
   bridge.start();
   CHECK(eventually([&] { return bridge.identified(); }));
+  gate.record_login(kId, "Limon");
   CHECK(!takaro.request("shutdown-args", "shutdown", json::obj({{"force", json::Value::boolean(true)}}), 600ms));
   auto response = takaro.request("shutdown", "shutdown", json::obj({{"force", json::Value::null()}}));
   CHECK(response);
+  // Players still online get a delivered player-disconnected before the ACK.
+  bool departed_first = false;
+  {
+    const auto messages = takaro.messages();
+    size_t departure = messages.size(), ack = messages.size();
+    for (size_t i = 0; i < messages.size(); ++i) {
+      if (is_type(messages[i], "gameEvent") && messages[i].get("payload")->get("type")->as_string() == "player-disconnected") departure = std::min(departure, i);
+      if (is_type(messages[i], "response") && messages[i].get("requestId")->as_string() == "shutdown") ack = i;
+    }
+    departed_first = departure < ack;
+  }
+  CHECK(departed_first);
+  CHECK(gate.players().empty());
   CHECK(eventually([&] {
     std::lock_guard<std::mutex> l(game.mutex);
     return game.last_shutdown && game.last_shutdown->response_sent.load();
