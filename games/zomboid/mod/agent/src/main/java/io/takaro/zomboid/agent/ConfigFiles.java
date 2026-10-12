@@ -68,6 +68,8 @@ public final class ConfigFiles {
         config.setIdentityToken(first(u.get("identityToken")));
         config.setServerChatName(first(u.get("serverChatName")));
         config.setDebugEnabled(isTruthy(u.get("debug")));
+        String protocol = first(u.get("protocol"));
+        config.setProtocolV1Enabled(protocol == null || !"0".equals(protocol.trim()));
         config.applyEnvOverrides(env);
 
         boolean logEvents = isTruthy(u.get("logEvents"));

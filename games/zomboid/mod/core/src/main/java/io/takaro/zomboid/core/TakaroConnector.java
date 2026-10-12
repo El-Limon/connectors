@@ -15,6 +15,8 @@ public class TakaroConnector {
     private final GameAdapter adapter;
     private final TakaroConfig config;
     private final Object lock = new Object();
+    // One event stream per process: a replaced socket keeps unacknowledged events.
+    private final EventOutbox outbox = new EventOutbox();
     private TakaroWebSocketClient wsClient;
     private boolean started;
     private boolean stopped;
@@ -100,7 +102,7 @@ public class TakaroConnector {
                     + ", reconnectDelay=" + config.getReconnectDelay() + ", debug=true");
         }
         try {
-            wsClient = new TakaroWebSocketClient(new URI(url), adapter, config);
+            wsClient = new TakaroWebSocketClient(new URI(url), adapter, config, outbox);
             adapter.setEventEmitter(wsClient);
             wsClient.connect();
         } catch (Exception e) {
