@@ -36,6 +36,14 @@ public class TakaroWebSocketClient extends WebSocketClient implements EventEmitt
     // The protocol Takaro chose in the last identifyResponse; 0 until then and on every reconnect.
     private volatile int protocol;
 
+    // Takaro polls every connected server several times a minute. A socket that stays open
+    // but goes quiet has been dropped on Takaro's side (seen on staging 2026-10-12: no close
+    // frame, the ingress kept answering pings), so reconnect instead of waiting forever.
+    static final long SILENCE_LIMIT_MILLIS = 180_000;
+    private volatile long silenceLimitMillis = SILENCE_LIMIT_MILLIS;
+    private volatile long lastInboundMillis = System.currentTimeMillis();
+    private volatile boolean watchdogStarted;
+
     /** The v1 action capabilities this connector implements; testReachability needs none. */
     static final String[] ACTION_CAPABILITIES = {
             "players.list", "players.get", "players.location", "players.inventory", "players.teleport",
@@ -65,6 +73,35 @@ public class TakaroWebSocketClient extends WebSocketClient implements EventEmitt
         this.currentReconnectDelay = config.getReconnectDelay();
     }
 
+    private synchronized void startWatchdog() {
+        if (watchdogStarted) return;
+        watchdogStarted = true;
+        long period = Math.max(1000, Math.min(15_000, silenceLimitMillis / 4));
+        scheduler.scheduleWithFixedDelay(this::checkSilence, period, period, TimeUnit.MILLISECONDS);
+    }
+
+    /** One watchdog tick: drops a connection Takaro has not spoken on for too long. */
+    void checkSilence() {
+        try {
+            long quiet = System.currentTimeMillis() - lastInboundMillis;
+            if (closed || !identified || !isOpen() || quiet < silenceLimitMillis) return;
+            adapter.logWarning("No message from Takaro for " + quiet / 1000 + " s on an open connection; reconnecting");
+            identified = false;
+            dropConnection();
+        } catch (RuntimeException e) {
+            adapter.logWarning("Connection watchdog failed: " + e);
+        }
+    }
+
+    /** Closes the socket at once, without waiting for a close handshake a dead peer never sends. */
+    void dropConnection() {
+        getConnection().closeConnection(1001, "no traffic from Takaro");
+    }
+
+    void setSilenceLimitMillis(long millis) {
+        this.silenceLimitMillis = millis;
+    }
+
     /** True once Takaro accepted protocol v1 on this connection. */
     boolean isV1() {
         return protocol >= 1;
@@ -84,6 +121,8 @@ public class TakaroWebSocketClient extends WebSocketClient implements EventEmitt
         }
         protocol = 0;
         identified = false;
+        lastInboundMillis = System.currentTimeMillis();
+        startWatchdog();
         adapter.logInfo("WebSocket connected, sending identify...");
         sendIdentify();
     }
@@ -93,6 +132,7 @@ public class TakaroWebSocketClient extends WebSocketClient implements EventEmitt
         if (closed) {
             return; // a replaced connection: its answers no longer describe the current settings
         }
+        lastInboundMillis = System.currentTimeMillis();
         if (config.isDebugEnabled()) {
             // identify errors can embed Takaro's internal request, auth token included
             adapter.logDebug(message.contains("\"identifyResponse\"")

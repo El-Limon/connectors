@@ -228,4 +228,35 @@ class ProtocolV1Test {
         assertTrue(adapter.warnings.stream().anyMatch(s -> s.contains("no shared protocol version")));
         assertFalse(client.isV1());
     }
+
+    @Test
+    void aSilentOpenConnectionIsDroppedSoItReconnects() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger drops = new java.util.concurrent.atomic.AtomicInteger();
+        TakaroConfig config = new TakaroConfig();
+        TakaroWebSocketClient client = new TakaroWebSocketClient(new URI("ws://localhost:9999"),
+                new TakaroConnectorTest.TestAdapter(), config, "config", new EventOutbox(), null) {
+            @Override
+            public void send(String text) { sent.add(text); }
+
+            @Override
+            public boolean isOpen() { return open; }
+
+            @Override
+            void dropConnection() { drops.incrementAndGet(); }
+        };
+        client.setSilenceLimitMillis(200);
+        client.onMessage(identifyResponse(0));
+
+        // Takaro keeps talking: no drop.
+        client.onMessage("{\"type\":\"connected\",\"payload\":{}}");
+        client.checkSilence();
+        assertEquals(0, drops.get());
+
+        Thread.sleep(300);
+        client.checkSilence();
+        assertEquals(1, drops.get());
+        // Not identified any more: a second tick does not drop again.
+        client.checkSilence();
+        assertEquals(1, drops.get());
+    }
 }
