@@ -398,7 +398,10 @@ namespace Oxide.Plugins
             try
             {
                 var updated = WithIdentity(text, _fileIdentity);
-                File.WriteAllText(_configPath, updated);
+                // Replaced in one step, so a crash never leaves the token half written.
+                var tmp = _configPath + ".tmp";
+                File.WriteAllText(tmp, updated);
+                File.Replace(tmp, _configPath, null);
                 LogInfo(generated
                     ? $"No IdentityToken in {_configPath}; generated one and saved it"
                     : $"IdentityToken was removed from {_configPath}; putting this server's identity back");
