@@ -39,6 +39,8 @@ CHECK_IDS = (
     "chat-in",
     "chat-out",
     "reconnect",
+    "ark-outage-replay",
+    "ark-freeze-resume",
     "inventory",
     "catalog",
     "entities",
@@ -84,6 +86,11 @@ UNSUPPORTED_CHECKS = {
 }
 STATUS_FILE = Path(".takaro/ark-native/status.json")
 OFFLINE_STEAM_ID = "76561198009999999"
+GAME_LOG = Path("ShooterGame/Saved/Logs/ShooterGame.log")
+#: Seconds the whole game container is frozen (cgroup freezer) in ark-freeze-resume.
+FREEZE_SECONDS = 180.0
+#: Seconds to wait for the replayed outage event after the plugin re-identifies.
+OUTAGE_DELIVERY_TIMEOUT = 30.0
 CONSOLE_SAFETY_PROBES = (
     ("Exit", "Use the dedicated shutdown action"),
     ("  qUiT extra", "Use the dedicated shutdown action"),
@@ -258,6 +265,91 @@ async def _wait_native_protocol_ready(fake: Any, alive: Any, *, timeout: float =
         if _native_protocol_ready(last) or time.monotonic() >= deadline or not alive():
             return last
         await asyncio.sleep(poll_interval)
+
+
+async def _outage_replay(run: Any, fake: Any) -> dict[str, Any]:
+    """A native event created while Takaro is unreachable arrives exactly once after it returns.
+
+    The event is an allowlisted engine save line appended to the owned game log (the plugin's
+    log tail turns it into a native ring event); Takaro is down because the fake server stops
+    accepting connections, so the plugin must keep the event and replay it on reconnect.
+    """
+    marker = f"World Save Complete. Took 0.{int(time.time() * 1000) % 1000000:06d}"
+    log = run.data_dir / GAME_LOG
+    detail: dict[str, Any] = {"marker": marker}
+    before = fake.identify_count
+    await fake.stop()
+    await fake.disconnect(1012, "service restart")
+    try:
+        await asyncio.sleep(2)
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(f"[{time.strftime('%Y.%m.%d-%H.%M.%S:000', time.gmtime())}][  0]{marker}\n")
+        detail["appendedWhileDownUtc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await asyncio.sleep(8)  # several reconnect attempts fail against the closed port
+    finally:
+        await fake.start()
+    await fake.wait_for_identify(120, minimum=before + 1)
+    deadline = time.monotonic() + OUTAGE_DELIVERY_TIMEOUT
+    copies: list[Any] = []
+    while time.monotonic() < deadline:
+        copies = [
+            event
+            for event in fake.events
+            if isinstance(event, dict)
+            and event.get("type") == "log"
+            and isinstance(event.get("data"), dict)
+            and event["data"].get("msg") == marker
+        ]
+        if copies:
+            break
+        await asyncio.sleep(0.5)
+    await asyncio.sleep(3)  # a duplicate would arrive with the same pump pass
+    copies = [
+        event
+        for event in fake.events
+        if isinstance(event, dict)
+        and event.get("type") == "log"
+        and isinstance(event.get("data"), dict)
+        and event["data"].get("msg") == marker
+    ]
+    detail["deliveredCopies"] = len(copies)
+    detail["identifyCount"] = fake.identify_count
+    return detail
+
+
+async def _freeze_resume(run: Any, fake: Any, seconds: float) -> dict[str, Any]:
+    """Freeze the whole game container, resume it, and require the same boot to serve Takaro again."""
+    status_before = await asyncio.to_thread(read_status, run)
+    before = fake.identify_count
+    detail: dict[str, Any] = {"frozenSeconds": seconds, "bootIdBefore": status_before.get("bootId")}
+    pause = await asyncio.to_thread(
+        subprocess.run, [*docker_command(), "pause", run.container.name], capture_output=True, text=True, check=False
+    )
+    if pause.returncode:
+        raise RuntimeError(f"docker pause failed: {pause.stderr.strip()[:160]}")
+    try:
+        await asyncio.sleep(seconds)
+    finally:
+        await asyncio.to_thread(
+            subprocess.run,
+            [*docker_command(), "unpause", run.container.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    await fake.wait_for_identify(180, minimum=before + 1)
+    reach = await fake.request("testReachability", {})
+    await asyncio.sleep(10)
+    status_after = await _wait_status(run, lambda value: value.get("identified") is True)
+    detail.update(
+        {
+            "identifyCount": fake.identify_count,
+            "reachability": reach,
+            "bootIdAfter": status_after.get("bootId"),
+            "serverAlive": await asyncio.to_thread(run.container.alive),
+        }
+    )
+    return detail
 
 
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
@@ -500,6 +592,21 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 detail["identifyCount"] = fake.identify_count
                 if not isinstance(reach, dict) or reach.get("connectable") is not True:
                     problems.append("reconnected plugin cannot report native reachability")
+            elif check_id == "ark-outage-replay":
+                detail.update(await _outage_replay(run, fake))
+                if detail["deliveredCopies"] != 1:
+                    problems.append("event created during the Takaro outage was not delivered exactly once")
+            elif check_id == "ark-freeze-resume":
+                if run.container is None:
+                    raise RuntimeError("game container was not started")
+                detail.update(await _freeze_resume(run, fake, FREEZE_SECONDS))
+                if detail["serverAlive"] is not True:
+                    problems.append("game process did not survive the freeze and resume")
+                if not detail["bootIdBefore"] or detail["bootIdAfter"] != detail["bootIdBefore"]:
+                    problems.append("native boot changed across the freeze")
+                reach = detail["reachability"]
+                if not isinstance(reach, dict) or reach.get("connectable") is not True:
+                    problems.append("plugin did not serve Takaro again after the freeze")
         except Exception as exc:  # report a failed capability, never a fake pass
             problems.append(str(exc))
         run.record(_result(check_id, problems, started, **detail))

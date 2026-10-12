@@ -32,9 +32,12 @@ LEVEL_CHECKS: dict[str, tuple[str, ...]] = {
 GAME_PROTOCOL_CHECKS: dict[str, tuple[str, ...]] = {
     "ark": (
         "native-health",
-        "sidecar-identify",
+        "plugin-identify",
         "ark-heartbeat",
         "roster",
+        "reconnect",
+        "ark-outage-replay",
+        "ark-freeze-resume",
         "catalog",
         "entities",
         "ark-empty-broadcast",

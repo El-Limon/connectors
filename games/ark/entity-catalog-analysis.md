@@ -46,8 +46,8 @@ with value `Dodo` on its CDO, matching the entry code. The exact
 `actor_code` reads the same reflected tag before a death callback's original
 function runs; native integration still must verify actual death/attacker,
 catalog membership, lifetime, and real event acceptance. No live entity
-snapshot or kill event has been tested yet, so the sidecar must continue to
-report this capability unavailable until that integration is proven.
+snapshot or kill event had been tested when this was written; the capability
+stays unclaimed until a live kill is proven through Takaro.
 
 Offline evidence was produced with `objdump -d -M intel` around
 `0x14090D0–0x14091D6`, `0x18647B0`, and `0x13B5940` on the exact executable.

@@ -10,9 +10,10 @@ show this behavior. A `response` frame containing only `error` can therefore
 make a failed kick appear successful; that also happened in the v21 live kick
 diagnostic, where the player remained online and native `/kick` was never called.
 
-The ARK sidecar answers successful requests normally. When parsing or action
-execution fails, it sends no frame for that request and records only its bounded
-request ID, known action, and error category in its own log. Takaro's pending
+The ARK native plugin answers successful requests normally. When parsing or
+action execution fails, it sends no frame for that request and records only its
+bounded request ID, action and reason on the server's stderr
+(`ARK_NATIVE_DIAG ... takaro-request ... result=withheld: ...`). Takaro's pending
 request then fails at its configured timeout, which defaults to
 [10 seconds at the same upstream commit](https://github.com/gettakaro/takaro/blob/207719e1c0895ac7f0b7da80f6619c1e7bbd24bb/packages/app-connector/src/config.ts#L89-L94).
 This is a fail-closed connector workaround: the API reports a timeout, not the

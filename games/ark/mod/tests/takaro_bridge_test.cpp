@@ -193,6 +193,8 @@ class FakeGame {
   std::set<std::string> banned;
   std::mutex mutex;
   std::shared_ptr<gate::Action> last_shutdown;
+  std::u32string last_message;
+  std::u32string last_text() { std::lock_guard<std::mutex> lock(mutex); return last_message; }
   std::atomic<int> executed{0};
   std::atomic<bool> stall{false};
 
@@ -230,6 +232,7 @@ class FakeGame {
           }
           case gate::Action::Kind::shutdown: { std::lock_guard<std::mutex> lock(mutex); last_shutdown = action; break; }
           case gate::Action::Kind::console: action->output = "handled"; break;
+          case gate::Action::Kind::message: { std::lock_guard<std::mutex> lock(mutex); last_message = action->text; break; }
           default: break;
         }
         gate::Server::complete(action, success);
@@ -328,6 +331,10 @@ void test_identify_and_wire() {
   auto broadcast = takaro.request("msg-all", "sendMessage", json::obj({{"message", json::str("hello")},
       {"opts", json::obj({{"recipient", json::Value::null()}})}}));
   CHECK(broadcast && broadcast->get("payload")->is_object());
+  auto named = takaro.request("msg-named", "sendMessage", json::obj({{"message", json::str("hi all")},
+      {"opts", json::obj({{"senderNameOverride", json::str("Bot")}})}}));
+  CHECK(named);
+  CHECK(game.last_text() == U"Bot: hi all");
 
   // Explicit JSON nulls from modules are absent values.
   gate.record_login(kId, "Limon");

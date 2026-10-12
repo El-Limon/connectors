@@ -43,3 +43,10 @@ guard. Focused binding tests independently reject wrong prologues/targets in
 `console_bindings_test.cpp`, `engine_exec_bindings_test.cpp`, and
 `death_bindings_test.cpp`. This is a limitation of the negative live fixture,
 not a claimed wrong-prologue boot pass.
+
+Native-only build (2026-10-12): the plugin has no listening socket and no
+`ARK_NATIVE_TOKEN`. The same `negative-wrong-target` hook now preloads the
+library with Takaro settings and a state directory and passes only when the
+wrong-hash fixture exits normally and no connector state directory was
+created (`native_state=absent`), i.e. the constructor returned before any
+configuration, thread or connection.

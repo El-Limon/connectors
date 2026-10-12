@@ -820,3 +820,75 @@ def test_saveworld_check_needs_handled_command_and_owned_file_update(
     asyncio.run(ark_verify.after_protocol(run, fake, lambda: True))
     assert len(run.results) == 1
     assert run.results[0].status == ("pass" if handled else "fail"), run.results[0].detail
+
+
+class OutageTakaro(ScriptedTakaro):
+    """Records stop/start; on restart, delivers what the plugin would replay."""
+
+    def __init__(self, run: ProtocolRun, copies: int) -> None:
+        super().__init__({"testReachability": {"connectable": True, "reason": None}})
+        self.run = run
+        self.copies = copies
+        self.stopped = False
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def disconnect(self, code: int = 1001, reason: str = "") -> None:
+        del code, reason
+
+    async def start(self) -> int:
+        assert self.stopped
+        line = (self.run.data_dir / ark_verify.GAME_LOG).read_text().splitlines()[-1]
+        marker = line.split("]", 2)[-1]
+        assert marker.startswith("World Save Complete. Took 0.")
+        self.events += [{"type": "log", "data": {"msg": marker}}] * self.copies
+        self.identify_count += 1
+        return 1
+
+
+@pytest.mark.parametrize(("copies", "expected"), [(1, "pass"), (0, "fail"), (2, "fail")])
+def test_outage_replay_requires_exactly_one_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, copies: int, expected: str
+) -> None:
+    async def no_sleep(seconds: float) -> None:
+        del seconds
+
+    monkeypatch.setattr(ark_verify.asyncio, "sleep", no_sleep)
+    run = ProtocolRun(tmp_path, "ark-outage-replay")
+    log = tmp_path / ark_verify.GAME_LOG
+    log.parent.mkdir(parents=True)
+    log.write_text("booted\n")
+    monkeypatch.setattr(ark_verify, "OUTAGE_DELIVERY_TIMEOUT", 0.0)
+    asyncio.run(ark_verify.after_protocol(run, OutageTakaro(run, copies), lambda: True))
+    assert run.results[0].status == expected, run.results[0].detail
+
+
+@pytest.mark.parametrize(
+    ("boot_after", "alive", "expected"),
+    [("boot-one", True, "pass"), ("boot-two", True, "fail"), ("boot-one", False, "fail")],
+)
+def test_freeze_resume_requires_same_boot_and_live_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boot_after: str, alive: bool, expected: str
+) -> None:
+    async def no_sleep(seconds: float) -> None:
+        del seconds
+
+    calls: list[list[str]] = []
+    run = ProtocolRun(tmp_path, "ark-freeze-resume")
+    run.container = SimpleNamespace(name="owned-ark", alive=lambda: alive)
+
+    def docker(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        del kwargs
+        calls.append(argv)
+        if argv[1] == "unpause":
+            run.write_status({"bootId": boot_after, "identified": True})
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(ark_verify.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(ark_verify.subprocess, "run", docker)
+    monkeypatch.setattr(ark_verify, "docker_command", lambda: ["docker"])
+    fake = ScriptedTakaro({"testReachability": {"connectable": True, "reason": None}})
+    asyncio.run(ark_verify.after_protocol(run, fake, lambda: True))
+    assert run.results[0].status == expected, run.results[0].detail
+    assert [argv[1] for argv in calls] == ["pause", "unpause"]

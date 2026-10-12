@@ -18,7 +18,7 @@ is limited to 7 Days to Die, Rust, and Minecraft. The available MCP
 game-server operations include `GetMapInfo` but no list-locations operation;
 `GetMapInfo` on the controlled ARK server returned HTTP 400 "gameserver
 responded with bad data" and is not evidence of this action. The official
-WebSocket contract proves what the sidecar must answer if requested, but a
+WebSocket contract proves what the connector must answer if requested, but a
 real module/SDK or backend controller consumer remains to be shown before
 claiming a Takaro-mediated `listLocations` acceptance test.
 

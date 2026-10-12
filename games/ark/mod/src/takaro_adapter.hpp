@@ -610,7 +610,13 @@ class Adapter {
     if (!message || !message->is_string() || js_trim(message->as_string()).empty())
       withhold("sendMessage requires a nonempty message");
     const std::string recipient = message_recipient(args);
-    if (!send(recipient, message->as_string()))
+    // Takaro does not forward serverChatName to Generic connectors; modules may
+    // pass opts.senderNameOverride. ARK's direct chat line has no sender field.
+    std::string text = message->as_string();
+    if (const json::Value* sender = as_record(args.get("opts")).get("senderNameOverride");
+        sender && sender->is_string() && !js_trim(sender->as_string()).empty())
+      text = js_trim(sender->as_string()) + ": " + text;
+    if (!send(recipient, text))
       withhold(recipient.empty() ? "native chat broadcast was not acknowledged" : "native chat recipient was not acknowledged");
     return json::Value::object();
   }
