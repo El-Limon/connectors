@@ -17,9 +17,8 @@ import java.util.function.Supplier;
  * corrected token takes effect without a restart.
  *
  * <p>The text is compared, not the modification time: a save within the same second, or one
- * that restores the old size, must still count. An identity is generated only when neither the
- * file nor TAKARO_IDENTITY_TOKEN has one; Takaro rejects an empty identity, so no install that
- * ever connected can be running without one.
+ * that restores the old size, must still count. A file without an identity gets a generated one
+ * written into it; TAKARO_* variables still win over the file.
  */
 public final class ConfigFile {
 
@@ -137,7 +136,7 @@ public final class ConfigFile {
         if (fileIdentity != null) {
             identity = fileIdentity;
             identityUnsaved = false;
-        } else if (trimToNull(env.apply("TAKARO_IDENTITY_TOKEN")) == null) {
+        } else {
             if (identity == null) {
                 identity = identityGenerator.get();
                 log.logInfo("No identity token set; generated one for this server and saving it in " + path);
@@ -146,8 +145,6 @@ public final class ConfigFile {
             }
             file.setIdentityToken(identity);
             saveIdentity(text);
-        } else {
-            identityUnsaved = false;
         }
         return effective(file);
     }
@@ -186,7 +183,7 @@ public final class ConfigFile {
     }
 
     private TakaroConfig effective(TakaroConfig file) {
-        file.setWsUrl(trimToNull(file.getWsUrl()) == null ? TakaroConfig.DEFAULT_WS_URL : file.getWsUrl().trim());
+        file.setWsUrl(trimToEmpty(file.getWsUrl()));
         file.setIdentityToken(trimToEmpty(file.getIdentityToken()));
         file.setRegistrationToken(trimToEmpty(file.getRegistrationToken()));
         file.applyEnvOverrides(env);

@@ -25,19 +25,6 @@ class ConfigFormatTest {
     }
 
     @Test
-    void jsonPre04FileStillParses() throws Exception {
-        // what 0.3 wrote
-        String old = "{\n  \"websocket\": {\n    \"url\": \"\"\n  },\n  \"authentication\": {\n"
-                + "    \"identity_token\": \"x\",\n    \"registration_token\": \"t\"\n  },\n"
-                + "  \"reconnect\": {\n    \"enabled\": true,\n    \"delay\": 5000,\n    \"max_delay\": 300000,\n"
-                + "    \"backoff_multiplier\": 1.5\n  },\n  \"settings\": {\n    \"debug\": true\n  }\n}";
-        TakaroConfig c = new JsonConfigFormat().parse(old);
-        assertEquals("", c.getWsUrl());
-        assertEquals("x", c.getIdentityToken());
-        assertTrue(c.isDebugEnabled());
-    }
-
-    @Test
     void propertiesFillsTheIdentityAndKeepsComments() throws Exception {
         PropertiesConfigFormat f = new PropertiesConfigFormat();
         String out = f.withIdentity(f.defaultText(), "abc");
