@@ -1,7 +1,17 @@
-# Enshrouded map tile pack
+# Enshrouded map image and tile pack
 
-The native connector answers `getMapInfo` / `getMapTile` from a tile pack in `<server>\takaro\map\`
-(override with `TAKARO_MAP_DIR` or `mapDir` in `takaro\plugin.json`); see `src/native/maptiles.h`.
+Takaro protocol 1 (the default): the connector declares the world as Dimension `embervale` (x right,
+z up, 0..10240 m) with no image of its own, because the dedicated server ships no map art. The
+operator uploads one image in the dashboard. This tool draws that image from the map data of the
+operator's own game client:
+
+    python3 render_tiles.py <raw dir> --image embervale.jpg     # 8192 x 8192, north up, edge to edge
+
+Upload it on the game server's map page and leave the bounds empty. `<raw dir>` comes from step 1 below.
+
+Protocol 0 (older Takaro): the native connector answers `getMapInfo` / `getMapTile` from a tile pack
+in `<server>\takaro\map\` (override with `TAKARO_MAP_DIR` or `mapDir` in `takaro\plugin.json`); see
+`src/native/maptiles.h`.
 Each render is its own folder (`pack-<UTC time>/`), and the one-line file `current` names the folder
 being served. Only `current` switches packs, so a half-copied pack is never served and tiles from two
 renders never mix.

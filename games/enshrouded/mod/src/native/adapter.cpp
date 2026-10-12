@@ -216,7 +216,7 @@ public:
         }
         if (action == "listBans") {
             if (!view_.banStoreError.empty())
-                Fail("listBans refused: the timed-ban store is unreadable (" + view_.banStoreError +
+                FailCode("game_error", "listBans refused: the timed-ban store is unreadable (" + view_.banStoreError +
                      "); fix or remove it so expiries are not reported as permanent");
             JsonValue list = MapList(plugin_.Request("GET", "/bans"), MapBan);
             // Timed bans are enforced by this connector (the game only knows permanent bans): report their expiry.
@@ -238,7 +238,7 @@ public:
             plugin_.Post("/shutdown", "{}");
             return JObj();
         }
-        Fail("Unknown Takaro action '" + action + "'");
+        FailCode("unsupported", "Unknown Takaro action '" + action + "'");
     }
 
 private:
@@ -251,7 +251,7 @@ private:
             if (!ParseIsoMs(*expiresAt, expiresMs))
                 Fail("banPlayer expiresAt '" + *expiresAt + "' is not an ISO-8601 date with a time zone");
             if (!view_.banStoreError.empty())
-                Fail("banPlayer refused: a timed ban needs the timed-ban store, which is unreadable (" +
+                FailCode("game_error", "banPlayer refused: a timed ban needs the timed-ban store, which is unreadable (" +
                      view_.banStoreError + ")");
         }
         ObjBuilder b;
@@ -379,10 +379,12 @@ ActionOutcome ExecuteAction(GameApi& game, const std::string& action, const Json
         out.error = e.kind == ErrorKind::PluginUnimplemented
                         ? "Enshrouded connector cannot perform '" + action + "': " + e.what()
                         : e.what();
+        out.errorCode = ProtocolErrorCode(e);
     } catch (const std::exception& e) {
         out.ok = false;
         out.ban = BanChange{};
         out.error = e.what();
+        out.errorCode = ProtocolErrorCode(e);
     }
     return out;
 }

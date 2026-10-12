@@ -66,17 +66,33 @@ server's own network (inside the container for Docker) shows each capability's s
 `diagnostics.native`, the connection state, the event outbox and the timed bans. The port listens on
 loopback only.
 
-Map tiles (optional): the connector serves Takaro's map from a tile pack in `takaro/map/`
-(`TAKARO_MAP_DIR` or `mapDir` in `plugin.json` moves it). A pack is a `pack-…` folder (`map.json`
-plus `<z>/<x>/<y>.png`), and the file `takaro/map/current` names the folder in use. The server has no
-map art of its own, so the pack is rendered from a game client install with `mod/tools/map-tiles/`
-(see its README), whose `pack.py install` adds a new pack while the server runs and switches to it
-in one step. Without it the map shows as disabled in Takaro.
-
 The connector keeps its state in `takaro/connector-state/` (`TAKARO_STATE_DIR` moves it): the event
 outbox, the online and known players, timed bans and the ban journal. Keep that folder across
 restarts and upgrades. A file there that is damaged is never overwritten or treated as empty: the
 affected feature reports itself degraded until you fix or remove the file.
+
+## Map
+
+The connector speaks Takaro protocol 1 and declares one map, `embervale` ("Embervale"): x runs to the
+right (east) and z upwards (north), from 0 to 10240 m on both axes. The dedicated server ships no map
+picture, so Takaro first shows a grid with the player dots. To get a real map, upload one image on the
+game server's map page in the Takaro dashboard ("upload map"). Leave the bounds empty: the connector
+already declared them.
+
+The image must show the **whole world, north up, square, edge to edge**: its top-left pixel is the
+north-west corner of the world (x 0, z 10240) and its bottom-right pixel the south-east corner
+(x 10240, z 0). PNG, JPEG or WebP, at most 8192 px per side and 32 MB; Takaro stretches it over the
+world, so any square size works (8192 px gives about 1.25 m per pixel). The in-game map screen cannot
+be exported as one picture; `mod/tools/map-tiles/render_tiles.py --image map.jpg` draws exactly this
+image from the map data of your own game client install (see its README). Do not share an image made
+from the game's assets publicly.
+
+Set `"protocol": "0"` in `takaro/plugin.json` (or `TAKARO_PROTOCOL=0`; read at server start) to
+connect with protocol 0 only. A Takaro without protocol 1 is detected and gets protocol 0
+automatically. On protocol 0 the map comes from a tile pack in `takaro/map/` instead (`map.json` plus
+`<z>/<x>/<y>.png` in a `pack-…` folder named by `takaro/map/current`; `TAKARO_MAP_DIR` or `mapDir` in
+`plugin.json` moves it), also rendered from your client with `render_tiles.py`. Without one,
+protocol 0 shows no map.
 
 ## Upgrading
 

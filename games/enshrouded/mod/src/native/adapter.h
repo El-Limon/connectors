@@ -40,6 +40,7 @@ struct ActionOutcome {
     bool ok = false;
     JsonValue payload;  // Null answers {} (the sidecar's createResponse)
     std::string error;  // response error text when !ok
+    std::string errorCode = "internal";  // protocol 1 error code when !ok (ProtocolErrorCode)
     std::vector<JsonValue> seenPlayers;
     BanChange ban;
 };

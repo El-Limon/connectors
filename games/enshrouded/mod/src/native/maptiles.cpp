@@ -186,20 +186,20 @@ std::string MapTileBase64(const std::string& mapDir, const JsonValue& args) {
     if (!ReadInt(args.get("x"), x) || !ReadInt(args.get("y"), y) || !ReadInt(zv, z))
         Fail("getMapTile needs integer x, y and z");
     MapTilePack p = LoadMapTilePack(mapDir);
-    if (!p.ok) Fail("Map tiles are not available: " + p.reason);
+    if (!p.ok) FailCode("not_found", "Map tiles are not available: " + p.reason);
     if (z < p.minZoom || z > p.maxZoom)
         Fail("Map tile zoom " + std::to_string(z) + " is outside " + std::to_string(p.minZoom) + "-" +
              std::to_string(p.maxZoom));
     std::string bytes, err;
     std::string path = TilePath(p.dir, z, x, y);
     if (ReadTile(path, bytes, err)) return Base64Encode(bytes);
-    if (err != "missing") Fail("Map tile " + path + " is unusable: " + err);
+    if (err != "missing") FailCode("game_error", "Map tile " + path + " is unusable: " + err);
     if (!p.outsideTile.empty()) {
         std::string outside = JoinPath(p.dir, p.outsideTile);
         if (ReadTile(outside, bytes, err)) return Base64Encode(bytes);
-        Fail("Map outside tile " + outside + " is unusable: " + err);
+        FailCode("game_error", "Map outside tile " + outside + " is unusable: " + err);
     }
-    Fail("Map tile " + std::to_string(z) + "/" + std::to_string(x) + "/" + std::to_string(y) +
+    FailCode("not_found", "Map tile " + std::to_string(z) + "/" + std::to_string(x) + "/" + std::to_string(y) +
          " is outside the map");
 }
 

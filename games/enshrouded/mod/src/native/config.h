@@ -22,6 +22,9 @@ struct NativeConfig {
     std::string caFile;  // resolved against the exe dir; empty = system trust
     std::string mapDir;  // getMapInfo/getMapTile tile pack (maptiles.h); default <exe dir>\takaro\map
     unsigned reconnectBaseMs = 2000, reconnectMaxMs = 60000;
+    // Offer protocol versions [0, 1] with the Capability Manifest (TAKARO_PROTOCOL / plugin.json "protocol",
+    // default 1). "0" sends the plain protocol 0 identify. Takaro without protocol 1 falls back to 0 either way.
+    bool protocolV1 = true;
 
     LogEventsMode logEvents = LogEventsMode::Filtered;
     LogTailMode logTail = LogTailMode::Auto;

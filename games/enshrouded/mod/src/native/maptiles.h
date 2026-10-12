@@ -1,4 +1,5 @@
-// getMapInfo / getMapTile for the native connector: served from a pre-rendered tile pack on disk.
+// Protocol 0 getMapInfo / getMapTile for the native connector: served from a pre-rendered tile pack on disk.
+// On protocol 1 the map is the declared Dimension (capabilities.h) and Takaro never sends these.
 //
 // The dedicated server has no map renderer and ships no map art, so the tiles are produced offline
 // (mod/tools/map-tiles/) and installed next to the server:

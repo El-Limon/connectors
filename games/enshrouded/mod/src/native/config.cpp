@@ -59,6 +59,10 @@ NativeConfig LoadNativeConfig(const std::string& baseDir, const EnvFn& env, cons
     std::string md = pick("mapDir", {"TAKARO_MAP_DIR"}, "mapDir", "");
     c.mapDir = md.empty() ? JoinPath(JoinPath(baseDir, "takaro"), "map") : ResolvePath(baseDir, md);
 
+    std::string proto = pick("protocol", {"TAKARO_PROTOCOL"}, "protocol", "1");
+    if (proto != "0" && proto != "1") c.warnings.push_back("protocol must be 0 or 1, got '" + proto + "'; using 1");
+    c.protocolV1 = proto != "0";
+
     c.reconnectBaseMs = ParseUnsigned(Trim(env("TAKARO_RECONNECT_BASE_MS")), 2000, 500, 600000, "TAKARO_RECONNECT_BASE_MS", c.warnings);
     c.reconnectMaxMs = ParseUnsigned(Trim(env("TAKARO_RECONNECT_MAX_MS")), 60000, 500, 3600000, "TAKARO_RECONNECT_MAX_MS", c.warnings);
     if (c.reconnectMaxMs < c.reconnectBaseMs) c.reconnectMaxMs = c.reconnectBaseMs;
@@ -114,6 +118,7 @@ std::string ConfigSummaryJson(const NativeConfig& c) {
         .S("serverName", c.serverName)
         .S("caFile", c.caFile)
         .S("mapDir", c.mapDir)
+        .N("protocol", c.protocolV1 ? 1 : 0)
         .B("identityTokenSet", !c.identityToken.empty())
         .B("registrationTokenSet", !c.registrationToken.empty())
         .N("reconnectBaseMs", c.reconnectBaseMs)

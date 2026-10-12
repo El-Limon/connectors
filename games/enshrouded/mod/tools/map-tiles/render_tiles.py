@@ -19,7 +19,10 @@ This is our own rendering of the game's height data (ramp colours from the game,
 contours computed here), not a copy of the in-game map screen. The pack is derived from Keen Games'
 assets: fine on a dev rig, do not redistribute it without permission.
 
-Usage: render_tiles.py <raw-dir> <out-dir> [--preview preview.png] [--preview-only]
+Usage: render_tiles.py <raw-dir> [<out-dir>] [--image map.jpg [--image-size 8192]] [--preview preview.png]
+  --image writes one north-up image of the whole world for the dashboard's "upload map" (protocol 1,
+  Dimension embervale): top-left pixel = x 0, z 10240; bottom-right = x 10240, z 0. Without <out-dir>
+  no tile pack is written.
 Needs numpy and pillow.
 """
 import argparse
@@ -191,15 +194,25 @@ def write_tiles(img, out, max_zoom, revision):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("raw_dir")
-    ap.add_argument("out_dir")
+    ap.add_argument("out_dir", nargs="?", help="tile pack root for the protocol 0 map (optional)")
+    ap.add_argument("--image", help="write the whole world as one image for Takaro's map upload (.jpg/.png/.webp)")
+    ap.add_argument("--image-size", type=int, default=8192, help="side of --image in pixels (Takaro allows up to 8192)")
     ap.add_argument("--preview", help="also write a 2048 px overview PNG here")
-    ap.add_argument("--preview-only", action="store_true")
     a = ap.parse_args()
+    if not a.out_dir and not a.image and not a.preview:
+        ap.error("nothing to write: give <out-dir>, --image or --preview")
+    if not 1 <= a.image_size <= 8192:
+        ap.error("--image-size must be 1..8192")
     base, ramp, detail = load(a.raw_dir)
     img = render(base, ramp, detail)
     if a.preview:
         Image.fromarray(img).resize((2048, 2048), Image.BOX).save(a.preview)
-    if a.preview_only:
+    if a.image:
+        # rows already run north to south and columns west to east: exactly the Dimension's screen frame
+        out = Image.fromarray(img).resize((a.image_size, a.image_size), Image.BOX)
+        out.save(a.image, **({"quality": 90} if a.image.lower().endswith((".jpg", ".jpeg", ".webp")) else {"optimize": True}))
+        print(f"{a.image}: {a.image_size} x {a.image_size} px, {os.path.getsize(a.image)} bytes")
+    if not a.out_dir:
         return
     count = []
     name = publish(a.out_dir, lambda d, rev: count.append(write_tiles(img, d, MAX_ZOOM, rev)))
