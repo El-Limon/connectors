@@ -12,6 +12,7 @@ namespace native {
 namespace {
 
 const char* const kFormat = "takaro-map-tiles/1";
+const char* const kPointer = "current";
 
 bool ReadInt(const JsonValue* v, long long& out) {
     if (!v) return false;
@@ -93,15 +94,30 @@ MapTilePack LoadMapTilePack(const std::string& mapDir) {
         p.reason = "no map tile directory is configured";
         return p;
     }
-    std::string manifestPath = JoinPath(mapDir, "map.json");
+    std::string pointerPath = JoinPath(mapDir, kPointer);
     std::string text, err;
     bool exists = false;
+    if (!ReadWholeFile(pointerPath, text, exists, err)) {
+        p.reason = "cannot read " + pointerPath + ": " + err;
+        return p;
+    }
+    if (!exists) {
+        p.reason = "no map tile pack installed (" + pointerPath + " is missing)";
+        return p;
+    }
+    std::string pack = Trim(text);
+    if (!SafeFileName(pack)) {
+        p.reason = pointerPath + " must name a pack folder inside " + mapDir;
+        return p;
+    }
+    p.dir = JoinPath(mapDir, pack);
+    std::string manifestPath = JoinPath(p.dir, "map.json");
     if (!ReadWholeFile(manifestPath, text, exists, err)) {
         p.reason = "cannot read " + manifestPath + ": " + err;
         return p;
     }
     if (!exists) {
-        p.reason = "no map tile pack installed (" + manifestPath + " is missing)";
+        p.reason = "map tile pack " + pack + " is incomplete (" + manifestPath + " is missing)";
         return p;
     }
     JsonValue m;
@@ -175,11 +191,11 @@ std::string MapTileBase64(const std::string& mapDir, const JsonValue& args) {
         Fail("Map tile zoom " + std::to_string(z) + " is outside " + std::to_string(p.minZoom) + "-" +
              std::to_string(p.maxZoom));
     std::string bytes, err;
-    std::string path = TilePath(mapDir, z, x, y);
+    std::string path = TilePath(p.dir, z, x, y);
     if (ReadTile(path, bytes, err)) return Base64Encode(bytes);
     if (err != "missing") Fail("Map tile " + path + " is unusable: " + err);
     if (!p.outsideTile.empty()) {
-        std::string outside = JoinPath(mapDir, p.outsideTile);
+        std::string outside = JoinPath(p.dir, p.outsideTile);
         if (ReadTile(outside, bytes, err)) return Base64Encode(bytes);
         Fail("Map outside tile " + outside + " is unusable: " + err);
     }

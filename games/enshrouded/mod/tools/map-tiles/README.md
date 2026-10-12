@@ -2,13 +2,23 @@
 
 The native connector answers `getMapInfo` / `getMapTile` from a tile pack in `<server>\takaro\map\`
 (override with `TAKARO_MAP_DIR` or `mapDir` in `takaro\plugin.json`); see `src/native/maptiles.h`.
+Each render is its own folder (`pack-<UTC time>/`), and the one-line file `current` names the folder
+being served. Only `current` switches packs, so a half-copied pack is never served and tiles from two
+renders never mix.
 The dedicated server ships no map art, so the pack is rendered offline from the game client:
 
 1. Export the raw map textures from a complete client install with the EML CLI (kfc-parser `emm`):
    copy `eml-mod/` to `<client>/mods/takaro_map_export/`, then
    `emm run -e -g <client dir> --export-directory <raw dir>`.
-2. Render: `python3 render_tiles.py <raw dir> <out dir>` (numpy, pillow; about 10 minutes, 8525 tiles, ~110 MB).
-3. Copy `<out dir>` to `<server>/takaro/map/` (contains `map.json`). No restart needed.
+2. Render: `python3 render_tiles.py <raw dir> <out dir>` (numpy, pillow; about 10 minutes, 8525 tiles,
+   ~110 MB). It writes a new `pack-…` folder under `<out dir>` and points `<out dir>/current` at it
+   only when the folder is complete. When `<out dir>` is the server's `takaro/map/`, you are done.
+3. Otherwise install it while the server runs: `python3 pack.py install <out dir> <server>/takaro/map/`.
+   It copies the pack into a hidden folder, renames it into place, then switches `current`. No restart
+   needed. By hand: copy the `pack-…` folder first, then copy `current` last. Never copy tiles into a
+   pack folder that `current` already names.
+
+Both commands keep the live pack and the one before it, and delete older `pack-…` folders.
 
 World frame (build 1024233 server / 1076226 client): origin (0,0), 10240 x 10240 m (x east, z north),
 1 m per pixel at zoom 4, 128 px tiles; tile y grows north. This matches takaro-player-map's tiling.

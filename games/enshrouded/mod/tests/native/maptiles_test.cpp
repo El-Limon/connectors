@@ -63,14 +63,25 @@ void NoPackTests() {
     CHECK(!tile.ok);
     CHECK_MSG(tile.error.find("no map tile pack installed") != std::string::npos, tile.error);
 
-    Write(JoinPath(dir, "map.json"), R"({"format":"other","tileSize":128,"maxZoom":4,"mapSizeX":1,"mapSizeZ":1})");
+    // a pack without `current` is not served: the pointer is what makes a pack live
+    Write(JoinPath(dir, "map.json"), kManifest);
+    CHECK(!LoadMapTilePack(dir).ok);
+    Write(JoinPath(dir, "current"), "../elsewhere\n");
+    CHECK(!LoadMapTilePack(dir).ok);
+    CHECK(LoadMapTilePack(dir).reason.find("must name a pack folder") != std::string::npos);
+    Write(JoinPath(dir, "current"), "r1\n");
+    CHECK(!LoadMapTilePack(dir).ok);
+    CHECK_MSG(LoadMapTilePack(dir).reason.find("pack r1 is incomplete") != std::string::npos, LoadMapTilePack(dir).reason);
+    std::string pack = JoinPath(dir, "r1");
+
+    Write(JoinPath(pack, "map.json"), R"({"format":"other","tileSize":128,"maxZoom":4,"mapSizeX":1,"mapSizeZ":1})");
     CHECK(!LoadMapTilePack(dir).ok);
     CHECK(LoadMapTilePack(dir).reason.find("format") != std::string::npos);
-    Write(JoinPath(dir, "map.json"), R"({"format":"takaro-map-tiles/1","tileSize":128,"maxZoom":4,"mapSizeX":0,"mapSizeZ":1})");
+    Write(JoinPath(pack, "map.json"), R"({"format":"takaro-map-tiles/1","tileSize":128,"maxZoom":4,"mapSizeX":0,"mapSizeZ":1})");
     CHECK(!LoadMapTilePack(dir).ok);
-    Write(JoinPath(dir, "map.json"), "not json");
+    Write(JoinPath(pack, "map.json"), "not json");
     CHECK(!LoadMapTilePack(dir).ok);
-    Write(JoinPath(dir, "map.json"),
+    Write(JoinPath(pack, "map.json"),
           R"({"format":"takaro-map-tiles/1","tileSize":128,"maxZoom":4,"mapSizeX":1,"mapSizeZ":1,"outsideTile":"../x.png"})");
     CHECK(!LoadMapTilePack(dir).ok);  // the outside tile must stay inside the pack
     CHECK(!LoadMapTilePack("").ok);
@@ -78,11 +89,12 @@ void NoPackTests() {
 
 void PackTests() {
     t::Group("maptiles pack");
-    std::string dir = t::TempDir("map-pack");
-    Write(JoinPath(dir, "map.json"), kManifest);
-    Write(dir + "/4/40/41.png", kPng);
-    Write(dir + "/0/0/0.png", kPng + "z0");
-    Write(dir + "/4/1/1.png", "GIF89a not a png");
+    std::string dir = t::TempDir("map-pack"), pack = JoinPath(dir, "pack-1");
+    Write(JoinPath(pack, "map.json"), kManifest);
+    Write(pack + "/4/40/41.png", kPng);
+    Write(pack + "/0/0/0.png", kPng + "z0");
+    Write(pack + "/4/1/1.png", "GIF89a not a png");
+    Write(JoinPath(dir, "current"), "pack-1");
 
     ActionOutcome info = Run(dir, "getMapInfo", "[]");
     CHECK(info.ok);
@@ -114,9 +126,9 @@ void PackTests() {
     CHECK(!tile.ok && tile.error.find("not a PNG") != std::string::npos);
 
     // an outside tile answers in-range tiles that are not in the pack (beyond the world edge)
-    Write(JoinPath(dir, "map.json"),
+    Write(JoinPath(pack, "map.json"),
           R"({"format":"takaro-map-tiles/1","tileSize":128,"maxZoom":4,"mapSizeX":10240,"mapSizeZ":10240,"outsideTile":"outside.png"})");
-    Write(JoinPath(dir, "outside.png"), kPng + "outside");
+    Write(JoinPath(pack, "outside.png"), kPng + "outside");
     tile = Run(dir, "getMapTile", R"({"x":-3,"y":-1,"z":2})");
     CHECK(tile.ok && tile.payload.str == Base64Encode(kPng + "outside"));
     tile = Run(dir, "getMapTile", R"({"x":40,"y":41,"z":4})");
@@ -126,9 +138,41 @@ void PackTests() {
 
     std::string big(kMaxMapTileBytes + 1, 'x');
     big.replace(0, 8, kPng.substr(0, 8));
-    Write(dir + "/3/0/0.png", big);
+    Write(pack + "/3/0/0.png", big);
     tile = Run(dir, "getMapTile", R"({"x":0,"y":0,"z":3})");
     CHECK(!tile.ok && tile.error.find("larger than") != std::string::npos);
+}
+
+// A re-render lands in its own folder while the old pack keeps serving; switching `current` moves every
+// tile to the new render at once, and a half-copied new pack is never served.
+void SwapTests() {
+    t::Group("maptiles pack swap");
+    std::string dir = t::TempDir("map-swap");
+    auto tile = [&](const char* args) {
+        ActionOutcome o = Run(dir, "getMapTile", args);
+        return o.ok ? o.payload.str : "error: " + o.error;
+    };
+    for (const char* tp : {"0/0/0", "4/39/45", "4/40/45"}) Write(dir + "/old/" + tp + ".png", kPng + "old");
+    Write(dir + "/old/map.json", kManifest);
+    Write(JoinPath(dir, "current"), "old\n");
+    // the new render is half copied: some tiles there, no map.json yet
+    Write(dir + "/new/4/39/45.png", kPng + "new");
+    CHECK_EQ(tile(R"({"x":39,"y":45,"z":4})"), Base64Encode(kPng + "old"));
+    CHECK_EQ(tile(R"({"x":40,"y":45,"z":4})"), Base64Encode(kPng + "old"));
+    for (const char* tp : {"0/0/0", "4/40/45"}) Write(dir + "/new/" + tp + ".png", kPng + "new");
+    Write(dir + "/new/map.json", kManifest);
+    CHECK_EQ(tile(R"({"x":39,"y":45,"z":4})"), Base64Encode(kPng + "old"));  // not live until `current` says so
+    Write(JoinPath(dir, "current"), "new");
+    CHECK_EQ(tile(R"({"x":0,"y":0,"z":0})"), Base64Encode(kPng + "new"));
+    CHECK_EQ(tile(R"({"x":39,"y":45,"z":4})"), Base64Encode(kPng + "new"));
+    CHECK_EQ(tile(R"({"x":40,"y":45,"z":4})"), Base64Encode(kPng + "new"));
+    // a tile the new pack lacks is outside the map, never the old pack's tile
+    Write(dir + "/old/4/41/45.png", kPng + "old");
+    CHECK(tile(R"({"x":41,"y":45,"z":4})").find("outside the map") != std::string::npos);
+    // a pointer to a folder that is not finished is refused, not served half-empty
+    Write(JoinPath(dir, "current"), "missing");
+    CHECK(tile(R"({"x":0,"y":0,"z":0})").find("pack missing is incomplete") != std::string::npos);
+    CHECK(!Run(dir, "getMapInfo", "{}").payload.get("enabled")->b);
 }
 
 void ConfigTests() {
@@ -154,5 +198,6 @@ void RunMapTileTests() {
     Base64Tests();
     NoPackTests();
     PackTests();
+    SwapTests();
     ConfigTests();
 }

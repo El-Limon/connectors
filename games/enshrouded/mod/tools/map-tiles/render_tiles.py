@@ -11,8 +11,9 @@ World frame (build 1076226): origin (0,0), 10240 x 10240 m in x/z (VoxelWorldRes
 column = x/8 and row = (10240 - z)/8 (north up); DetailHeight(i,j) covers x in [1024 i, 1024 i + 1024)
 and z in [1024 j, 1024 j + 1024). Verified against 1031 placed locations (height correlation 0.91).
 
-Output (Takaro / takaro-player-map tiling, 128 px tiles, 1 m per pixel at maxZoom 4):
-  <out>/map.json, <out>/outside.png, <out>/<z>/<x>/<y>.png with x east, y north from the origin.
+Output (Takaro / takaro-player-map tiling, 128 px tiles, 1 m per pixel at maxZoom 4): a new pack folder
+  <out>/pack-<UTC time>/ with map.json, outside.png and <z>/<x>/<y>.png (x east, y north from the origin),
+  switched live through <out>/current only once complete (pack.py); older packs are pruned.
 
 This is our own rendering of the game's height data (ramp colours from the game, hillshade and
 contours computed here), not a copy of the in-game map screen. The pack is derived from Keen Games'
@@ -28,6 +29,9 @@ import sys
 
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # pack.py beside this file, also under python -I
+from pack import publish  # noqa: E402
 
 WORLD = 10240
 TILE = 128
@@ -140,7 +144,7 @@ def render(base, ramp, detail, band=512):
     return img
 
 
-def write_tiles(img, out, max_zoom):
+def write_tiles(img, out, max_zoom, revision):
     count = 0
     for z in range(max_zoom, -1, -1):
         factor = 2 ** (max_zoom - z)
@@ -172,13 +176,14 @@ def write_tiles(img, out, max_zoom):
         "mapSizeY": 2648,
         "mapSizeZ": WORLD,
         "outsideTile": "outside.png",
+        "revision": revision,
         "origin": {"x": 0, "z": 0},
         "metresPerPixelAtMaxZoom": 1,
         "source": "Enshrouded client map textures (_map_shader_parameters_baseHeight, baseGradient, DetailHeight), "
                   "rendered by games/enshrouded/mod/tools/map-tiles/render_tiles.py; derived from Keen Games assets, "
                   "not for redistribution",
     }
-    with open(os.path.join(out, "map.json"), "w") as f:
+    with open(os.path.join(out, "map.json"), "w") as f:  # last: a pack without map.json is incomplete
         json.dump(manifest, f, indent=2)
     return count
 
@@ -196,8 +201,9 @@ def main():
         Image.fromarray(img).resize((2048, 2048), Image.BOX).save(a.preview)
     if a.preview_only:
         return
-    os.makedirs(a.out_dir, exist_ok=True)
-    print(f"{write_tiles(img, a.out_dir, MAX_ZOOM)} tiles written to {a.out_dir}")
+    count = []
+    name = publish(a.out_dir, lambda d, rev: count.append(write_tiles(img, d, MAX_ZOOM, rev)))
+    print(f"{count[0]} tiles written to {os.path.join(a.out_dir, name)}, now live via {a.out_dir}/current")
 
 
 if __name__ == "__main__":

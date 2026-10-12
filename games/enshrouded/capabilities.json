@@ -84,7 +84,7 @@
     },
     "getMapTile": {
       "status": "proven",
-      "note": "base64 PNG from takaro/map/<z>/<x>/<y>.png (rendered offline from the client's map height data); outside the world answers outside.png; zoom >4 refused. Live on staging 2026-10-11: tile byte-identical through Takaro, takaro-player-map renders tiles and the player marker at the right spot"
+      "note": "base64 PNG from takaro/map/<pack named by takaro/map/current>/<z>/<x>/<y>.png (rendered offline from the client's map height data); outside the world answers outside.png; zoom >4 refused. Live on staging 2026-10-11: tile byte-identical through Takaro, takaro-player-map renders tiles and the player marker at the right spot"
     }
   },
   "events": {
