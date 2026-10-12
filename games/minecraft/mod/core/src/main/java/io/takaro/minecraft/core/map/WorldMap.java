@@ -292,13 +292,21 @@ public final class WorldMap {
         return cached != null ? cached : drawRaster(d, rx, rz);
     }
 
-    /** The cached drawing of a region, queueing a redraw when the server saved it since. */
+    /**
+     * The cached drawing of a region, queueing a redraw when the server saved it since. A region
+     * whose file is gone (trimmed or reset area) is forgotten at once, so every tile drawn from it
+     * changes fingerprint and is drawn again without it.
+     */
     private Raster refreshIfStale(Dimension d, int rx, int rz) {
         String key = rasterKey(d, rx, rz);
         Raster cached = rasters.get(key);
         if (cached == null) return null;
         long modified = modified(regionPath(d, rx, rz));
-        if (modified != 0 && modified != cached.modified() && refreshing.add(key)) {
+        if (modified == 0) {
+            rasters.remove(key);
+            return null;
+        }
+        if (modified != cached.modified() && refreshing.add(key)) {
             redrawThread.submit(() -> {
                 try {
                     drawRaster(d, rx, rz);

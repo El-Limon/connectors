@@ -199,6 +199,39 @@ class WorldMapTest {
         }
     }
 
+    @Test
+    void forgetsARegionTheServerDeleted() throws Exception {
+        Path regions = dir.resolve("region");
+        Map<Integer, Map<String, Object>> chunks = new HashMap<>();
+        chunks.put(0, TestRegions.chunk(0, 0, "minecraft:grass_block", (x, z) -> 64, false));
+        Path file = regions.resolve("r.0.0.mca");
+        TestRegions.writeRegion(file, chunks);
+        // A second region keeps the frame where it is once r.0.0 is gone.
+        TestRegions.writeRegion(regions.resolve("r.-1.-1.mca"), chunks);
+        WorldMap map = new WorldMap(List.of(new WorldMap.Dimension("overworld", "Overworld", regions, false)),
+                TestRegions.colors(), s -> {});
+        try {
+            // Frame -1024..1024: block (0,0) is tile (8,8) at zoom 4 and pixel (128,128) at zoom 0.
+            assertEquals(shade(TestRegions.GRASS, 220), rgb(decode(map.tile("overworld", 4, 8, 8, 5000))[0]));
+            assertEquals(shade(TestRegions.GRASS, 220), rgb(decode(map.tile("overworld", 0, 0, 0, 5000))[128 * 256 + 128]));
+
+            // Trimmed or reset area: the region file is removed while the server runs.
+            Files.delete(file);
+
+            // Every zoom stops showing it at once, with no redraw to wait for; r.-1.-1 stays.
+            for (int p : decode(map.tile("overworld", 4, 8, 8, 5000))) assertEquals(0, p >>> 24);
+            assertEquals(0, decode(map.tile("overworld", 0, 0, 0, 5000))[128 * 256 + 128] >>> 24);
+            assertEquals(shade(TestRegions.GRASS, 220), rgb(decode(map.tile("overworld", 4, 4, 4, 5000))[0]));
+
+            // Regenerated later: it is drawn again from the new file.
+            chunks.put(0, TestRegions.chunk(0, 0, "minecraft:stone", (x, z) -> 64, false));
+            TestRegions.writeRegion(file, chunks);
+            assertEquals(shade(TestRegions.STONE, 220), rgb(decode(map.tile("overworld", 4, 8, 8, 5000))[0]));
+        } finally {
+            map.close();
+        }
+    }
+
     /** Decodes the PNGs PngWriter writes (RGBA, filter 0) with the JDK's own reader. */
     static int[] decode(byte[] png) throws Exception {
         java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(png));
