@@ -1,5 +1,6 @@
-// Exact-build ARK native gate. Game access and RPCs stay on the engine thread;
-// authenticated loopback HTTP only reads copied snapshots and queues actions.
+// Exact-build ARK native connector. Game access and RPCs stay on the engine
+// thread; the in-process Takaro bridge (its own threads, outbound WSS) only reads
+// copied snapshots and queues actions. No sidecar and no listening socket.
 #include "action_bindings.hpp"
 #include "console_bindings.hpp"
 #include "catalog_bindings.hpp"
@@ -8,14 +9,17 @@
 #include "entity_bindings.hpp"
 #include "engine_exec_capture.hpp"
 #include "general_console_bindings.hpp"
-#include "gate_http.hpp"
+#include "config_file.hpp"
+#include "gate_state.hpp"
 #include "inventory_bindings.hpp"
 #include "log_tail.hpp"
 #include "save_bindings.hpp"
 #include "shutdown_request_bindings.hpp"
 #include "location_bindings.hpp"
 #include "list_bans_bindings.hpp"
+#include "takaro_bridge.hpp"
 #include "world_bootstrap.hpp"
+#include <openssl/evp.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -127,6 +131,7 @@ std::atomic<uint64_t> g_sequence{0};
 std::atomic<bool> g_identity_attempted{false};
 std::atomic<uint64_t> g_ticks{0};
 gate::Server* g_gate = nullptr;
+takaro::Bridge* g_bridge = nullptr; // created after the hash gate; stopped before the gate
 std::atomic<void*> g_latest_controller{nullptr};
 std::atomic<void*> g_world{nullptr};
 std::atomic<uint64_t> g_world_weak{0}; // validated UObject index/serial, not a lifetime claim
@@ -981,14 +986,12 @@ bool exact_build() {
   void* bytes = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
   close(fd);
   if (bytes == MAP_FAILED) return false;
-  void* crypto = dlopen("libcrypto.so.3", RTLD_NOW | RTLD_LOCAL);
-  if (!crypto) { munmap(bytes, st.st_size); return false; }
-  using Sha256 = unsigned char* (*)(const unsigned char*, size_t, unsigned char*);
-  auto sha256 = reinterpret_cast<Sha256>(dlsym(crypto, "SHA256"));
+  // Statically linked OpenSSL: no dependency on the host's libcrypto.
   unsigned char digest[32];
-  bool okay = sha256 && sha256(reinterpret_cast<const unsigned char*>(bytes), st.st_size, digest);
+  unsigned int digest_length = 0;
+  const bool okay = EVP_Digest(bytes, static_cast<size_t>(st.st_size), digest, &digest_length,
+                               EVP_sha256(), nullptr) == 1 && digest_length == sizeof(digest);
   munmap(bytes, st.st_size);
-  dlclose(crypto);
   if (!okay) return false;
   char hex[65];
   for (size_t i = 0; i < 32; ++i) snprintf(hex + i * 2, 3, "%02x", digest[i]);
@@ -1201,9 +1204,68 @@ bool install_death() {
   g_death_installed = true;
   return true;
 }
+std::string server_root() {
+  char executable[4096]{};
+  const ssize_t n = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+  if (n <= 0) return {};
+  std::string path(executable, static_cast<size_t>(n));
+  constexpr std::string_view suffix = "/ShooterGame/Binaries/Linux/ShooterGameServer";
+  if (path.size() <= suffix.size() || !path.ends_with(suffix)) return {};
+  path.resize(path.size() - suffix.size());
+  return path;
+}
+
+// Settings: non-empty environment variables win over takaro.cfg next to the
+// plugin. Token values are never logged.
+std::optional<takaro::Config> load_bridge_config() {
+  const auto file = ark_config::load(ark_config::default_path());
+  for (const auto& warning : file.warnings) enqueue(("takaro-config " + warning).c_str());
+  takaro::Config config;
+  const std::string url = ark_config::get(file, "TAKARO_WS_URL");
+  if (!url.empty()) config.url = url;
+  config.registration_token = ark_config::get(file, "TAKARO_REGISTRATION_TOKEN");
+  config.identity_token = ark_config::get(file, "TAKARO_IDENTITY_TOKEN");
+  config.server_name = ark_config::get(file, "TAKARO_SERVER_NAME");
+  config.ca_file = ark_config::get(file, "TAKARO_CA_FILE");
+  config.ban_file = ark_config::get(file, "TAKARO_BAN_METADATA_FILE");
+  config.wire_debug = ark_config::get(file, "TAKARO_WIRE_DEBUG") == "1";
+  config.state_dir = ark_config::get(file, "TAKARO_STATE_DIR");
+  if (config.state_dir.empty()) {
+    const std::string root = server_root();
+    if (root.empty()) { enqueue("takaro-state-dir-unresolved"); return std::nullopt; }
+    config.state_dir = root + "/.takaro/ark-native";
+  }
+  if (!takaro::make_dirs(config.state_dir)) { enqueue("takaro-state-dir-unwritable"); return std::nullopt; }
+  if (config.identity_token.empty()) {
+    // Generated once per install and kept in the state directory.
+    const std::string path = config.state_dir + "/identity-token";
+    try {
+      if (auto saved = takaro::read_file(path, 4096)) config.identity_token = ark_config::trim(*saved);
+    } catch (...) {
+    }
+    if (config.identity_token.empty()) {
+      config.identity_token = "ark-" + takaro::random_uuid();
+      if (!takaro::write_atomic(path, config.identity_token + "\n")) {
+        enqueue("takaro-identity-token-unpersisted");
+        return std::nullopt;
+      }
+    }
+  }
+  if (config.server_name.empty())
+    config.server_name = "ARK (" + config.identity_token.substr(0, std::min<size_t>(12, config.identity_token.size())) + ")";
+  enqueue(("takaro-config file=" + std::string(file.found ? "found" : "absent") +
+           " url=" + config.url + " state=" + config.state_dir +
+           " registration=" + (config.registration_token.empty() ? "missing" : "set")).c_str());
+  if (config.registration_token.empty()) {
+    enqueue("takaro-registration-token-missing; Takaro connection disabled");
+    return std::nullopt;
+  }
+  return config;
+}
 } // namespace
 
-extern "C" void SteamGameServer_RunCallbacks() {
+// The only exported symbol: interposes Steam to note the callback thread.
+extern "C" __attribute__((visibility("default"))) void SteamGameServer_RunCallbacks() {
   using Callback = void (*)();
   static Callback original = reinterpret_cast<Callback>(dlsym(RTLD_NEXT, "SteamGameServer_RunCallbacks"));
   static thread_local bool noted = false;
@@ -1213,11 +1275,9 @@ extern "C" void SteamGameServer_RunCallbacks() {
 
 __attribute__((constructor)) static void ark_native_init() {
   if (!exact_build() || !preflight_bindings()) return;
-  const char* token = getenv("ARK_NATIVE_TOKEN");
   const std::string id = boot_id();
-  if (!token || id.empty()) return;
-  g_gate = new gate::Server(token, id);
-  if (!g_gate->start()) { delete g_gate; g_gate = nullptr; return; }
+  if (id.empty()) return;
+  g_gate = new gate::Server(id);
   g_state = new State();
   g_running = true;
   g_state->worker = std::thread(drain);
@@ -1232,11 +1292,24 @@ __attribute__((constructor)) static void ark_native_init() {
   enqueue(postlogin ? "exact-build-postlogin-hook-installed" : "exact-build-postlogin-hook-rejected");
   enqueue(logout ? "exact-build-logout-hook-installed" : "exact-build-logout-hook-rejected");
   enqueue(death ? "exact-build-death-hook-installed" : "exact-build-death-hook-rejected");
+  if (auto config = load_bridge_config()) {
+    try {
+      g_bridge = new takaro::Bridge(std::move(*config), *g_gate,
+                                    [](const std::string& line) { enqueue(line.c_str()); });
+      if (!g_bridge->start()) { delete g_bridge; g_bridge = nullptr; enqueue("takaro-bridge-start-failed"); }
+      else enqueue(("takaro-bridge-started boot=" + id).c_str());
+    } catch (const std::exception& error) {
+      // Corrupt ban metadata: refuse to manage bans blindly.
+      enqueue(("takaro-bridge-refused " + std::string(error.what())).c_str());
+      delete g_bridge;
+      g_bridge = nullptr;
+    }
+  }
 }
 
 __attribute__((destructor)) static void ark_native_stop() {
   g_hooks_ready.store(false, std::memory_order_release);
-  if (g_gate) g_gate->stop();
+  if (g_bridge) g_bridge->stop();
   g_running = false;
   if (g_state && g_state->worker.joinable()) g_state->worker.join();
   if (g_chat_slot && g_original_chat) {

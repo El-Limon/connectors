@@ -1,16 +1,17 @@
-"""Exact-build ARK verification using the shipped native and Generic sidecar artifacts.
+"""Exact-build ARK verification of the shipped native artifact.
 
-A bare run can prove startup, native health, Generic identify, empty roster, outbound
-request acknowledgement, and reconnect. Inbound chat and player-specific location or
-inventory need a real client; those checks fail with that limitation rather than report
-empty synthetic data as success. No Minecraft-specific base command is reused.
+The plugin inside the game process holds the Takaro WebSocket itself, so every check
+talks to it through the fake Takaro, and the plugin's own ``status.json`` in the owned
+state directory is the independent boot/identify oracle. A bare run can prove startup,
+readiness, Generic identify, empty roster, outbound acknowledgement, reconnect, saves,
+shutdown and reload. Inbound chat and player-specific location or inventory need a real
+client; those checks fail with that limitation rather than report empty synthetic data.
 """
 
 from __future__ import annotations
 
 import asyncio
 import ctypes
-import hashlib
 import json
 import math
 import os
@@ -26,12 +27,12 @@ from typing import Any
 from ... import net
 from ...verify import checks
 from ...verify.hooks import GameHooks
-from ...verify.runner import Container, docker_command
+from ...verify.runner import docker_command
 from .readonly_base import prepare as prepare_readonly_base
 
 CHECK_IDS = (
     "native-health",
-    "sidecar-identify",
+    "plugin-identify",
     "ark-heartbeat",
     "roster",
     "location",
@@ -72,18 +73,17 @@ _OWNED_PATH_PROBE_SCRIPT = (
     "done; printf 'saved %s\\n' \"$(readlink -f /ark/ShooterGame/Saved)\""
 )
 UNSUPPORTED_CHECKS = {
-    "connector-load": "ARK native /health is checked by native-health",
-    "identify": "the Generic sidecar identify frame is checked by sidecar-identify",
-    "heartbeat": "ARK sidecar WebSocket ping/pong and reachability are checked by ark-heartbeat",
+    "connector-load": "ARK native readiness is checked by native-health",
+    "identify": "the native plugin identify frame is checked by plugin-identify",
+    "heartbeat": "the native plugin WebSocket ping/pong and reachability are checked by ark-heartbeat",
     "players": "ARK roster is checked by roster",
     "catalog-items": "ARK item catalog is checked by catalog",
     "catalog-entities": "ARK entity catalog is checked by entities",
     "console": "ARK console support is checked by ark-console",
     "shutdown": "ARK native shutdown acknowledgement and process exit are checked by native-shutdown",
 }
-SIDECAR_FOLDER = Path("TakaroArk/TakaroArkSidecar")
-NATIVE_PORT = 18891
-SIDECAR_PORT = 18892
+STATUS_FILE = Path(".takaro/ark-native/status.json")
+OFFLINE_STEAM_ID = "76561198009999999"
 CONSOLE_SAFETY_PROBES = (
     ("Exit", "Use the dedicated shutdown action"),
     ("  qUiT extra", "Use the dedicated shutdown action"),
@@ -94,152 +94,31 @@ CONSOLE_SAFETY_PROBES = (
 )
 
 
-def native_token(registration_token: str) -> str:
-    return hashlib.sha256(b"takaro-ark-native:" + registration_token.encode()).hexdigest()
+def read_status(run: Any) -> dict[str, Any]:
+    """The plugin's own state snapshot (written every few seconds, never a secret)."""
+    try:
+        value = json.loads((run.data_dir / STATUS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
-def start_sidecar(run: Any, fake: Any, *, suffix: str = "") -> Container:
-    source = run.data_dir / SIDECAR_FOLDER
-    required = ("Dockerfile", "dist/index.js", "package-lock.json")
-    if any(not (source / name).is_file() for name in required):
-        raise RuntimeError("the shipped ARK sidecar folder is incomplete")
-    image = f"takaro-ark-sidecar:tm-{run.options.run_id}"
-    build = subprocess.run(
-        [
-            *docker_command(),
-            "build",
-            "-f",
-            str(source / "Dockerfile"),
-            "-t",
-            image,
-            "--label",
-            f"tm.run={run.options.run_id}",
-            str(source),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    (run.out / "sidecar-build.log").write_text(build.stdout + build.stderr, encoding="utf-8")
-    if build.returncode:
-        raise RuntimeError("shipped ARK sidecar image build failed; see sidecar-build.log")
-    takaro = run.takaro_env(f"ws://{fake.host}:{fake.port}/")
-    token = native_token(takaro["TAKARO_REGISTRATION_TOKEN"])
-    name = f"{run.container.name}-sidecar"
-    argv = [
-        *docker_command(),
-        "run",
-        "-d",
-        "--name",
-        name,
-        "--label",
-        f"tm.run={run.options.run_id}",
-        "--label",
-        f"tm.ttl={int(time.time()) + 10800}",
-        "--network",
-        f"container:{run.container.name}",
-        "--memory",
-        "512m",
-    ]
-    for label in run.options.labels:
-        argv += ["--label", label]
-    env = {
-        "TAKARO_WS_URL": takaro["TAKARO_WS_URL"],
-        "TAKARO_IDENTITY_TOKEN": takaro["TAKARO_IDENTITY_TOKEN"],
-        "TAKARO_REGISTRATION_TOKEN": takaro["TAKARO_REGISTRATION_TOKEN"],
-        "TAKARO_SERVER_NAME": f"takaro-verify-{run.options.run_id}",
-        "ARK_NATIVE_URL": f"http://127.0.0.1:{NATIVE_PORT}",
-        "ARK_NATIVE_TOKEN": token,
-        "TAKARO_CURSOR_FILE": "/data/event-cursor.json",
-        "SIDECAR_HEALTH_PORT": str(SIDECAR_PORT),
-    }
-    for key, value in sorted(env.items()):
-        argv += ["-e", f"{key}={value}"]
-    sidecar_data = run.data_dir / ".takaro/runtime/sidecar-data"
-    sidecar_data.mkdir(parents=True, exist_ok=True)
-    argv += ["-v", f"{sidecar_data}:/data", image]
-    container = Container(
-        name=name,
-        argv=argv,
-        log_file=run.out / f"sidecar{suffix}.log",
-        docker_log=run.docker_log,
-        secrets=[takaro["TAKARO_REGISTRATION_TOKEN"], token],
-    )
-    run.containers.append(container)
-    run.extra_logs.append(container.log_file)
-    container.start()
-    return container
+async def _wait_status(run: Any, predicate: Any, *, timeout: float = 30.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while True:
+        status = await asyncio.to_thread(read_status, run)
+        if predicate(status) or time.monotonic() >= deadline:
+            return status
+        await asyncio.sleep(1)
 
 
-def _get_json(container: str, url: str, *, native: bool = False) -> Any:
-    # Run inside the sidecar namespace. Token stays in that process environment and is
-    # never interpolated into the docker argv or logs.
-    script = (
-        (
-            "fetch(process.argv[1],{headers:{Authorization:'Bearer '+process.env.ARK_NATIVE_TOKEN}})"
-            ".then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);console.log(await r.text())})"
-            ".catch(e=>{console.error(e.message);process.exitCode=1})"
-        )
-        if native
-        else (
-            "fetch(process.argv[1]).then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);"
-            "console.log(await r.text())}).catch(e=>{console.error(e.message);process.exitCode=1})"
-        )
-    )
-    proc = subprocess.run(
-        [*docker_command(), "exec", container, "node", "-e", script, url], capture_output=True, text=True, check=False
-    )
-    if proc.returncode:
-        raise RuntimeError(f"sidecar namespace HTTP request failed: {proc.stderr.strip()[:160]}")
-    return json.loads(proc.stdout)
-
-
-def _native_console_probe(container: str, command: str) -> dict[str, Any]:
-    """Observe the native HTTP status/body for a rejected termination token."""
-    script = (
-        "fetch('http://127.0.0.1:18891/console',{method:'POST',"
-        "headers:{Authorization:'Bearer '+process.env.ARK_NATIVE_TOKEN,"
-        "'Content-Type':'text/plain; charset=utf-8'},body:process.argv[1]})"
-        ".then(async r=>console.log(JSON.stringify({status:r.status,body:await r.json()})))"
-        ".catch(e=>{console.error(e.message);process.exitCode=1})"
-    )
-    proc = subprocess.run(
-        [*docker_command(), "exec", container, "node", "-e", script, command],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if proc.returncode:
-        raise RuntimeError(f"native console safety probe failed: {proc.stderr.strip()[:160]}")
-    result = json.loads(proc.stdout)
-    if not isinstance(result, dict):
-        raise RuntimeError("native console safety probe returned no structured response")
-    return result
-
-
-def _native_message_probe(container: str, path: str, message: str) -> dict[str, Any]:
-    """Read an authenticated native message status without exposing the token in argv."""
-    script = (
-        "fetch('http://127.0.0.1:18891'+process.argv[1],{method:'POST',"
-        "headers:{Authorization:'Bearer '+process.env.ARK_NATIVE_TOKEN,"
-        "'Content-Type':'text/plain; charset=utf-8'},body:process.argv[2]})"
-        ".then(async r=>console.log(JSON.stringify({status:r.status,body:await r.json()})))"
-        ".catch(e=>{console.error(e.message);process.exitCode=1})"
-    )
-    proc = subprocess.run(
-        [*docker_command(), "exec", container, "node", "-e", script, path, message],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if proc.returncode:
-        raise RuntimeError(f"native message probe failed: {proc.stderr.strip()[:160]}")
-    result = json.loads(proc.stdout)
-    if not isinstance(result, dict):
-        raise RuntimeError("native message probe returned no structured response")
-    return result
+async def _withheld(fake: Any, action: str, args: dict[str, Any], *, timeout: float = 12.0) -> bool:
+    """True when the plugin sent no response frame (the fail-closed Generic contract)."""
+    try:
+        await fake.request(action, args, timeout=timeout)
+    except TimeoutError:
+        return True
+    return False
 
 
 async def _fresh_saveworld_events(fake: Any, baseline: int, *, timeout: float = 10.0) -> dict[str, str | None]:
@@ -266,17 +145,6 @@ async def _fresh_saveworld_events(fake: Any, baseline: int, *, timeout: float = 
         if complete or time.monotonic() >= deadline:
             return {"start": lines[start] if start is not None else None, "complete": complete}
         await asyncio.sleep(0.2)
-
-
-def _wait_json(container: str, url: str, *, native: bool = False, timeout: float = 30) -> Any:
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            return _get_json(container, url, native=native)
-        except (RuntimeError, json.JSONDecodeError):
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(1)
 
 
 def _result(check_id: str, problems: list[str], started: float, **detail: Any) -> checks.CheckResult:
@@ -308,15 +176,12 @@ def _fresh_shutdown_markers(log_file: Path, device: int, inode: int, offset: int
         time.sleep(0.2)
 
 
-def _native_protocol_ready(health: dict[str, Any], build: str) -> bool:
-    capabilities = health.get("capabilities")
-    return (
-        health.get("status") == "ok"
-        and health.get("build") == build
-        and bool(health.get("bootId"))
-        and isinstance(capabilities, dict)
-        and all(capabilities.get(name) == "ok" for name in ("roster", "items", "entities"))
-    )
+def _native_protocol_ready(reach: Any) -> bool:
+    """Zero-player readiness: roster, item and entity catalogs (chat needs a real controller)."""
+    if not isinstance(reach, dict) or reach.get("connectable") is not True:
+        return False
+    reason = reach.get("reason")
+    return reason is None or (isinstance(reason, str) and "items=" not in reason and "entities=" not in reason)
 
 
 def _owned_runtime_paths_valid(lines: list[str]) -> bool:
@@ -381,35 +246,26 @@ class _OwnedSaveReadWatch:
         return {"openedReadClosed": stage == 3 and not invalid, "eventMasks": masks, "invalidated": invalid}
 
 
-async def _wait_native_protocol_ready(
-    container: str, build: str, alive: Any, *, timeout: float = 60, poll_interval: float = 1
-) -> dict[str, Any]:
-    """Wait for zero-player protocol data; chat needs a real controller and is separate."""
+async def _wait_native_protocol_ready(fake: Any, alive: Any, *, timeout: float = 90, poll_interval: float = 2) -> Any:
+    """Wait until the plugin reports zero-player protocol readiness through Takaro."""
     deadline = time.monotonic() + timeout
-    last: dict[str, Any] = {}
-    url = f"http://127.0.0.1:{NATIVE_PORT}/health"
+    last: Any = None
     while True:
         try:
-            response = await asyncio.to_thread(_get_json, container, url, native=True)
-            last = response if isinstance(response, dict) else {"probeError": f"unexpected health: {response!r}"}
-        except (RuntimeError, ValueError) as exc:
+            last = await fake.request("testReachability", {}, timeout=10)
+        except (TimeoutError, RuntimeError) as exc:
             last = {"probeError": str(exc)}
-        if _native_protocol_ready(last, build) or (last.get("build") is not None and last.get("build") != build):
-            return last
-        if time.monotonic() >= deadline or not alive():
+        if _native_protocol_ready(last) or time.monotonic() >= deadline or not alive():
             return last
         await asyncio.sleep(poll_interval)
 
 
 async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
-    selected = [name for name in CHECK_IDS if name not in ("negative-wrong-target", "stop") and run.wanted(name)]
-    sidecar: Container | None = None
-    launch_error: str | None = None
-    if selected:
-        try:
-            sidecar = await asyncio.to_thread(start_sidecar, run, fake)
-        except Exception as exc:
-            launch_error = str(exc)
+    identify_error: str | None = None
+    try:
+        await fake.wait_for_identify(180)
+    except Exception as exc:  # every check below then fails with this reason
+        identify_error = str(exc)
     for check_id in CHECK_IDS:
         if check_id in ("event", "native-shutdown", "owned-save-reload", "stop", "negative-wrong-target"):
             continue
@@ -420,11 +276,13 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
         problems: list[str] = []
         detail: dict[str, Any] = {}
         try:
-            if sidecar is None:
-                raise RuntimeError(f"shipped sidecar did not start: {launch_error}")
+            if identify_error is not None:
+                raise RuntimeError(f"native plugin never identified with Takaro: {identify_error}")
             if check_id == "native-health":
-                health = await _wait_native_protocol_ready(sidecar.name, str(run.target.record["revision"]), alive)
-                detail["health"] = health
+                reach = await _wait_native_protocol_ready(fake, alive)
+                detail["reachability"] = reach
+                status = await _wait_status(run, lambda value: bool(value.get("bootId")))
+                detail["status"] = status
                 if run.options.ark_readonly_base is not None:
                     if run.container is None:
                         raise RuntimeError("read-only ARK game container was not started")
@@ -445,15 +303,19 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                     detail["readOnlyPaths"] = paths.stdout.splitlines()
                     if paths.returncode or not _owned_runtime_paths_valid(paths.stdout.splitlines()):
                         problems.append("ARK process executable or Saved path escapes the owned runtime tree")
-                if not _native_protocol_ready(health, str(run.target.record["revision"])):
-                    problems.append("native health did not reach pinned build and zero-player protocol readiness")
+                if not _native_protocol_ready(reach):
+                    problems.append("native plugin did not reach zero-player protocol readiness")
+                if not status.get("bootId") or status.get("gameReady") is not True:
+                    problems.append("native status file reports no boot ID or no game-thread readiness")
                 detail["clientDependentCapabilities"] = ["chat", "sendMessage"]
-            elif check_id == "sidecar-identify":
-                await fake.wait_for_identify(120)
-                health = await asyncio.to_thread(_wait_json, sidecar.name, f"http://127.0.0.1:{SIDECAR_PORT}/health")
-                detail["health"] = health
-                if health.get("takaroIdentified") is not True:
-                    problems.append("sidecar did not report identified")
+            elif check_id == "plugin-identify":
+                detail["identify"] = {
+                    key: value for key, value in (fake.identified or {}).items() if key not in ("registrationToken",)
+                }
+                status = await _wait_status(run, lambda value: value.get("identified") is True)
+                detail["status"] = status
+                if status.get("identified") is not True or status.get("gameServerId") != fake.game_server_id:
+                    problems.append("native status file does not report the fake Takaro identification")
             elif check_id == "ark-heartbeat":
                 heartbeat = await checks.check_heartbeat(fake)
                 detail.update({key: value for key, value in heartbeat.detail.items() if key != "problems"})
@@ -509,46 +371,37 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 ):
                     problems.append(f"native {method} catalog is missing or malformed")
             elif check_id == "ark-empty-broadcast":
-                native_players = await asyncio.to_thread(
-                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/players", native=True
-                )
                 takaro_players = await fake.request("getPlayers", {})
-                detail["nativePlayersBefore"] = native_players
                 detail["takaroPlayersBefore"] = takaro_players
-                if native_players != [] or takaro_players != []:
+                status = await asyncio.to_thread(read_status, run)
+                detail["statusPlayersBefore"] = status.get("onlinePlayers")
+                if takaro_players != [] or status.get("onlinePlayers") != []:
                     problems.append("zero-recipient broadcast requires a verified empty native and Takaro roster")
                 else:
                     marker = f"ARK isolated empty broadcast {run.options.run_id}"
-                    native_result = await asyncio.to_thread(_native_message_probe, sidecar.name, "/message", marker)
-                    detail["native"] = native_result
-                    if native_result != {"status": 200, "body": {"success": True}}:
-                        problems.append("native empty broadcast did not acknowledge game-thread completion")
                     response = await fake.request("sendMessage", {"message": marker})
                     detail["generic"] = response
                     if response != {}:
                         problems.append("Generic empty broadcast did not acknowledge the native no-op")
-                    detail["nativePlayersAfter"] = await asyncio.to_thread(
-                        _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/players", native=True
-                    )
-                    if detail["nativePlayersAfter"] != []:
+                    detail["takaroPlayersAfter"] = await fake.request("getPlayers", {})
+                    if detail["takaroPlayersAfter"] != []:
                         problems.append("empty broadcast changed the zero-player roster")
             elif check_id == "ark-targeted-offline":
-                target = "76561198009999999"
-                native_players = await asyncio.to_thread(
-                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/players", native=True
-                )
-                detail["nativePlayers"] = native_players
-                if not isinstance(native_players, list) or any(
-                    isinstance(player, dict) and player.get("gameId") == target for player in native_players
+                players = await fake.request("getPlayers", {})
+                detail["takaroPlayers"] = players
+                if not isinstance(players, list) or any(
+                    isinstance(player, dict) and player.get("gameId") == OFFLINE_STEAM_ID for player in players
                 ):
-                    problems.append("offline target was not verified absent from native roster")
+                    problems.append("offline target was not verified absent from the roster")
                 else:
-                    result = await asyncio.to_thread(
-                        _native_message_probe, sidecar.name, f"/players/{target}/message", "offline target must fail"
+                    withheld = await _withheld(
+                        fake,
+                        "sendMessage",
+                        {"message": "offline target must fail", "opts": {"recipient": {"gameId": OFFLINE_STEAM_ID}}},
                     )
-                    detail["native"] = result
-                    if result != {"status": 503, "body": {"error": "no native recipient or queue full"}}:
-                        problems.append("native targeted message did not reject the offline recipient")
+                    detail["responseWithheld"] = withheld
+                    if not withheld:
+                        problems.append("targeted message to an offline player answered instead of failing closed")
             elif check_id == "chat-out":
                 marker = f"Takaro ARK verify {run.options.run_id}"
                 detail["message"] = marker
@@ -571,30 +424,23 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 if not events:
                     problems.append("no real client chat event reached Takaro; external client input required")
             elif check_id == "ark-console":
-                baseline = await asyncio.to_thread(
-                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
-                )
-                boot_id = baseline.get("bootId") if isinstance(baseline, dict) else None
+                baseline = await asyncio.to_thread(read_status, run)
+                boot_id = baseline.get("bootId")
                 if not boot_id:
                     problems.append("native bootId was unavailable before console safety probes")
                 safety: list[dict[str, Any]] = []
                 for command, error_message in CONSOLE_SAFETY_PROBES:
-                    rejection = await asyncio.to_thread(_native_console_probe, sidecar.name, command)
-                    health_after = await asyncio.to_thread(
-                        _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
-                    )
+                    rejection = await fake.request("executeConsoleCommand", {"command": command})
                     still_alive = bool(run.container and await asyncio.to_thread(run.container.alive))
+                    status_after = await asyncio.to_thread(read_status, run)
                     row = {
                         "command": command,
                         "rejection": rejection,
-                        "bootIdAfter": health_after.get("bootId") if isinstance(health_after, dict) else None,
+                        "bootIdAfter": status_after.get("bootId"),
                         "serverAlive": still_alive,
                     }
                     safety.append(row)
-                    if rejection != {
-                        "status": 400,
-                        "body": {"success": False, "rawResult": "", "errorMessage": error_message},
-                    }:
+                    if rejection != {"success": False, "rawResult": "", "errorMessage": error_message}:
                         problems.append(f"native console did not structurally reject {command!r}")
                     if not still_alive or row["bootIdAfter"] != boot_id:
                         problems.append(f"native boot changed or stopped after console rejection {command!r}")
@@ -618,9 +464,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 before = save.stat() if save.is_file() else None
                 event_baseline = len(fake.events)
                 detail["eventIndexBefore"] = event_baseline
-                health_before = await asyncio.to_thread(
-                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
-                )
+                status_before = await asyncio.to_thread(read_status, run)
                 result = await fake.request("executeConsoleCommand", {"command": "SaveWorld"})
                 detail["result"] = result
                 if result != {"success": True, "rawResult": "", "errorMessage": None}:
@@ -639,11 +483,9 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 }
                 if not after or after.st_size <= 0 or (before and after.st_mtime_ns <= before.st_mtime_ns):
                     problems.append("owned world save was not freshly written by SaveWorld")
-                health_after = await asyncio.to_thread(
-                    _get_json, sidecar.name, f"http://127.0.0.1:{NATIVE_PORT}/health", native=True
-                )
-                detail["bootIdBefore"] = health_before.get("bootId") if isinstance(health_before, dict) else None
-                detail["bootIdAfter"] = health_after.get("bootId") if isinstance(health_after, dict) else None
+                status_after = await asyncio.to_thread(read_status, run)
+                detail["bootIdBefore"] = status_before.get("bootId")
+                detail["bootIdAfter"] = status_after.get("bootId")
                 if (
                     not await asyncio.to_thread(run.container.alive)
                     or not detail["bootIdBefore"]
@@ -657,7 +499,7 @@ async def after_protocol(run: Any, fake: Any, alive: Any) -> None:
                 reach = await fake.request("testReachability", {})
                 detail["identifyCount"] = fake.identify_count
                 if not isinstance(reach, dict) or reach.get("connectable") is not True:
-                    problems.append("reconnected sidecar cannot reach native")
+                    problems.append("reconnected plugin cannot report native reachability")
         except Exception as exc:  # report a failed capability, never a fake pass
             problems.append(str(exc))
         run.record(_result(check_id, problems, started, **detail))
@@ -674,7 +516,7 @@ async def _reload_owned_save(run: Any, fake: Any, ws_url: str, ledger_inputs: li
             raise RuntimeError("owned save reload requires a passing native-shutdown check")
         if first_health is None or first_health.status != "pass":
             raise RuntimeError("owned save reload requires a passing first native-health check")
-        first_boot_id = first_health.detail.get("health", {}).get("bootId")
+        first_boot_id = first_health.detail.get("status", {}).get("bootId")
         if not isinstance(first_boot_id, str) or not first_boot_id:
             raise RuntimeError("first native boot ID is missing")
         detail["firstBootId"] = first_boot_id
@@ -686,14 +528,8 @@ async def _reload_owned_save(run: Any, fake: Any, ws_url: str, ledger_inputs: li
             raise RuntimeError("owned save is empty before reload")
         detail["saveBeforeReload"] = {**before, "mtimeNs": save.stat().st_mtime_ns}
 
-        # The old sidecar's network namespace must not supply a stale identify or health.
         if run.container is None:
             raise RuntimeError("first game container is missing")
-        old_sidecar_name = f"{run.container.name}-sidecar"
-        old_sidecar = next((item for item in run.containers if item.name == old_sidecar_name), None)
-        if old_sidecar is None:
-            raise RuntimeError("first sidecar container is missing")
-        await asyncio.to_thread(old_sidecar.remove)
         identified_before = fake.identify_count
 
         # Hash before arming the watch; no runner code reads this file until the
@@ -715,17 +551,18 @@ async def _reload_owned_save(run: Any, fake: Any, ws_url: str, ledger_inputs: li
             detail["reloadStartup"] = startup.detail
             if startup.status != "pass":
                 raise RuntimeError("second game startup failed")
-            second_sidecar = await asyncio.to_thread(start_sidecar, run, fake, suffix="-reload")
-            await fake.wait_for_identify(120, minimum=identified_before + 1)
-            health = await _wait_native_protocol_ready(
-                second_sidecar.name, str(run.target.record["revision"]), second.alive
+            await fake.wait_for_identify(180, minimum=identified_before + 1)
+            reach = await _wait_native_protocol_ready(fake, second.alive)
+            detail["reloadReachability"] = reach
+            if not _native_protocol_ready(reach):
+                raise RuntimeError("second native boot did not reach zero-player readiness")
+            status = await _wait_status(
+                run, lambda value: bool(value.get("bootId")) and value.get("bootId") != first_boot_id
             )
-            detail["reloadHealth"] = health
-            if not _native_protocol_ready(health, str(run.target.record["revision"])):
-                raise RuntimeError("second native boot did not reach pinned zero-player readiness")
-            second_boot_id = health.get("bootId")
-            if second_boot_id == first_boot_id:
-                raise RuntimeError("second native boot reused the first boot ID")
+            detail["reloadStatus"] = status
+            second_boot_id = status.get("bootId")
+            if not second_boot_id or second_boot_id == first_boot_id:
+                raise RuntimeError("second native boot did not publish a new boot ID")
             detail["secondBootId"] = second_boot_id
             detail["readEvidence"] = watch.read_evidence()
             if not detail["readEvidence"]["openedReadClosed"]:
@@ -887,7 +724,7 @@ async def _negative_impl(run: Any, fake: Any, ws_url: str, manifest: dict[str, A
             evidence["fixtureSize"] = expected_size
             launcher_proc = subprocess.run(
                 [str(fixture_launcher), str(root / "server"), "TheIsland?listen", "-server"],
-                env={**os.environ, "ARK_NATIVE_TOKEN": "isolated-fixture"},
+                env={key: value for key, value in os.environ.items() if not key.startswith("TAKARO_")},
                 capture_output=True,
                 text=True,
                 check=False,
@@ -901,18 +738,15 @@ async def _negative_impl(run: Any, fake: Any, ws_url: str, manifest: dict[str, A
 
             # Direct preload tests the library's own constructor guard. The
             # executable has the expected byte size and basename but a wrong
-            # hash; the isolated container cannot reach the live game port.
+            # hash: the plugin must return before creating state or connecting.
             script = (
                 "set -eu\n"
-                "ARK_NATIVE_TOKEN=isolated-fixture LD_PRELOAD=/fixture/plugin/libtakaro-ark-native.so "
-                "/fixture/server/ShooterGame/Binaries/Linux/ShooterGameServer 2 &\n"
-                "pid=$!\n"
-                "for sample in 1 2 3 4 5; do\n"
-                "  sleep 0.25\n"
-                "  if (echo >/dev/tcp/127.0.0.1/18891) 2>/dev/null; "
-                "then echo unexpected_native_listener; exit 1; fi\n"
-                "done\n"
-                'echo native_listener=absent\nwait "$pid"\necho fixture_exit=0\n'
+                "TAKARO_REGISTRATION_TOKEN=isolated-fixture TAKARO_WS_URL=ws://127.0.0.1:9/ "
+                "TAKARO_STATE_DIR=/tmp/ark-native-state "
+                "LD_PRELOAD=/fixture/plugin/libtakaro-ark-native.so "
+                "/fixture/server/ShooterGame/Binaries/Linux/ShooterGameServer 2\n"
+                "if [ -e /tmp/ark-native-state ]; then echo unexpected_native_state; exit 1; fi\n"
+                "echo native_state=absent\necho fixture_exit=0\n"
             )
             image = run.resolved["containerRef"]
             direct = subprocess.run(
@@ -942,8 +776,8 @@ async def _negative_impl(run: Any, fake: Any, ws_url: str, manifest: dict[str, A
             (run.out / "negative-wrong-target-preload.log").write_text(direct_output, encoding="utf-8")
             evidence["preloadExit"] = direct.returncode
             evidence["network"] = "none"
-            if direct.returncode or direct.stdout != "native_listener=absent\nfixture_exit=0\n":
-                problems.append("native preload guard did not return safely without a listener")
+            if direct.returncode or direct.stdout != "native_state=absent\nfixture_exit=0\n":
+                problems.append("native preload guard did not return safely before any connector state")
     evidence["problems"] = problems
     run.record(
         checks.CheckResult(

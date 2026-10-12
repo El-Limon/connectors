@@ -36,20 +36,20 @@ def test_ark_protocol_level_requires_every_native_semantic_check() -> None:
         assert level_for(skipped, "ark") == "startup"
 
 
-def test_ark_verification_uses_init_and_redacts_derived_native_token(tmp_path: Path) -> None:
+def test_ark_verification_uses_init_and_redacts_registration_token(tmp_path: Path) -> None:
     assert "--init" in ArkAdapter().container_options({}, tmp_path)
-    command = ["docker", "run", "-e", "ARK_NATIVE_TOKEN=ephemeral-native-token", "-e", "LEVEL=TheIsland"]
+    command = ["docker", "run", "-e", "TAKARO_REGISTRATION_TOKEN=ephemeral-native-token", "-e", "LEVEL=TheIsland"]
     secrets = _command_env_secrets(command)
     assert "ephemeral-native-token" in secrets
     logged = redact.redact(" ".join(command), secrets)
     assert "ephemeral-native-token" not in logged
-    assert "ARK_NATIVE_TOKEN=<redacted>" in logged
+    assert "TAKARO_REGISTRATION_TOKEN=<redacted>" in logged
 
 
-def test_game_container_error_and_docker_log_redact_native_token(
+def test_game_container_error_and_docker_log_redact_registration_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    command = ["docker", "run", "-e", "ARK_NATIVE_TOKEN=ephemeral-native-token", "image"]
+    command = ["docker", "run", "-e", "TAKARO_REGISTRATION_TOKEN=ephemeral-native-token", "image"]
     container = verify_runner.Container(
         name="isolated",
         argv=command,
@@ -149,41 +149,6 @@ def test_ark_readonly_report_provenance_validates_against_published_schema(tmp_p
     assert any("readOnlyMount" in error for error in schema.errors_for("verify-report.schema.json", report))
 
 
-def test_sidecar_build_uses_packaged_dockerfile_outside_repository_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    data = tmp_path / "data"
-    out = tmp_path / "out"
-    out.mkdir()
-    source = data / ark_verify.SIDECAR_FOLDER
-    (source / "dist").mkdir(parents=True)
-    for name in ("Dockerfile", "dist/index.js", "package-lock.json"):
-        (source / name).write_text("fixture", encoding="utf-8")
-    calls: list[list[str]] = []
-
-    def failed_build(argv: list[str], **kwargs: object) -> SimpleNamespace:
-        del kwargs
-        calls.append(argv)
-        return SimpleNamespace(returncode=1, stdout="", stderr="fixture build refusal")
-
-    monkeypatch.setattr(ark_verify.subprocess, "run", failed_build)
-    monkeypatch.setattr(ark_verify, "docker_command", lambda: ["docker"])
-    run = SimpleNamespace(data_dir=data, out=out, options=SimpleNamespace(run_id="fixture"))
-    with pytest.raises(RuntimeError, match="sidecar image build failed"):
-        ark_verify.start_sidecar(run, None)
-    assert calls[0] == [
-        "docker",
-        "build",
-        "-f",
-        str(source / "Dockerfile"),
-        "-t",
-        "takaro-ark-sidecar:tm-fixture",
-        "--label",
-        "tm.run=fixture",
-        str(source),
-    ]
-
-
 def test_ark_cleanup_keeps_exit_state_timestamped_log_and_owned_crash_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -224,135 +189,11 @@ def test_ark_cleanup_keeps_exit_state_timestamped_log_and_owned_crash_context(
     ]
 
 
-def test_native_health_waits_for_zero_player_protocol_without_client_chat(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    starting = {
-        "status": "starting",
-        "build": "21241282",
-        "bootId": "fresh",
-        "capabilities": {
-            "chat": "starting",
-            "sendMessage": "starting",
-            "roster": "starting",
-            "items": "unavailable",
-            "entities": "unavailable",
-        },
-    }
-    ready = {
-        **starting,
-        "status": "ok",
-        "capabilities": {**starting["capabilities"], "roster": "ok", "items": "ok", "entities": "ok"},
-    }
-    responses = iter((starting, ready))
-    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: next(responses))
-    result = asyncio.run(ark_verify._wait_native_protocol_ready("sidecar", "21241282", lambda: True, poll_interval=0))
-    assert result == ready
-    assert ark_verify._native_protocol_ready(result, "21241282")
-    assert not ark_verify._native_protocol_ready(result, "wrong-build")
-
-
-def test_native_health_timeout_keeps_starting_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    starting = {"status": "starting", "build": "21241282", "bootId": "fresh", "capabilities": {}}
-    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: starting)
-    result = asyncio.run(ark_verify._wait_native_protocol_ready("sidecar", "21241282", lambda: True, timeout=0))
-    assert result == starting
-    assert not ark_verify._native_protocol_ready(result, "21241282")
-
-
-def test_native_health_wrong_build_fails_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = 0
-
-    def wrong_build(*args: object, **kwargs: object) -> dict[str, object]:
-        nonlocal calls
-        del args, kwargs
-        calls += 1
-        return {"status": "ok", "build": "wrong-build", "bootId": "fresh", "capabilities": {}}
-
-    monkeypatch.setattr(ark_verify, "_get_json", wrong_build)
-    result = asyncio.run(ark_verify._wait_native_protocol_ready("sidecar", "21241282", lambda: True))
-    assert result["build"] == "wrong-build"
-    assert calls == 1
-    assert not ark_verify._native_protocol_ready(result, "21241282")
-
-
-def test_ark_native_health_passes_with_client_dependent_chat_starting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-
-    async def ready(*args: object) -> dict[str, object]:
-        del args
-        return {
-            "status": "ok",
-            "build": "21241282",
-            "bootId": "fresh",
-            "capabilities": {
-                "chat": "starting",
-                "sendMessage": "starting",
-                "roster": "ok",
-                "items": "ok",
-                "entities": "ok",
-            },
-        }
-
-    monkeypatch.setattr(ark_verify, "_wait_native_protocol_ready", ready)
-
-    class FakeRun:
-        options = SimpleNamespace(ark_readonly_base=None)
-        target = SimpleNamespace(record={"revision": "21241282"})
-
-        def __init__(self) -> None:
-            self.results: list[CheckResult] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "native-health"
-
-        def record(self, result: CheckResult) -> None:
-            self.results.append(result)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, object(), lambda: True))
-    assert run.results[0].status == "pass"
-    assert run.results[0].detail["clientDependentCapabilities"] == ["chat", "sendMessage"]
-
-
-def test_ark_heartbeat_detail_problems_do_not_crash_report(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-
-    async def heartbeat(fake: object) -> CheckResult:
-        del fake
-        return CheckResult("heartbeat", "fail", 0, {"pingRoundTripMs": [], "problems": ["no pong"]})
-
-    monkeypatch.setattr(ark_verify.checks, "check_heartbeat", heartbeat)
-
-    class FakeRun:
-        def __init__(self) -> None:
-            self.results: list[CheckResult] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "ark-heartbeat"
-
-        def record(self, result: CheckResult) -> None:
-            self.results.append(result)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, object(), lambda: True))
-    assert run.results[0].status == "fail"
-    assert run.results[0].detail == {"pingRoundTripMs": [], "problems": ["no pong"]}
-
-
 @pytest.mark.parametrize(
     ("ack", "exit_code", "expected"),
     [({}, 134, "pass"), ({"success": True}, 134, "fail"), ({}, 0, "fail"), ({}, 139, "fail")],
 )
-def test_ark_native_shutdown_requires_sidecar_ack_and_clean_native_exit(
+def test_ark_native_shutdown_requires_generic_ack_and_clean_native_exit(
     tmp_path: Path, ack: dict[str, object], exit_code: int, expected: str
 ) -> None:
     log = tmp_path / "server.log"
@@ -604,12 +445,9 @@ def test_owned_save_reload_requires_same_world_read_new_boot_and_second_native_e
     save.parent.mkdir(parents=True)
     save.write_bytes(b"saved world from first boot")
     reload_log = tmp_path / "server-reload.log"
-    old_sidecar = SimpleNamespace(name="first-sidecar", removed=False)
-
-    def remove_old_sidecar() -> None:
-        old_sidecar.removed = True
-
-    old_sidecar.remove = remove_old_sidecar
+    status_file = tmp_path / ark_verify.STATUS_FILE
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(json.dumps({"bootId": "boot-one"}))
     second = SimpleNamespace(name="second", alive=lambda: True, wait_for_exit=lambda timeout: second_exit)
 
     class FakeRun:
@@ -621,20 +459,20 @@ def test_owned_save_reload_requires_same_world_read_new_boot_and_second_native_e
         def __init__(self) -> None:
             self.options = SimpleNamespace(ark_readonly_base=tmp_path / "read-only-base" if read_only else None)
             self.container = SimpleNamespace(name="first")
-            self.containers = [old_sidecar]
+            self.containers: list[object] = []
             self.extra_logs: list[Path] = []
             self.results = [
                 CheckResult("native-shutdown", "pass", 0, {}),
-                CheckResult("native-health", "pass", 0, {"health": {"bootId": "boot-one"}}),
+                CheckResult("native-health", "pass", 0, {"status": {"bootId": "boot-one"}}),
             ]
 
         def boot(self, ws_url: str, *, suffix: str, log_name: str) -> SimpleNamespace:
             assert ws_url == "ws://isolated/"
             assert suffix == "-reload" and log_name == "server-reload.log"
-            assert old_sidecar.removed
             if read_save:
                 assert save.read_bytes() == b"saved world from first boot"
             reload_log.write_text("ARK_NATIVE_DIAG main-loop-tick count=1\n")
+            status_file.write_text(json.dumps({"bootId": second_boot_id}))
             self.container = second
             return second
 
@@ -648,10 +486,13 @@ def test_owned_save_reload_requires_same_world_read_new_boot_and_second_native_e
         identify_count = 1
 
         async def wait_for_identify(self, timeout: float, *, minimum: int) -> None:
-            assert timeout == 120 and minimum == 2
+            assert timeout == 180 and minimum == 2
             self.identify_count = 2
 
-        async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
+        async def request(self, name: str, args: dict[str, object], *, timeout: float = 30) -> dict[str, object]:
+            del timeout
+            if name == "testReachability":
+                return {"connectable": True, "reason": None}
             assert (name, args) == ("shutdown", {})
             with reload_log.open("a") as stream:
                 stream.write(
@@ -660,17 +501,12 @@ def test_owned_save_reload_requires_same_world_read_new_boot_and_second_native_e
                 )
             return {}
 
-    async def reload_health(container: str, build: str, alive: object) -> dict[str, object]:
-        assert (container, build, alive()) == ("second-sidecar", "21241282", True)
-        return {
-            "status": "ok",
-            "build": build,
-            "bootId": second_boot_id,
-            "capabilities": {"roster": "ok", "items": "ok", "entities": "ok"},
-        }
+    async def fast_status(run: object, predicate: object, *, timeout: float = 30.0) -> dict[str, object]:
+        del timeout
+        return await original_status(run, predicate, timeout=0)
 
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake, **kwargs: SimpleNamespace(name="second-sidecar"))
-    monkeypatch.setattr(ark_verify, "_wait_native_protocol_ready", reload_health)
+    original_status = ark_verify._wait_status
+    monkeypatch.setattr(ark_verify, "_wait_status", fast_status)
     monkeypatch.setattr(
         ark_verify.checks,
         "check_startup",
@@ -689,211 +525,241 @@ def test_owned_save_reload_requires_same_world_read_new_boot_and_second_native_e
         assert run.extra_logs == [reload_log]
 
 
+class ScriptedTakaro:
+    """Fake Takaro for after_protocol: scripted Generic answers, None = no frame."""
+
+    game_server_id = "fixture-gs"
+
+    def __init__(self, answers: dict[str, object] | None = None) -> None:
+        self.answers = answers or {}
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.identified = {"identityToken": "fixture", "registrationToken": "fixture-secret"}
+        self.identify_count = 1
+        self.events: list[dict[str, object]] = []
+
+    async def wait_for_identify(self, timeout: float, *, minimum: int = 1) -> dict[str, object]:
+        del timeout, minimum
+        return self.identified
+
+    async def request(self, action: str, args: dict[str, object] | None = None, *, timeout: float = 30.0) -> object:
+        del timeout
+        self.calls.append((action, args or {}))
+        answer = self.answers.get(action)
+        if callable(answer):
+            answer = answer(args or {})
+        if answer is None:
+            raise TimeoutError(f"no response to {action}")
+        return answer
+
+
+class ProtocolRun:
+    """Minimal run for after_protocol with the plugin's status file in data_dir."""
+
+    def __init__(self, tmp_path: Path, wanted: str, status: dict[str, object] | None = None) -> None:
+        self.data_dir = tmp_path
+        self.out = tmp_path
+        self.options = SimpleNamespace(ark_readonly_base=None, run_id="fixture")
+        self.target = SimpleNamespace(record={"revision": "21241282"})
+        self.container = SimpleNamespace(alive=lambda: True)
+        self.server_log = tmp_path / "server.log"
+        self.results: list[CheckResult] = []
+        self._wanted = wanted
+        self.write_status(
+            status
+            or {
+                "bootId": "boot-one",
+                "identified": True,
+                "gameReady": True,
+                "gameServerId": "fixture-gs",
+                "onlinePlayers": [],
+            }
+        )
+
+    def write_status(self, status: dict[str, object]) -> None:
+        path = self.data_dir / ark_verify.STATUS_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(status), encoding="utf-8")
+
+    def wanted(self, name: str) -> bool:
+        return name == self._wanted
+
+    def record(self, result: CheckResult) -> None:
+        self.results.append(result)
+
+    def skip(self, name: str, reason: str) -> None:
+        del name, reason
+
+
+READY = {"connectable": True, "reason": "Native capabilities: chat=starting, sendMessage=starting"}
+
+
+@pytest.mark.parametrize(
+    ("reach", "expected"),
+    [
+        (READY, True),
+        ({"connectable": True, "reason": None}, True),
+        ({"connectable": True, "reason": "Native capabilities: items=unavailable"}, False),
+        ({"connectable": False, "reason": "Native status starting"}, False),
+        ({"probeError": "timeout"}, False),
+    ],
+)
+def test_native_readiness_needs_catalogs_but_not_client_chat(reach: dict[str, object], expected: bool) -> None:
+    assert ark_verify._native_protocol_ready(reach) is expected
+
+
+def test_native_health_waits_for_zero_player_protocol_without_client_chat() -> None:
+    answers = iter(({"connectable": False, "reason": "Native status starting"}, READY))
+    fake = ScriptedTakaro({"testReachability": lambda args: next(answers)})
+    result = asyncio.run(ark_verify._wait_native_protocol_ready(fake, lambda: True, poll_interval=0))
+    assert result == READY
+    assert len(fake.calls) == 2
+
+
+def test_native_health_timeout_keeps_starting_result() -> None:
+    starting = {"connectable": False, "reason": "Native status starting"}
+    fake = ScriptedTakaro({"testReachability": starting})
+    result = asyncio.run(ark_verify._wait_native_protocol_ready(fake, lambda: True, timeout=0))
+    assert result == starting
+
+
+@pytest.mark.parametrize(("game_ready", "expected"), [(True, "pass"), (False, "fail")])
+def test_ark_native_health_uses_reachability_and_status_file(tmp_path: Path, game_ready: bool, expected: str) -> None:
+    run = ProtocolRun(
+        tmp_path,
+        "native-health",
+        {"bootId": "boot-one", "identified": True, "gameReady": game_ready, "onlinePlayers": []},
+    )
+    asyncio.run(ark_verify.after_protocol(run, ScriptedTakaro({"testReachability": READY}), lambda: True))
+    assert run.results[0].status == expected, run.results[0].detail
+    assert run.results[0].detail["clientDependentCapabilities"] == ["chat", "sendMessage"]
+
+
+@pytest.mark.parametrize(("gsid", "expected"), [("fixture-gs", "pass"), ("other", "fail")])
+def test_plugin_identify_matches_status_file_without_token(tmp_path: Path, gsid: str, expected: str) -> None:
+    run = ProtocolRun(
+        tmp_path,
+        "plugin-identify",
+        {"bootId": "boot-one", "identified": True, "gameServerId": gsid, "onlinePlayers": []},
+    )
+    asyncio.run(ark_verify.after_protocol(run, ScriptedTakaro(), lambda: True))
+    assert run.results[0].status == expected
+    assert "registrationToken" not in run.results[0].detail["identify"]
+
+
+def test_ark_heartbeat_detail_problems_do_not_crash_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def heartbeat(fake: object) -> CheckResult:
+        del fake
+        return CheckResult("heartbeat", "fail", 0, {"pingRoundTripMs": [], "problems": ["no pong"]})
+
+    monkeypatch.setattr(ark_verify.checks, "check_heartbeat", heartbeat)
+    run = ProtocolRun(tmp_path, "ark-heartbeat")
+    asyncio.run(ark_verify.after_protocol(run, ScriptedTakaro(), lambda: True))
+    assert run.results[0].status == "fail"
+    assert run.results[0].detail == {"pingRoundTripMs": [], "problems": ["no pong"]}
+
+
+def test_every_check_fails_when_the_plugin_never_identifies(tmp_path: Path) -> None:
+    class Silent(ScriptedTakaro):
+        async def wait_for_identify(self, timeout: float, *, minimum: int = 1) -> dict[str, object]:
+            raise TimeoutError("only 0 identify frame(s) arrived, expected 1")
+
+    run = ProtocolRun(tmp_path, "roster")
+    asyncio.run(ark_verify.after_protocol(run, Silent(), lambda: True))
+    assert run.results[0].status == "fail"
+    assert "never identified" in run.results[0].detail["problems"][0]
+
+
 @pytest.mark.parametrize(
     ("entities", "expected"),
-    [([{"code": "/Game/Dino_C", "name": "Dino"}], "pass"), ([], "fail")],
+    [([{"code": "Dodo", "name": "Dodo"}], "pass"), ([], "fail")],
 )
 def test_ark_entity_check_queries_real_generic_catalog(
-    monkeypatch: pytest.MonkeyPatch, entities: list[dict[str, str]], expected: str
+    tmp_path: Path, entities: list[dict[str, str]], expected: str
 ) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-
-    class FakeTakaro:
-        async def request(self, name: str, args: dict[str, object]) -> list[dict[str, str]]:
-            assert (name, args) == ("listEntities", {})
-            return entities
-
-    class FakeRun:
-        def __init__(self) -> None:
-            self.results: list[object] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "entities"
-
-        def record(self, result: object) -> None:
-            self.results.append(result)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
+    fake = ScriptedTakaro({"listEntities": entities})
+    run = ProtocolRun(tmp_path, "entities")
+    asyncio.run(ark_verify.after_protocol(run, fake, lambda: True))
     assert len(run.results) == 1
     assert run.results[0].id == "entities"
     assert run.results[0].status == expected
+    assert fake.calls == [("listEntities", {})]
+
+
+def _console_answers(result: dict[str, object], rejection_ok: bool = True) -> dict[str, object]:
+    def answer(args: dict[str, object]) -> object:
+        command = str(args["command"])
+        if command == "GetAll ShooterPlayerState PlayerName":
+            return result
+        error = dict(ark_verify.CONSOLE_SAFETY_PROBES)[command]
+        if not rejection_ok:
+            return {"success": True, "rawResult": "", "errorMessage": None}
+        return {"success": False, "rawResult": "", "errorMessage": error}
+
+    return {"executeConsoleCommand": answer}
 
 
 @pytest.mark.parametrize(
-    ("result", "rejection_status", "expected"),
+    ("result", "rejection_ok", "expected"),
     [
-        ({"success": True, "rawResult": "", "errorMessage": None}, 400, "pass"),
-        ({"success": False, "rawResult": "", "errorMessage": "unhandled"}, 400, "fail"),
-        ({"success": True, "rawResult": None, "errorMessage": None}, 400, "fail"),
-        ({"success": True, "rawResult": "", "errorMessage": None}, 200, "fail"),
+        ({"success": True, "rawResult": "", "errorMessage": None}, True, "pass"),
+        ({"success": False, "rawResult": "", "errorMessage": "unhandled"}, True, "fail"),
+        ({"success": True, "rawResult": None, "errorMessage": None}, True, "fail"),
+        ({"success": True, "rawResult": "", "errorMessage": None}, False, "fail"),
     ],
 )
 def test_ark_console_requires_native_handled_result(
-    monkeypatch: pytest.MonkeyPatch, result: dict[str, object], rejection_status: int, expected: str
+    tmp_path: Path, result: dict[str, object], rejection_ok: bool, expected: str
 ) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: {"bootId": "same-boot"})
-
-    def reject(container: str, command: str) -> dict[str, object]:
-        assert container == "sidecar"
-        expected_error = dict(ark_verify.CONSOLE_SAFETY_PROBES)[command]
-        return {
-            "status": rejection_status,
-            "body": {"success": False, "rawResult": "", "errorMessage": expected_error},
-        }
-
-    monkeypatch.setattr(ark_verify, "_native_console_probe", reject)
-
-    class FakeTakaro:
-        async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
-            assert (name, args) == (
-                "executeConsoleCommand",
-                {"command": "GetAll ShooterPlayerState PlayerName"},
-            )
-            return result
-
-    class FakeRun:
-        container = SimpleNamespace(alive=lambda: True)
-
-        def __init__(self) -> None:
-            self.results: list[object] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "ark-console"
-
-        def record(self, check: object) -> None:
-            self.results.append(check)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
+    run = ProtocolRun(tmp_path, "ark-console")
+    asyncio.run(ark_verify.after_protocol(run, ScriptedTakaro(_console_answers(result, rejection_ok)), lambda: True))
     assert len(run.results) == 1
     assert run.results[0].id == "ark-console"
     assert run.results[0].status == expected
     assert len(run.results[0].detail["safetyProbes"]) == len(ark_verify.CONSOLE_SAFETY_PROBES)
 
 
-def test_native_console_safety_probe_reads_structured_http_400_without_token_in_argv(
-    monkeypatch: pytest.MonkeyPatch,
+def test_ark_console_safety_probe_fails_if_native_boot_changes(tmp_path: Path) -> None:
+    run = ProtocolRun(tmp_path, "ark-console")
+    answers = _console_answers({"success": True, "rawResult": "", "errorMessage": None})
+    rejection = answers["executeConsoleCommand"]
+
+    def changing(args: dict[str, object]) -> object:
+        run.write_status({"bootId": "different", "identified": True})
+        return rejection(args)  # type: ignore[operator]
+
+    asyncio.run(ark_verify.after_protocol(run, ScriptedTakaro({"executeConsoleCommand": changing}), lambda: True))
+    assert run.results[0].status == "fail"
+    assert any("native boot changed" in problem for problem in run.results[0].detail["problems"])
+
+
+@pytest.mark.parametrize(("ack", "expected"), [({}, "pass"), (None, "fail")])
+def test_empty_broadcast_requires_generic_ack(tmp_path: Path, ack: object, expected: str) -> None:
+    fake = ScriptedTakaro({"getPlayers": [], "sendMessage": ack})
+    run = ProtocolRun(tmp_path, "ark-empty-broadcast")
+    asyncio.run(ark_verify.after_protocol(run, fake, lambda: True))
+    assert len(run.results) == 1
+    assert run.results[0].status == expected
+
+
+def test_empty_broadcast_refuses_a_populated_roster(tmp_path: Path) -> None:
+    fake = ScriptedTakaro({"getPlayers": [{"gameId": "76561198000000001"}], "sendMessage": {}})
+    run = ProtocolRun(tmp_path, "ark-empty-broadcast")
+    asyncio.run(ark_verify.after_protocol(run, fake, lambda: True))
+    assert run.results[0].status == "fail"
+    assert not any(action == "sendMessage" for action, _ in fake.calls)
+
+
+@pytest.mark.parametrize(("answer", "expected"), [(None, "pass"), ({}, "fail")])
+def test_offline_targeted_message_must_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: object, expected: str
 ) -> None:
-    calls: list[list[str]] = []
-
-    def native_response(argv: list[str], **kwargs: object) -> SimpleNamespace:
-        del kwargs
-        calls.append(argv)
-        return SimpleNamespace(
-            returncode=0,
-            stdout=(
-                '{"status":400,"body":{"success":false,"rawResult":"",'
-                '"errorMessage":"Use the dedicated shutdown action"}}'
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(ark_verify.subprocess, "run", native_response)
-    monkeypatch.setattr(ark_verify, "docker_command", lambda: ["docker"])
-    result = ark_verify._native_console_probe("owned-sidecar", "DoExit")
-    assert result["status"] == 400
-    assert result["body"]["errorMessage"] == "Use the dedicated shutdown action"
-    assert calls[0][:4] == ["docker", "exec", "owned-sidecar", "node"]
-    assert calls[0][-1] == "DoExit"
-    assert "ARK_NATIVE_TOKEN" in calls[0][-2]
-    assert all("Bearer fixture-secret" not in part for part in calls[0])
-
-
-def test_native_message_probe_reads_real_status_without_token_in_argv(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def native_response(argv: list[str], **kwargs: object) -> SimpleNamespace:
-        del kwargs
-        calls.append(argv)
-        return SimpleNamespace(returncode=0, stdout='{"status":503,"body":{"error":"offline"}}', stderr="")
-
-    monkeypatch.setattr(ark_verify.subprocess, "run", native_response)
-    monkeypatch.setattr(ark_verify, "docker_command", lambda: ["docker"])
-    result = ark_verify._native_message_probe("owned-sidecar", "/players/76561198009999999/message", "fixture")
-    assert result == {"status": 503, "body": {"error": "offline"}}
-    assert calls[0][:4] == ["docker", "exec", "owned-sidecar", "node"]
-    assert calls[0][-2:] == ["/players/76561198009999999/message", "fixture"]
-    assert "process.env.ARK_NATIVE_TOKEN" in calls[0][-3]
-    assert all("fixture-secret" not in part for part in calls[0])
-
-
-@pytest.mark.parametrize("native_status", [200, 503])
-def test_empty_broadcast_requires_native_and_generic_ack(monkeypatch: pytest.MonkeyPatch, native_status: int) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        ark_verify,
-        "_native_message_probe",
-        lambda container, path, message: {"status": native_status, "body": {"success": native_status == 200}},
-    )
-
-    class FakeTakaro:
-        async def request(self, action: str, args: dict[str, object]) -> object:
-            if action == "getPlayers":
-                assert args == {}
-                return []
-            assert action == "sendMessage" and "empty broadcast" in str(args["message"])
-            return {}
-
-    class FakeRun:
-        options = SimpleNamespace(run_id="owned-empty")
-
-        def __init__(self) -> None:
-            self.results: list[CheckResult] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "ark-empty-broadcast"
-
-        def record(self, result: CheckResult) -> None:
-            self.results.append(result)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
+    fake = ScriptedTakaro({"getPlayers": [], "sendMessage": answer})
+    run = ProtocolRun(tmp_path, "ark-targeted-offline")
+    asyncio.run(ark_verify.after_protocol(run, fake, lambda: True))
     assert len(run.results) == 1
-    assert run.results[0].status == ("pass" if native_status == 200 else "fail")
-
-
-@pytest.mark.parametrize("native_status", [503, 200])
-def test_offline_targeted_message_must_still_fail(monkeypatch: pytest.MonkeyPatch, native_status: int) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        ark_verify,
-        "_native_message_probe",
-        lambda container, path, message: {
-            "status": native_status,
-            "body": {"error": "no native recipient or queue full"} if native_status == 503 else {"success": True},
-        },
-    )
-
-    class FakeRun:
-        def __init__(self) -> None:
-            self.results: list[CheckResult] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "ark-targeted-offline"
-
-        def record(self, result: CheckResult) -> None:
-            self.results.append(result)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, object(), lambda: True))
-    assert len(run.results) == 1
-    assert run.results[0].status == ("pass" if native_status == 503 else "fail")
+    assert run.results[0].status == expected
+    recipient = fake.calls[-1][1]["opts"]
+    assert recipient == {"recipient": {"gameId": ark_verify.OFFLINE_STEAM_ID}}
 
 
 def test_saveworld_requires_fresh_ordered_native_log_events() -> None:
@@ -921,8 +787,6 @@ def test_saveworld_requires_fresh_ordered_native_log_events() -> None:
 def test_saveworld_check_needs_handled_command_and_owned_file_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, handled: bool
 ) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-    monkeypatch.setattr(ark_verify, "_get_json", lambda *args, **kwargs: {"bootId": "same-boot"})
     original_events = ark_verify._fresh_saveworld_events
 
     async def fresh_events(fake: object, baseline: int) -> dict[str, str | None]:
@@ -933,115 +797,26 @@ def test_saveworld_check_needs_handled_command_and_owned_file_update(
     saved.parent.mkdir(parents=True)
     saved.write_bytes(b"old")
     os.utime(saved, ns=(1, 1))
-    log = tmp_path / "server.log"
-    log.write_text("booted\n")
+    fake = ScriptedTakaro()
+    fake.events = [
+        {"type": "log", "data": {"msg": "Saving world..."}},
+        {"type": "log", "data": {"msg": "World Save Complete. Took 0.1"}},
+    ]
 
-    class FakeTakaro:
-        def __init__(self) -> None:
-            self.events: list[dict[str, object]] = [
-                {"type": "log", "data": {"msg": "Saving world..."}},
-                {"type": "log", "data": {"msg": "World Save Complete. Took 0.1"}},
-            ]
+    def save(args: dict[str, object]) -> dict[str, object]:
+        assert args == {"command": "SaveWorld"}
+        if handled:
+            saved.write_bytes(b"new-world")
+            fake.events.extend(
+                [
+                    {"type": "log", "data": {"msg": "Saving world..."}},
+                    {"type": "log", "data": {"msg": "World Save Complete. Took 0.3"}},
+                ]
+            )
+        return {"success": handled, "rawResult": "", "errorMessage": None if handled else "unhandled"}
 
-        async def request(self, action: str, args: dict[str, object]) -> dict[str, object]:
-            assert (action, args) == ("executeConsoleCommand", {"command": "SaveWorld"})
-            if handled:
-                saved.write_bytes(b"new-world")
-                self.events.extend(
-                    [
-                        {"type": "log", "data": {"msg": "Saving world..."}},
-                        {"type": "log", "data": {"msg": "World Save Complete. Took 0.3"}},
-                    ]
-                )
-            return {"success": handled, "rawResult": "", "errorMessage": None if handled else "unhandled"}
-
-    class FakeRun:
-        container = SimpleNamespace(alive=lambda: True)
-        data_dir = tmp_path
-        server_log = log
-
-        def __init__(self) -> None:
-            self.results: list[CheckResult] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "ark-saveworld"
-
-        def record(self, result: CheckResult) -> None:
-            self.results.append(result)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
+    fake.answers["executeConsoleCommand"] = save
+    run = ProtocolRun(tmp_path, "ark-saveworld")
+    asyncio.run(ark_verify.after_protocol(run, fake, lambda: True))
     assert len(run.results) == 1
     assert run.results[0].status == ("pass" if handled else "fail"), run.results[0].detail
-
-
-def test_ark_console_safety_probe_fails_if_native_boot_changes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
-    health_calls = 0
-
-    def health(*args: object, **kwargs: object) -> dict[str, str]:
-        nonlocal health_calls
-        del args, kwargs
-        health_calls += 1
-        return {"bootId": "before" if health_calls == 1 else "different"}
-
-    monkeypatch.setattr(ark_verify, "_get_json", health)
-    monkeypatch.setattr(
-        ark_verify,
-        "_native_console_probe",
-        lambda container, command: {
-            "status": 400,
-            "body": {
-                "success": False,
-                "rawResult": "",
-                "errorMessage": dict(ark_verify.CONSOLE_SAFETY_PROBES)[command],
-            },
-        },
-    )
-
-    class FakeTakaro:
-        async def request(self, name: str, args: dict[str, object]) -> dict[str, object]:
-            del name, args
-            return {"success": True, "rawResult": "", "errorMessage": None}
-
-    class FakeRun:
-        container = SimpleNamespace(alive=lambda: True)
-
-        def __init__(self) -> None:
-            self.results: list[CheckResult] = []
-
-        def wanted(self, name: str) -> bool:
-            return name == "ark-console"
-
-        def record(self, result: CheckResult) -> None:
-            self.results.append(result)
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, FakeTakaro(), lambda: True))
-    assert run.results[0].status == "fail"
-    assert any("native boot changed" in problem for problem in run.results[0].detail["problems"])
-
-
-def test_ark_shutdown_only_selection_starts_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
-    started: list[bool] = []
-    monkeypatch.setattr(
-        ark_verify,
-        "start_sidecar",
-        lambda run, fake: started.append(True) or SimpleNamespace(name="sidecar"),
-    )
-
-    class FakeRun:
-        def wanted(self, name: str) -> bool:
-            return name == "native-shutdown"
-
-        def skip(self, name: str, reason: str) -> None:
-            del name, reason
-
-    asyncio.run(ark_verify.after_protocol(FakeRun(), object(), lambda: True))
-    assert started == [True]

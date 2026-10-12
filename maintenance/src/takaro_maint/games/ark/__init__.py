@@ -1,8 +1,7 @@
-"""Exactly pinned native ARK Linux server plus a Generic WebSocket sidecar."""
+"""Exactly pinned native ARK Linux server; the in-process plugin holds the Takaro WebSocket."""
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shutil
@@ -20,7 +19,7 @@ DIST_ROOT = "games/ark/_data/dist"
 BUILD_SCRIPT = "games/ark/scripts/build-release.sh"
 SERVER_BINARY = "ShooterGame/Binaries/Linux/ShooterGameServer"
 SERVER_ROOT = "/ark"
-FOLDERS = {"server-plugin": "TakaroArkNative", "sidecar": "TakaroArkSidecar"}
+FOLDERS = {"server-plugin": "TakaroArkNative"}
 _VERSION = re.compile(r"(?:ARK server version|ShooterGameServer Version)\s*[:=]\s*(?P<version>[0-9.]+)", re.I)
 
 
@@ -112,12 +111,13 @@ class ArkAdapter(BaseAdapter):
         return None
 
     def runtime_env(self, resolved: dict[str, Any], takaro: dict[str, str]) -> dict[str, str]:
-        # Derived separately for each ephemeral verification run. The release itself
-        # carries no registration token or native bearer secret.
-        token = hashlib.sha256(b"takaro-ark-native:" + takaro["TAKARO_REGISTRATION_TOKEN"].encode("utf-8")).hexdigest()
+        # The plugin connects to the run's (fake) Takaro itself. The release carries no
+        # registration token; each verification run passes its own.
         return {
             **{str(k): str(v) for k, v in resolved["runtime"]["container"].get("env", {}).items()},
-            "ARK_NATIVE_TOKEN": token,
+            **{key: value for key, value in takaro.items() if key.startswith("TAKARO_")},
+            "TAKARO_STATE_DIR": f"{SERVER_ROOT}/.takaro/ark-native",
+            "TAKARO_WIRE_DEBUG": "1",
         }
 
     def container_mounts(self, resolved: dict[str, Any], data_dir: Path) -> list[str]:
@@ -194,22 +194,12 @@ class ArkAdapter(BaseAdapter):
                     if relative != folder and not relative.startswith(folder + "/"):
                         raise ConflictError(f"{artifact.name} contains an entry outside {folder}/: {name}")
                     paths.safe_relative(relative, field="artifact zip entry")
-                required: tuple[str, ...]
-                if role == "server-plugin":
-                    required = (
-                        f"{folder}/libtakaro-ark-native.so",
-                        f"{folder}/launch.sh",
-                        f"{folder}/uninstall-manifest.json",
-                        f"{folder}/takaro-target.json",
-                    )
-                else:
-                    required = (
-                        f"{folder}/Dockerfile",
-                        f"{folder}/dist/index.js",
-                        f"{folder}/package-lock.json",
-                        f"{folder}/uninstall-manifest.json",
-                        f"{folder}/takaro-target.json",
-                    )
+                required = (
+                    f"{folder}/libtakaro-ark-native.so",
+                    f"{folder}/launch.sh",
+                    f"{folder}/uninstall-manifest.json",
+                    f"{folder}/takaro-target.json",
+                )
                 if any(name not in names for name in required):
                     raise ConflictError(f"{artifact.name} lacks required {role} files")
                 for member in archive.infolist():
@@ -220,8 +210,11 @@ class ArkAdapter(BaseAdapter):
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, destination.open("wb") as sink:
                         shutil.copyfileobj(source, sink)
-            if role == "server-plugin":
-                (stage / "launch.sh").chmod(0o755)  # allowlisted entrypoint only
+            (stage / "launch.sh").chmod(0o755)  # allowlisted entrypoint only
+            # The operator's takaro.cfg (registration token) survives every redeploy.
+            config = install_dir / folder / "takaro.cfg"
+            if config.is_file() and not (stage / "takaro.cfg").exists():
+                shutil.copy2(config, stage / "takaro.cfg")
             replace_directory(stage, install_dir / folder, subject=folder)
         finally:
             shutil.rmtree(stage, ignore_errors=True)

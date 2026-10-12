@@ -24,10 +24,7 @@
     "games/ark": {
       "release-type": "simple",
       "component": "ark",
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": [
-        { "type": "json", "path": "sidecar/package.json", "jsonpath": "$.version" }
-      ]
+      "changelog-path": "CHANGELOG.md"
     },
     "games/rust": {
       "release-type": "simple",

@@ -16,12 +16,12 @@ from takaro_maint.games.ark import verify as ark_verify
 @pytest.mark.parametrize(
     "preload_stdout,expected",
     [
-        ("native_listener=absent\nfixture_exit=0\n", "pass"),
+        ("native_state=absent\nfixture_exit=0\n", "pass"),
         ("fixture_exit=0\n", "fail"),
-        ("unexpected_native_listener\n", "fail"),
+        ("unexpected_native_state\n", "fail"),
     ],
 )
-def test_wrong_target_requires_both_launcher_refusal_and_no_native_listener(
+def test_wrong_target_requires_both_launcher_refusal_and_no_native_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     preload_stdout: str,
@@ -73,14 +73,14 @@ def test_wrong_target_requires_both_launcher_refusal_and_no_native_listener(
     assert fixture.results[0].status == expected
     assert calls[1][0:7] == ["docker", "run", "--rm", "--pull", "never", "--network", "none"]
     if expected == "pass":
-        assert "native_listener=absent" in (output / "negative-wrong-target-preload.log").read_text()
+        assert "native_state=absent" in (output / "negative-wrong-target-preload.log").read_text()
+    assert all(not key.startswith("TAKARO_") for key in calls[0][-1:])  # launcher argv carries no token
 
 
 @pytest.mark.parametrize(
     "role,folder,files",
     [
         ("server-plugin", "TakaroArkNative", ["libtakaro-ark-native.so", "launch.sh"]),
-        ("sidecar", "TakaroArkSidecar", ["Dockerfile", "dist/index.js", "package-lock.json"]),
     ],
 )
 def test_ark_release_artifact_deploy_contract(
@@ -98,3 +98,23 @@ def test_ark_release_artifact_deploy_contract(
     assert all((deployed / name).is_file() for name in files)
     if role == "server-plugin":
         assert (deployed / "launch.sh").stat().st_mode & 0o111
+
+
+def test_ark_redeploy_keeps_the_operator_config(tmp_path: Path) -> None:
+    folder = tmp_path / "server/TakaroArk/TakaroArkNative"
+    folder.mkdir(parents=True)
+    (folder / "takaro.cfg").write_text("TAKARO_REGISTRATION_TOKEN=operator\n", encoding="utf-8")
+    artifact = tmp_path / "native.zip"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        for name in ("libtakaro-ark-native.so", "launch.sh", "uninstall-manifest.json", "takaro-target.json"):
+            archive.writestr(f"TakaroArkNative/{name}", b"fixture")
+    GAME.after_deploy(tmp_path / "server", {"role": "server-plugin", "installDir": "TakaroArk"}, artifact)
+    assert (folder / "takaro.cfg").read_text() == "TAKARO_REGISTRATION_TOKEN=operator\n"
+
+
+def test_ark_sidecar_role_is_no_longer_deployable(tmp_path: Path) -> None:
+    artifact = tmp_path / "sidecar.zip"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr("TakaroArkSidecar/dist/index.js", b"fixture")
+    with pytest.raises(Exception, match="unexpected ARK component role"):
+        GAME.after_deploy(tmp_path / "server", {"role": "sidecar", "installDir": "TakaroArk"}, artifact)

@@ -168,27 +168,13 @@ def test_readonly_container_mounts_never_expose_existing_base_writable(tmp_path:
 def test_readonly_health_rejects_executable_resolving_to_preserved_base(
     monkeypatch: pytest.MonkeyPatch, actual_exe: str, expected: str
 ) -> None:
-    monkeypatch.setattr(ark_verify, "start_sidecar", lambda run, fake: SimpleNamespace(name="sidecar"))
+    async def healthy(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        return {"connectable": True, "reason": "Native capabilities: chat=starting, sendMessage=starting"}
 
-    async def healthy(*args: object) -> dict[str, object]:
-        del args
-        return {
-            "status": "ok",
-            "build": "21241282",
-            "bootId": "fresh",
-            "capabilities": {
-                "chat": "starting",
-                "sendMessage": "starting",
-                "roster": "ok",
-                "items": "ok",
-                "entities": "ok",
-            },
-        }
-
+    monkeypatch.setattr(ark_verify, "_wait_native_protocol_ready", healthy)
     monkeypatch.setattr(
-        ark_verify,
-        "_wait_native_protocol_ready",
-        healthy,
+        ark_verify, "read_status", lambda run: {"bootId": "fresh", "gameReady": True, "identified": True}
     )
     monkeypatch.setattr(
         ark_verify.subprocess,
@@ -215,8 +201,13 @@ def test_readonly_health_rejects_executable_resolving_to_preserved_base(
         def skip(self, name: str, reason: str) -> None:
             del name, reason
 
+    class IdentifiedTakaro:
+        async def wait_for_identify(self, timeout: float, *, minimum: int = 1) -> dict[str, object]:
+            del timeout, minimum
+            return {}
+
     run = FakeRun()
-    asyncio.run(ark_verify.after_protocol(run, object(), lambda: True))
+    asyncio.run(ark_verify.after_protocol(run, IdentifiedTakaro(), lambda: True))
     assert run.results[0].status == expected
 
 

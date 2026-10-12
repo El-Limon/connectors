@@ -9,7 +9,6 @@ plugin="$plugin_dir/libtakaro-ark-native.so"
 expected='@EXPECTED_SHA256@'
 test -f "$plugin" || { echo 'ARK native plugin missing' >&2; exit 7; }
 test -x "$exe" || { echo 'ARK dedicated server executable missing' >&2; exit 7; }
-test -n "${ARK_NATIVE_TOKEN:-}" || { echo 'ARK_NATIVE_TOKEN is required' >&2; exit 7; }
 actual=$(sha256sum "$exe")
 actual=${actual%% *}
 test "$actual" = "$expected" || { echo 'Unknown ARK executable; native connector refused' >&2; exit 7; }
