@@ -8,6 +8,7 @@
 #include "death_bindings.hpp"
 #include "entity_bindings.hpp"
 #include "weapon_bindings.hpp"
+#include "net_bindings.hpp"
 #include "engine_exec_capture.hpp"
 #include "general_console_bindings.hpp"
 #include "config_file.hpp"
@@ -372,6 +373,31 @@ void chat_hook(void* controller, const FString* message, uint8_t flag) {
   }
 }
 
+// Game thread only: the live connection's address and ping. Each failed step
+// is reported once per boot so a layout mismatch is visible without spamming.
+struct NetworkSample { std::optional<std::string> ip; std::optional<int32_t> ping; };
+NetworkSample sample_network(void* controller) {
+  ark_net::Api api{};
+  api.game_thread_tid = g_game_thread_tid.load(std::memory_order_acquire);
+  NetworkSample sample;
+  const char* ip_step = "";
+  const char* ping_step = "";
+  sample.ip = ark_net::remote_ip(controller, api, &ip_step);
+  sample.ping = ark_net::ping_ms(controller, api, &ping_step);
+  static bool ip_reported = false, ping_reported = false;
+  if (!ip_reported) {
+    ip_reported = true;
+    enqueue(sample.ip ? "native-player-ip-verified"
+                      : (std::string("native-player-ip-unverified step=") + ip_step).c_str());
+  }
+  if (!ping_reported) {
+    ping_reported = true;
+    enqueue(sample.ping ? "native-player-ping-verified"
+                        : (std::string("native-player-ping-unverified step=") + ping_step).c_str());
+  }
+  return sample;
+}
+
 void postlogin_hook(void* game_mode, void* controller) {
   g_original_postlogin(game_mode, controller);
   if (!controller || !g_hooks_ready.load(std::memory_order_acquire) ||
@@ -385,7 +411,12 @@ void postlogin_hook(void* game_mode, void* controller) {
   { std::lock_guard<std::mutex> lock(g_latest_id_mutex); g_latest_id = id; }
   g_latest_controller.store(controller, std::memory_order_release);
   capture_world(controller);
-  if (g_gate) g_gate->record_login(id, name);
+  if (g_gate) {
+    const NetworkSample network = sample_network(controller);
+    // No round trip is measured yet at PostLogin: 0 there means "unknown".
+    const auto ping = network.ping && *network.ping > 0 ? network.ping : std::nullopt;
+    g_gate->record_login(id, name, network.ip.value_or(std::string{}), ping);
+  }
   enqueue("native-postlogin-player-registered");
 }
 
@@ -611,8 +642,17 @@ void tick_hook(void* loop) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_position_sample) {
       next_position_sample = now + std::chrono::milliseconds(250);
+      // Ping changes slowly: refresh it (and the address) every 2 s, inside
+      // the same pass that already resolved the live controller.
+      static auto next_network_sample = std::chrono::steady_clock::time_point{};
+      const bool network_due = now >= next_network_sample;
+      if (network_due) next_network_sample = now + std::chrono::seconds(2);
       for (const std::string& id : g_gate->player_ids()) {
         void* controller = resolve_live_controller(id);
+        if (controller && network_due) {
+          const NetworkSample network = sample_network(controller);
+          g_gate->record_network(id, network.ip, network.ping);
+        }
         void* pawn = controller
             ? *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(controller) + 0x490) : nullptr;
         if (reinterpret_cast<uintptr_t>(pawn) >= 0x10000 &&

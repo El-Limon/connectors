@@ -61,6 +61,8 @@ inline bool valid_item_code(const std::string& code) {
 struct Player {
   std::string id;
   std::string name;
+  std::string ip;              // remote address of the live connection, empty when unverified
+  std::optional<int32_t> ping; // milliseconds, absent until the game thread measured it
 };
 
 struct Position {
@@ -104,6 +106,8 @@ struct Event {
   std::string entity_code;
   std::string entity_name;
   std::string weapon; // entity-killed: held weapon display name, empty when unarmed or unverified
+  std::string ip;              // player-connected: the connection's verified remote address
+  std::optional<int32_t> ping; // player-connected: milliseconds, when already measured
   std::string timestamp;
   // Actual game-thread position captured at the event, retained exactly as
   // long as this bounded event remains replayable.
@@ -202,7 +206,9 @@ class Server {
     event.message = message;
     event.timestamp = utc_now();
     std::lock_guard<std::mutex> lock(mutex_);
-    players_[id] = Player{id, event.name};
+    auto& player = players_[id];
+    player.id = id;
+    player.name = event.name;  // keep the sampled ip/ping of an online player
     event.seq = ++sequence_;
     events_.push_back(std::move(event));
     while (events_.size() > 4096) events_.pop_front();
@@ -290,7 +296,8 @@ class Server {
                                       actor_index, actor_serial};
   }
 
-  void record_login(const std::string& id, const std::string& name) {
+  void record_login(const std::string& id, const std::string& name, const std::string& ip = {},
+                    std::optional<int32_t> ping = std::nullopt) {
     if (id.empty()) return;
     std::lock_guard<std::mutex> lock(mutex_);
     departed_positions_.erase(id);
@@ -298,10 +305,12 @@ class Server {
     death_event_seq_.erase(id);
     const std::string display = name.empty() ? id : name;
     if (players_.find(id) != players_.end()) return;
-    players_[id] = Player{id, display};
+    players_[id] = Player{id, display, ip, ping};
     Event event{};
     event.id = id;
     event.name = display;
+    event.ip = ip;
+    event.ping = ping;
     event.type = "player-connected";
     event.timestamp = utc_now();
     event.seq = ++sequence_;
@@ -385,6 +394,17 @@ class Server {
           death_event_seq_.erase(active);
       }
     }
+  }
+
+  // Game-thread sample of the live connection. An unverified read keeps the
+  // previous verified value rather than inventing or erasing one.
+  void record_network(const std::string& id, const std::optional<std::string>& ip,
+                      std::optional<int32_t> ping) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = players_.find(id);
+    if (it == players_.end()) return;
+    if (ip && !ip->empty()) it->second.ip = *ip;
+    if (ping && *ping >= 0) it->second.ping = ping;
   }
 
   void clear_position(const std::string& id) {

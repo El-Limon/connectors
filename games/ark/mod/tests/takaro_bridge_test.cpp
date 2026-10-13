@@ -326,6 +326,18 @@ void test_identify_and_wire() {
   CHECK(nested && nested->get("payload")->get("steamId")->as_string() == kId);
   auto prefixed = takaro.request("gp-prefix", "getPlayer", json::obj({{"platformId", json::str("steam:" + kId)}}));
   CHECK(prefixed && prefixed->get("payload")->get("platformId")->as_string() == "steam:" + kId);
+  // ip/ping: absent until the game thread verified them, never placeholders.
+  CHECK(flat && !flat->get("payload")->get("ip") && !flat->get("payload")->get("ping"));
+  gate.record_network(kId, std::string("192.0.2.10"), 48);
+  gate.record_network(kId, std::nullopt, std::nullopt);  // a failed sample keeps the verified values
+  gate.record_chat(kId, "Limon", "keeps network");       // chat refreshes the name only
+  auto measured = takaro.request("gp-net", "getPlayer", json::obj({{"gameId", json::str(kId)}}));
+  CHECK(measured && measured->get("payload")->get("ip")->as_string() == "192.0.2.10" &&
+        measured->get("payload")->get("ping")->as_number() == 48);
+  auto listed = takaro.request("gps-net", "getPlayers", json::Value::object());
+  CHECK(listed && listed->get("payload")->as_array().size() == 1 &&
+        listed->get("payload")->as_array()[0].get("ip")->as_string() == "192.0.2.10" &&
+        listed->get("payload")->as_array()[0].get("ping")->as_number() == 48);
 
   // getPlayer for an offline player: a real IGamePlayer, never null.
   gate.record_logout(kId);
@@ -700,12 +712,14 @@ void test_protocol_v1() {
   auto noid = takaro.request("v1-noid", "getPlayer", json::Value::object(), 2000ms);
   CHECK(noid && noid->get("error")->get("code")->as_string() == "invalid_args");
   // Events carry the boot stream and native seq; only eventAck advances the cursor.
-  gate.record_login(kId, "Limon");
+  gate.record_login(kId, "Limon", "198.51.100.7", 35);
   auto connected = takaro.wait_for([](const json::Value& m) {
     return is_type(m, "gameEvent") && m.get("payload")->get("type")->as_string() == "player-connected";
   });
   CHECK(connected && connected->get("payload")->get("streamId")->as_string() == "boot-v1" &&
         connected->get("payload")->get("seq")->as_number() == 1);
+  CHECK(connected && connected->get("payload")->get("data")->get("player")->get("ip")->as_string() == "198.51.100.7" &&
+        connected->get("payload")->get("data")->get("player")->get("ping")->as_number() == 35);
   std::this_thread::sleep_for(1500ms);
   CHECK(bridge.persisted_cursor() == 0);
   takaro.acks = true;

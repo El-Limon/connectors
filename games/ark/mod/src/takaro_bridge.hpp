@@ -127,7 +127,9 @@ inline std::optional<json::Value> map_event(const gate::Event& e, KnownPlayers& 
       e.type != "player-death" && e.type != "entity-killed")
     return std::nullopt;
   if (!valid_steam64(e.id)) return std::nullopt;
-  data.set("player", player_json(e.id, name_of(e.id, e.name)));
+  data.set("player", e.type == "player-connected"
+                        ? player_json(e.id, name_of(e.id, e.name), e.ip, e.ping)
+                        : player_json(e.id, name_of(e.id, e.name)));
   if (e.type == "chat-message") {
     data.set("msg", json::str(e.message));
     data.set("channel", json::str("global"));

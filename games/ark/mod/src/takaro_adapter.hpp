@@ -169,9 +169,14 @@ inline bool no_options(const json::Value& args) {
   return true;
 }
 
-inline json::Value player_json(const std::string& id, const std::string& name) {
-  return json::obj({{"gameId", json::str(id)}, {"name", json::str(name.empty() ? id : name)},
-                    {"steamId", json::str(id)}, {"platformId", json::str("steam:" + id)}});
+inline json::Value player_json(const std::string& id, const std::string& name,
+                               const std::string& ip = {}, std::optional<int32_t> ping = std::nullopt) {
+  json::Value out = json::obj({{"gameId", json::str(id)}, {"name", json::str(name.empty() ? id : name)},
+                               {"steamId", json::str(id)}, {"platformId", json::str("steam:" + id)}});
+  // Only a live connection's verified values; never a placeholder.
+  if (!ip.empty()) out.set("ip", json::str(ip));
+  if (ping && *ping >= 0) out.set("ping", json::num(*ping));
+  return out;
 }
 
 // ---- bans ----
@@ -355,7 +360,7 @@ class Adapter {
       json::Value out = json::Value::array();
       for (const auto& p : gate_.players()) {
         known_.remember(p.id, p.name);
-        out.push(player_json(p.id, p.name));
+        out.push(player_json(p.id, p.name, p.ip, p.ping));
       }
       return out;
     }
@@ -363,7 +368,7 @@ class Adapter {
       // Takaro calls getPlayer for offline players too and rejects null, {}
       // and error frames alike: always answer with a real IGamePlayer.
       const std::string id = player_id(args);
-      if (auto online = gate_.player(id)) return player_json(id, online->name);
+      if (auto online = gate_.player(id)) return player_json(id, online->name, online->ip, online->ping);
       return player_json(id, known_.name(id));
     }
     if (action == "getPlayerLocation") {
