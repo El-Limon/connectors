@@ -156,6 +156,27 @@ state is `_data/dragonwilds-dev-state`. It refuses to deploy while the legacy si
 still exists. Never use `_data/dragonwilds-plugin`: a server outside this repository mounts it.
 Never test against a server anyone plays on: several cells (ban, shutdown, restart) are destructive.
 
+## Map image (operator upload)
+
+The server ships no map art: its cook strips texture pixels, so `T_WorldMap*` exist only as
+metadata. A map can still be derived from the server's own collision and given to Takaro as an
+operator upload (`PUT /gameserver/{id}/map/{dimension}/upload`, which cuts the tile pyramid):
+
+1. Stop the server and add to `RSDragonwilds/Saved/Config/LinuxServer/Engine.ini` (back it up first):
+   `[SystemSettings]` / `wp.Runtime.EnableServerStreaming=0`. The cvar is read-only at runtime;
+   without it the server only loads World Partition cells near players. Start it (about 6.5 GB RAM
+   instead of 1 GB once every cell is in).
+2. With `TAKARO_PLUGIN_DEBUG=1`, `POST /debug/map/survey {"step":150,"minX":-20000,"maxX":600000,
+   "minY":-160000,"maxY":480000,"zTop":200000,"zBottom":-100000,"perJob":2048}` traces the world
+   from above (no bounds: the union of loaded landscape proxies, which also covers far-away
+   interior sub-levels). Poll `GET /debug/map/survey`. Build 25808123: 4134x4267 samples, about
+   135 s of game-thread time spread over about 9 minutes; each job holds the game thread for one
+   chunk of a row, so expect hitches while a player is online.
+3. `scripts/render-map.py <serverdir>/takaro/map out.png --sea-level -3400` (numpy + Pillow)
+   writes the PNG and `out.settings.json` with the axes (x right, y down: north up, matching the
+   in-game map) and the bounds in raw Unreal units, which is what Takaro positions use.
+4. Upload both as `image` and `settings`, then restore `Engine.ini` and restart.
+
 ## Gotchas
 
 - `LD_PRELOAD` goes on the **game binary only** — SteamCMD is 32-bit and fails with it set. Patch
