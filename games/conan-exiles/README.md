@@ -73,6 +73,25 @@ Leave `identityToken` empty; the connector fills in a unique one. Never change i
 - If it is not connected, the console shows a `****` block naming the problem and the file. Fix the
   file and save it; the connector reconnects within a few seconds, no restart needed.
 
+### 7. Map (optional)
+
+On a Takaro with the protocol 1 game map, its map shows your players on a grid out of the box. The server files contain no map picture
+and this connector ships none, so for the in-game map as background upload it once in Takaro:
+open the game server's map, pick **The Exiled Lands** (or **Isle of Siptah**) and upload the image.
+Do not enter any bounds; the connector already gives Takaro the exact ones.
+
+Which image: the game's own full-screen map texture from a Conan Exiles **client** install, exported
+as PNG or JPEG with an Unreal asset viewer such as FModel:
+
+| Map | Texture (client paks) |
+|---|---|
+| The Exiled Lands | `ConanSandbox/Content/UI/Textures/GUIs/Map/T_FullscreenMap` (4000 × 4000) |
+| Isle of Siptah | `ConanSandbox/Content/DLC/DLC_Siptah/UI/Map/T_Map_Siptah` |
+
+Upload the whole texture: no cropping, rotating or added borders. Takaro stretches the image over the
+map's bounds with the top-left pixel at the top-left (north-west) corner, so a smaller copy of the
+same full image works too.
+
 Upgrading, rollback and removal: [INSTALL.md](INSTALL.md).
 
 ## What works, what doesn't
@@ -92,7 +111,7 @@ Windows 2026-10-09).
 | Give an item | ✅ | ✅ | Weapons and tools arrive at full durability. |
 | Item catalogue | ✅ | ✅ | 7521 items with in-game names. |
 | Entity catalogue | ⚠️ | ⚠️ | In-game names; the client shows none to compare with. |
-| Locations / points of interest | N/A | N/A | Takaro never asks for this list. |
+| Locations / points of interest | ⚠️ | ⚠️ | 255 named places of the Exiled Lands, offered for Takaro's map markers; Takaro has not asked for them in a test yet. |
 | Run a console command | ✅ | ✅ | Unknown commands fail while a player is online (with nobody online the engine console gives no answer, and the result says so); `exit`/`quit` are refused. |
 | Broadcast a message | ✅ | ✅ | |
 | Whisper a player | ✅ | ✅ | |
@@ -108,8 +127,7 @@ Windows 2026-10-09).
 | Player death event | ⚠️ | ⚠️ | With position; a PvP killer is not yet verified. |
 | Entity kill event | ✅ | ✅ | Creature name and weapon. |
 | Log events | ✅ | ✅ | |
-| Map info | N/A | N/A | Takaro has no map info for Generic game servers. |
-| Map tiles | N/A | N/A | Takaro has no map tiles for Generic game servers. |
+| World map with player positions | ✅ | ⚠️ | Exiled Lands; the background needs the one-time upload in step 7. Windows and Isle of Siptah not yet verified. |
 | Modules: chat commands | ✅ | ✅ | |
 | Modules: hooks | ✅ | ✅ | |
 | Modules: cronjobs | ✅ | ✅ | |
