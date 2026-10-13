@@ -147,6 +147,14 @@ struct PendingKick {
   std::chrono::steady_clock::time_point started;
 };
 std::vector<PendingKick> g_pending_kicks; // only touched on the verified game thread
+struct PendingGive {
+  std::shared_ptr<gate::Action> action;
+  int64_t prior = 0;
+  int64_t delivered = 0;
+  int rounds = 0;
+  std::chrono::steady_clock::time_point started;
+};
+std::vector<PendingGive> g_pending_gives; // only touched on the verified game thread
 struct PendingBan {
   std::shared_ptr<gate::Action> action;
   ark_moderation::BanStatus native_result;
@@ -786,6 +794,38 @@ void tick_hook(void* loop) {
         it = g_pending_kicks.erase(it);
       } else ++it;
     }
+    for (auto it = g_pending_gives.begin(); it != g_pending_gives.end();) {
+      // One further grant per tick: a second grant within the same tick adds nothing.
+      auto& give = *it;
+      void* controller = resolve_live_controller(give.action->player_id);
+      void* pawn = controller
+          ? *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(controller) + 0x490) : nullptr;
+      bool finished = true, ok = false;
+      const bool expired = std::chrono::steady_clock::now() - give.started > std::chrono::milliseconds(3000);
+      if (controller && pawn && !expired && give.rounds < 64) {
+        ark_actions::Api api{};
+        api.game_thread_tid = tid;
+        const auto granted = ark_actions::dispatch_give_item(controller, pawn, give.action->item_code,
+            static_cast<int32_t>(give.action->amount - give.delivered), give.action->quality,
+            give.action->blueprint, api);
+        std::vector<ark_inventory::Item> after;
+        const bool after_ok = ark_inventory::snapshot(controller, after) == ark_inventory::Status::ok;
+        const auto step = ark_actions::give_step(give.action->amount, give.prior, give.delivered, granted,
+            after_ok ? std::optional<int64_t>(inventory_quantity(after, give.action->item_code))
+                     : std::nullopt);
+        if (after_ok) publish_inventory(give.action->player_id, std::move(after));
+        else g_gate->clear_inventory(give.action->player_id);
+        ++give.rounds;
+        give.delivered = step.delivered;
+        ok = step.state == ark_actions::GiveState::done;
+        finished = step.state != ark_actions::GiveState::more;
+      }
+      if (finished) {
+        gate::Server::complete(give.action, ok);
+        enqueue(ok ? "native-give-item-quantity-verified-multi-stack" : "native-give-item-unverified-or-rejected");
+        it = g_pending_gives.erase(it);
+      } else ++it;
+    }
     for (auto it = g_pending_bans.begin(); it != g_pending_bans.end();) {
       const auto checked_at = std::chrono::steady_clock::now();
       if (checked_at < it->next_check) { ++it; continue; }
@@ -948,24 +988,24 @@ void tick_hook(void* loop) {
               std::vector<ark_inventory::Item> before, after;
               if (ark_inventory::snapshot(controller, before) == ark_inventory::Status::ok) {
                 const int64_t prior = inventory_quantity(before, action->item_code);
-                bool after_ok = false;
-                const auto rounds = ark_actions::give_in_rounds(action->amount, prior,
-                    [&](int32_t remaining) {
-                      return ark_actions::dispatch_give_item(controller, pawn, action->item_code,
-                          remaining, action->quality, action->blueprint, api);
-                    },
-                    [&]() -> std::optional<int64_t> {
-                      after.clear();
-                      after_ok = ark_inventory::snapshot(controller, after) == ark_inventory::Status::ok;
-                      if (!after_ok) return std::nullopt;
-                      return inventory_quantity(after, action->item_code);
-                    });
-                success = rounds.dispatched && rounds.delivered == action->amount;
+                const auto granted = ark_actions::dispatch_give_item(controller, pawn,
+                    action->item_code, action->amount, action->quality, action->blueprint, api);
+                const bool after_ok = ark_inventory::snapshot(controller, after) == ark_inventory::Status::ok;
+                const auto step = ark_actions::give_step(action->amount, prior, 0, granted,
+                    after_ok ? std::optional<int64_t>(inventory_quantity(after, action->item_code))
+                             : std::nullopt);
                 if (after_ok) publish_inventory(action->player_id, std::move(after));
                 else g_gate->clear_inventory(action->player_id);
-                enqueue(success ? (rounds.rounds > 1 ? "native-give-item-quantity-verified-multi-stack"
-                                                     : "native-give-item-quantity-verified")
-                                : "native-give-item-unverified-or-rejected");
+                success = step.state == ark_actions::GiveState::done;
+                if (step.state == ark_actions::GiveState::more && g_pending_gives.size() < 64) {
+                  // The rest of the amount is granted on the following ticks.
+                  g_pending_gives.push_back({action, prior, step.delivered, 1,
+                                             std::chrono::steady_clock::now()});
+                  pending = true;
+                  enqueue("native-give-item-partial-stack-continuing");
+                } else {
+                  enqueue(success ? "native-give-item-quantity-verified" : "native-give-item-unverified-or-rejected");
+                }
               } else { g_gate->clear_inventory(action->player_id); enqueue("native-give-item-preinventory-unavailable"); }
             } else if (action->kind == gate::Action::Kind::teleport) {
               const ark_actions::FVector target{action->x, action->y, action->z};

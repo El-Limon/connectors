@@ -104,28 +104,22 @@ inline Result give_item(void* controller, void* pawn, std::string_view code,
 }
 
 // ARK's give path grants at most one full stack per call (Advanced Rifle
-// Bullet: 100), so a larger amount arrives partially. Deliver the remainder in
-// bounded rounds, reading the actual quantity back after every round; stop as
-// soon as a round makes no progress. Success only when exactly `amount` more
-// items are present. `dispatch(remaining)` grants, `read()` returns the current
-// same-class quantity (nullopt when the snapshot fails).
-struct RoundsOutcome { bool dispatched = false; int64_t delivered = 0; int rounds = 0; };
-inline RoundsOutcome give_in_rounds(int64_t amount, int64_t prior,
-    const std::function<std::optional<bool>(int32_t)>& dispatch,
-    const std::function<std::optional<int64_t>()>& read, int max_rounds = 64) {
-  RoundsOutcome out;
-  if (amount < 1 || amount > 10000 || prior < 0 || !dispatch || !read) return out;
-  while (out.rounds < max_rounds && out.delivered < amount) {
-    ++out.rounds;
-    const std::optional<bool> granted = dispatch(static_cast<int32_t>(amount - out.delivered));
-    if (!granted || !*granted) break;
-    out.dispatched = true;
-    const std::optional<int64_t> current = read();
-    if (!current || *current < prior) break;
-    const int64_t delivered = *current - prior;
-    if (delivered <= out.delivered) break; // no progress: never loop on a refusing game
-    out.delivered = delivered;
-  }
+// Bullet: 100), and a second grant in the same game tick adds nothing (seen
+// live on build 21241282). The caller therefore delivers one round per tick:
+// grant the remainder, read the actual quantity back, and feed both into
+// give_step. Success only when exactly `amount` more items are present; a
+// round without progress, a refused grant or a failed read-back ends it.
+enum class GiveState { done, more, failed };
+struct GiveProgress { GiveState state = GiveState::failed; int64_t delivered = 0; };
+inline GiveProgress give_step(int64_t amount, int64_t prior, int64_t delivered_before,
+                              std::optional<bool> granted, std::optional<int64_t> current) {
+  GiveProgress out{GiveState::failed, delivered_before};
+  if (amount < 1 || amount > 10000 || prior < 0 || !granted || !*granted || !current ||
+      *current < prior) return out;
+  const int64_t delivered = *current - prior;
+  if (delivered <= delivered_before || delivered > amount) return out;
+  out.delivered = delivered;
+  out.state = delivered == amount ? GiveState::done : GiveState::more;
   return out;
 }
 
