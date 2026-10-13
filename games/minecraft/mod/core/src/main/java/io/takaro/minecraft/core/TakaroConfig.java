@@ -20,6 +20,7 @@ public class TakaroConfig {
     private volatile double backoffMultiplier = 1.5;
     private volatile boolean debugEnabled = false;
     private volatile String targetPolicy = "enforce";
+    private volatile boolean mapEnabled = false;
 
     public String getWsUrl() { return wsUrl; }
     public void setWsUrl(String wsUrl) { this.wsUrl = wsUrl; }
@@ -49,6 +50,13 @@ public class TakaroConfig {
     public String getTargetPolicy() { return targetPolicy; }
     public void setTargetPolicy(String targetPolicy) { this.targetPolicy = targetPolicy; }
 
+    /**
+     * Serve the world map. The map needs Takaro protocol v1, so this also offers v1 when
+     * identifying; Takaro picks it when it speaks it.
+     */
+    public boolean isMapEnabled() { return mapEnabled; }
+    public void setMapEnabled(boolean mapEnabled) { this.mapEnabled = mapEnabled; }
+
     public void applyEnvOverrides() {
         applyEnvOverrides(System::getenv);
     }
@@ -75,6 +83,10 @@ public class TakaroConfig {
         if (debugEnv != null && !debugEnv.isEmpty()) {
             this.debugEnabled = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         }
+        String mapEnv = env.apply("TAKARO_MAP");
+        if (mapEnv != null && !mapEnv.isEmpty()) {
+            this.mapEnabled = "true".equalsIgnoreCase(mapEnv) || "1".equals(mapEnv);
+        }
     }
 
     /** True when switching from this config to {@code other} needs a new connection. */
@@ -83,7 +95,8 @@ public class TakaroConfig {
                 && Objects.equals(identityToken, other.identityToken)
                 && Objects.equals(registrationToken, other.registrationToken)
                 && Objects.equals(targetPolicy, other.targetPolicy)
-                && reconnectEnabled == other.reconnectEnabled;
+                && reconnectEnabled == other.reconnectEnabled
+                && mapEnabled == other.mapEnabled;
     }
 
     public boolean sameSettings(TakaroConfig other) {
@@ -104,5 +117,6 @@ public class TakaroConfig {
         backoffMultiplier = other.backoffMultiplier;
         debugEnabled = other.debugEnabled;
         targetPolicy = other.targetPolicy;
+        mapEnabled = other.mapEnabled;
     }
 }

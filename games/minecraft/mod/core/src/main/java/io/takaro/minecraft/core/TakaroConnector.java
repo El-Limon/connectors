@@ -1,11 +1,14 @@
 package io.takaro.minecraft.core;
 
 import io.takaro.minecraft.core.config.ConfigFile;
+import io.takaro.minecraft.core.map.RegionRenderer;
+import io.takaro.minecraft.core.map.WorldMap;
 import io.takaro.minecraft.core.target.RuntimeIdentity;
 import io.takaro.minecraft.core.target.TargetGuard;
 import io.takaro.minecraft.core.target.TargetInfo;
 
 import java.net.URI;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -14,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 public class TakaroConnector {
 
     static final long CONFIG_POLL_SECONDS = 5;
+    static final long MAP_REFRESH_SECONDS = 300;
     private static final String BANNER_RULE =
             "*************************************************************************";
 
@@ -28,6 +32,10 @@ public class TakaroConnector {
     private TakaroWebSocketClient wsClient;
     private ScheduledExecutorService watcher;
     private boolean stopped;
+    // Both outlive a reconnect: the event stream must keep its id and sequence, and the map its caches.
+    private final EventOutbox outbox = new EventOutbox();
+    private WorldMap worldMap;
+    private boolean mapUnavailableLogged;
 
     public TakaroConnector(GameAdapter adapter, TakaroConfig config) {
         this(adapter, config, TargetInfo.load());
@@ -69,6 +77,8 @@ public class TakaroConnector {
             });
             watcher.scheduleWithFixedDelay(this::checkConfig,
                     CONFIG_POLL_SECONDS, CONFIG_POLL_SECONDS, TimeUnit.SECONDS);
+            watcher.scheduleWithFixedDelay(this::refreshMap,
+                    MAP_REFRESH_SECONDS, MAP_REFRESH_SECONDS, TimeUnit.SECONDS);
         }
     }
 
@@ -78,6 +88,39 @@ public class TakaroConnector {
                 connectLocked();
             }
         }
+    }
+
+    /** Re-declares the map when exploring the world grew it past its current frame. */
+    void refreshMap() {
+        try {
+            synchronized (lock) {
+                if (worldMap != null && worldMap.refreshFrames() && wsClient != null) {
+                    adapter.logInfo("The world map grew; declaring the new map bounds to Takaro");
+                    wsClient.sendCapabilities();
+                }
+            }
+        } catch (Throwable t) {
+            adapter.logWarning("Refreshing the world map failed: " + t);
+        }
+    }
+
+    /** The map when it is switched on and this platform can draw one, built once per process. */
+    private WorldMap mapLocked() {
+        if (!config.isMapEnabled()) return null;
+        if (worldMap == null) {
+            List<WorldMap.Dimension> dimensions = adapter.mapDimensions();
+            RegionRenderer.BlockColors colors = adapter.mapColors();
+            if (dimensions.isEmpty() || colors == null) {
+                if (!mapUnavailableLogged) {
+                    adapter.logWarning("map is switched on, but this platform cannot draw one; continuing without a map");
+                    mapUnavailableLogged = true;
+                }
+                return null;
+            }
+            worldMap = new WorldMap(dimensions, colors, adapter::logInfo);
+            worldMap.warm();
+        }
+        return worldMap;
     }
 
     /** One watcher tick: re-read the file and apply what changed. */
@@ -170,7 +213,7 @@ public class TakaroConnector {
             // still identifying with the old settings.
             TakaroConfig settings = new TakaroConfig();
             settings.copyFrom(config);
-            wsClient = new TakaroWebSocketClient(new URI(url), adapter, settings, configPath());
+            wsClient = new TakaroWebSocketClient(new URI(url), adapter, settings, configPath(), outbox, mapLocked());
             adapter.setEventEmitter(wsClient);
             wsClient.connect();
         } catch (Exception e) {
@@ -198,6 +241,10 @@ public class TakaroConnector {
             if (wsClient != null) {
                 adapter.logInfo("Shutting down Takaro connection");
                 closeClientLocked();
+            }
+            if (worldMap != null) {
+                worldMap.close();
+                worldMap = null;
             }
         }
     }

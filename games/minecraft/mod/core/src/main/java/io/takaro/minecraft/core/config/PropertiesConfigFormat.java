@@ -32,6 +32,7 @@ public final class PropertiesConfigFormat implements ConfigFormat {
         config.setMaxReconnectDelay(Long.parseLong(props.getProperty("takaro.reconnect.max_delay", "300000").trim()));
         config.setBackoffMultiplier(Double.parseDouble(props.getProperty("takaro.reconnect.backoff_multiplier", "1.5").trim()));
         config.setDebugEnabled(Boolean.parseBoolean(props.getProperty("takaro.debug", "false").trim()));
+        config.setMapEnabled(Boolean.parseBoolean(props.getProperty("takaro.map", "false").trim()));
         return config;
     }
 

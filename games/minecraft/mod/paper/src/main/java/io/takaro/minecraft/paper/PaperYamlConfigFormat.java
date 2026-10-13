@@ -29,6 +29,7 @@ final class PaperYamlConfigFormat implements ConfigFormat {
         config.setMaxReconnectDelay(yaml.getLong("takaro.reconnect.max_delay", 300000));
         config.setBackoffMultiplier(yaml.getDouble("takaro.reconnect.backoff_multiplier", 1.5));
         config.setDebugEnabled(yaml.getBoolean("takaro.debug", false));
+        config.setMapEnabled(yaml.getBoolean("takaro.map", false));
         return config;
     }
 
