@@ -187,7 +187,8 @@ class Run:
                     self.reject_first = None
                     index = self.peer.connections.get(timeout=10)
                     continue
-                self.peer.send(index, {'type': 'identifyResponse', 'payload': {}})
+                self.peer.send(index, {'type': 'identifyResponse',
+                                       'payload': getattr(self, 'identify_reply', {})})
                 return index
 
     def request(self, ident, action, args=None, index=None):

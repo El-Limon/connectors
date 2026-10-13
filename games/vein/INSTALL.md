@@ -58,6 +58,37 @@ On the first native start after a sidecar upgrade, the connector imports legacy 
 
 An interrupted ban or unban can leave `ban-intent.json` with the intended canonical ban state, including expiry and reason, while the game and plugin ban files disagree. The connector keeps that intent, reports `banRecoveryPending=true` and degraded health when it cannot prove the result. Inspect the current game ban, plugin `bans.json`, timed metadata and journal, then retry the **intended canonical ban or unban** through Takaro after resolving any ambiguity. Do not delete the journal to silence the warning, and do not copy an old ban file over current state.
 
+## World map
+
+The connector speaks Takaro's Generic Game Protocol version 1 and declares the map area as one
+Dimension, **Champlain Valley**, with no picture of its own (`source: none`). The dedicated
+server's files hold no map image (the server build strips the pixels of every texture), and the
+connector does not ship the game's art. Player dots land in the right place on the grid as soon as
+the server connects. For a picture behind them, upload one image once in the Takaro dashboard
+(game server → Map → Upload). Takaro keeps it across restarts and connector updates.
+
+Which image works: the game's own in-game map, **uncropped and unrotated**. It is the texture
+`Vein/Content/Vein/UI/Map/T_ChamplainValley_Oct30_2026` in the game client
+(`Vein/Content/Paks/pakchunk200-Windows.pak`, 4096 x 4096). Export it to PNG with an Unreal asset
+viewer such as FModel from your own copy of the game, and upload it without changing it.
+
+Framing, if you make or crop your own image:
+
+- The image is a square that covers exactly 12 km x 12 km (1,200,000 x 1,200,000 Unreal units),
+  centred on the world origin. The origin lies in Dannemora.
+- North is up and east is right. Top-left is the north-west corner: world X = 600,000 (north),
+  world Y = -600,000 (west). Bottom-right is X = -600,000, Y = 600,000.
+- Takaro stretches the image over these bounds, so any square size works up to 8192 px.
+
+When you upload, leave the bounds empty: the connector already declared them. These numbers come
+from the game's own map widget (`UZoomUserWidget::ConvertMapLocationToWorldSpace` and the level's
+`MapMakerMarker`, `OrthoWidth` 1,200,000). A future VEIN map update can change them; check the
+bounds the connector declares (`GET /gameserver/{id}/capabilities`) against the new map.
+
+On an older Takaro that only speaks protocol version 0, the connector falls back to version 0. It
+then reports `getMapInfo` with `enabled: false`, and an operator upload is again the only
+picture. `TAKARO_PROTOCOL=0` forces version 0.
+
 ## Rollback
 
 For a planned rollback, stop admissions and drain the **current** native outbox first. Require `queues.outbox`, `queues.actions`, `queues.runningActions`, `queues.inbound` and `queues.outbound` to be zero, `outboxDurabilityPending=false`, `banRecoveryPending=false`, no active persistence error, and no unresolved `ban-intent.json` before restoring the legacy connector. The old sidecar cannot interpret a native ban intent. Save a copy of current state and record any undelivered entries.
