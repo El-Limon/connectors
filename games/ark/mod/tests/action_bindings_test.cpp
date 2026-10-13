@@ -88,7 +88,10 @@ int main() {
     // No progress, refusal, failed read-back, over-delivery and bad input fail closed.
     st = give_step(250, 10, 100, true, std::optional<int64_t>(110));
     assert(st.state == GiveState::failed && st.delivered == 100);
-    assert(give_step(5, 0, 0, false, std::optional<int64_t>(5)).state == GiveState::failed);
+    // A partial grant reports false but the read-back shows progress: continue.
+    st = give_step(250, 0, 0, false, std::optional<int64_t>(100));
+    assert(st.state == GiveState::more && st.delivered == 100);
+    assert(give_step(5, 0, 0, false, std::optional<int64_t>(0)).state == GiveState::failed);
     assert(give_step(5, 0, 0, std::nullopt, std::optional<int64_t>(5)).state == GiveState::failed);
     assert(give_step(5, 0, 0, true, std::nullopt).state == GiveState::failed);
     assert(give_step(5, 0, 0, true, std::optional<int64_t>(6)).state == GiveState::failed);

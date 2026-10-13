@@ -114,7 +114,9 @@ struct GiveProgress { GiveState state = GiveState::failed; int64_t delivered = 0
 inline GiveProgress give_step(int64_t amount, int64_t prior, int64_t delivered_before,
                               std::optional<bool> granted, std::optional<int64_t> current) {
   GiveProgress out{GiveState::failed, delivered_before};
-  if (amount < 1 || amount > 10000 || prior < 0 || !granted || !*granted || !current ||
+  // The engine's bool is false when it could not grant the whole amount (a
+  // partial stack), so the read-back decides; nullopt is an invalid dispatch.
+  if (amount < 1 || amount > 10000 || prior < 0 || !granted.has_value() || !current ||
       *current < prior) return out;
   const int64_t delivered = *current - prior;
   if (delivered <= delivered_before || delivered > amount) return out;
