@@ -175,13 +175,13 @@ implemented or not supported.
 | Shop & economy | ✅ | Currency, buying a listing and delivering it into the player's inventory. |
 | Discord chat bridge | ✅ | Both ways: game chat appears in Discord, Discord messages appear in game. |
 | Oxide / uMod | ⚠️ | Written against the Oxide plugin API, but only Carbon has been run. |
-| Map info | ❌ | The plugin does not implement it. |
-| Map tiles | ❌ | Not supported by Takaro for Generic-connector servers. |
+| Map info | ✅ | Reports the world size so Takaro and the player map can draw it. |
+| Map tiles | ✅ | The server draws the game's own world map once per world and serves it as map tiles. |
 
 ### Known issues
 
-- **No map.** Takaro's API does not support map tiles for Generic-connector servers, and the plugin
-  does not answer map-info requests either.
+- **The first start on a new map pauses the server for a few seconds** while it draws the world map
+  (about 4 s for a 1000 m map, longer for big maps). Later starts reuse the saved drawing.
 - **Item quality is not reported.** Inventory entries always come back with an empty quality field.
 - **Unknown console commands look successful.** Rust gives no error for a command it does not know.
 - **Releases 0.0.4 to 0.1.0 made every ban permanent.** Update to get working timed bans.
