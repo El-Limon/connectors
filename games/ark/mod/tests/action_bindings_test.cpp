@@ -75,4 +75,37 @@ int main() {
   assert(teleport_player(controller, pawn, destination, no_rotation) == Result::invalid);
   *reinterpret_cast<void**>(controller + 0x490) = nullptr;
   assert(teleport_player(controller, pawn, destination, api) == Result::invalid);
+
+  // Amounts above one stack arrive in rounds; each round is read back.
+  {
+    int64_t have = 10;
+    int calls = 0;
+    auto read = [&]() -> std::optional<int64_t> { return have; };
+    auto stacked = [&](int32_t remaining) -> std::optional<bool> {  // grants at most 100 per call
+      ++calls; have += remaining > 100 ? 100 : remaining; return true;
+    };
+    auto r = give_in_rounds(250, 10, stacked, read);
+    assert(r.dispatched && r.delivered == 250 && r.rounds == 3 && calls == 3 && have == 260);
+    calls = 0; have = 10;
+    r = give_in_rounds(5, 10, stacked, read);
+    assert(r.delivered == 5 && r.rounds == 1);
+    // A game that stops granting is not retried forever and never reports the full amount.
+    have = 10; calls = 0;
+    auto stuck = [&](int32_t) -> std::optional<bool> { ++calls; if (calls == 1) have += 100; return true; };
+    r = give_in_rounds(200, 10, stuck, read);
+    assert(r.delivered == 100 && r.rounds == 2 && calls == 2);
+    // Refusal, failed read-back and invalid amounts deliver nothing.
+    auto refuse = [&](int32_t) -> std::optional<bool> { return false; };
+    assert(!give_in_rounds(5, 10, refuse, read).dispatched);
+    auto blind = []() -> std::optional<int64_t> { return std::nullopt; };
+    r = give_in_rounds(5, 10, stacked, blind);
+    assert(r.dispatched && r.delivered == 0);
+    assert(give_in_rounds(0, 10, stacked, read).rounds == 0);
+    assert(give_in_rounds(10001, 10, stacked, read).rounds == 0);
+    // Bounded rounds even for a large amount of a stack-of-1 item.
+    have = 0;
+    auto single = [&](int32_t) -> std::optional<bool> { have += 1; return true; };
+    r = give_in_rounds(1000, 0, single, read);
+    assert(r.rounds == 64 && r.delivered == 64);
+  }
 }

@@ -948,16 +948,24 @@ void tick_hook(void* loop) {
               std::vector<ark_inventory::Item> before, after;
               if (ark_inventory::snapshot(controller, before) == ark_inventory::Status::ok) {
                 const int64_t prior = inventory_quantity(before, action->item_code);
-                const auto dispatched = ark_actions::dispatch_give_item(controller, pawn,
-                    action->item_code, action->amount, action->quality, action->blueprint, api);
-                const bool after_ok = ark_inventory::snapshot(controller, after) == ark_inventory::Status::ok;
-                if (after_ok) {
-                  const int64_t current = inventory_quantity(after, action->item_code);
-                  success = dispatched && *dispatched && prior >= 0 && current >= prior &&
-                      current - prior == action->amount;
-                  publish_inventory(action->player_id, std::move(after));
-                } else g_gate->clear_inventory(action->player_id);
-                enqueue(success ? "native-give-item-quantity-verified" : "native-give-item-unverified-or-rejected");
+                bool after_ok = false;
+                const auto rounds = ark_actions::give_in_rounds(action->amount, prior,
+                    [&](int32_t remaining) {
+                      return ark_actions::dispatch_give_item(controller, pawn, action->item_code,
+                          remaining, action->quality, action->blueprint, api);
+                    },
+                    [&]() -> std::optional<int64_t> {
+                      after.clear();
+                      after_ok = ark_inventory::snapshot(controller, after) == ark_inventory::Status::ok;
+                      if (!after_ok) return std::nullopt;
+                      return inventory_quantity(after, action->item_code);
+                    });
+                success = rounds.dispatched && rounds.delivered == action->amount;
+                if (after_ok) publish_inventory(action->player_id, std::move(after));
+                else g_gate->clear_inventory(action->player_id);
+                enqueue(success ? (rounds.rounds > 1 ? "native-give-item-quantity-verified-multi-stack"
+                                                     : "native-give-item-quantity-verified")
+                                : "native-give-item-unverified-or-rejected");
               } else { g_gate->clear_inventory(action->player_id); enqueue("native-give-item-preinventory-unavailable"); }
             } else if (action->kind == gate::Action::Kind::teleport) {
               const ark_actions::FVector target{action->x, action->y, action->z};
