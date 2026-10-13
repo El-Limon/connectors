@@ -53,6 +53,12 @@ logExcludePatterns=takaro-rest executed:,RestManager:
 commandAllowlistExact=help,/help
 commandAllowlistPrefixes=say,time
 enableShutdown=false
+
+# The world map: the plugin renders the loaded world into mapDir (<TShock folder>/takaro) and
+# the bridge shows it on Takaro's map. protocolVersion=1 speaks Takaro protocol 1 when Takaro
+# offers it (the map, events resent after a reconnect); 0 stays on version 0. Restart to apply.
+mapDir=tshock/takaro
+protocolVersion=1
 `;
 }
 

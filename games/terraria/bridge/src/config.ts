@@ -20,6 +20,10 @@ export interface BridgeConfig {
   commandAllowlistExact: string[];
   commandAllowlistPrefixes: string[];
   enableShutdown: boolean;
+  /** Where the plugin writes the rendered world map (map.json + image). */
+  mapDir: string;
+  /** 1 offers protocol version 1 (map, acknowledged events) with 0 as fallback; 0 stays on version 0. */
+  protocolVersion: 0 | 1;
 }
 
 export function parseKeyValues(raw: string): Record<string, string> {
@@ -38,6 +42,7 @@ export function parseKeyValues(raw: string): Record<string, string> {
 const DEFAULTS = {
   takaroWsUrl: 'wss://connect.takaro.io/',
   tshockBaseUrl: 'http://127.0.0.1:7878',
+  mapDir: 'tshock/takaro',
 };
 
 /** The name a server without `serverName` registers as: unique per identity, so two never clash. */
@@ -73,6 +78,8 @@ export function buildConfig(values: Record<string, string>, env: NodeJS.ProcessE
     commandAllowlistExact: parseCsv(values.commandAllowlistExact),
     commandAllowlistPrefixes: parseCsv(values.commandAllowlistPrefixes),
     enableShutdown: parseBoolean(values.enableShutdown, false),
+    mapDir: values.mapDir || DEFAULTS.mapDir,
+    protocolVersion: values.protocolVersion?.trim() === '0' ? 0 : 1,
   };
 }
 
