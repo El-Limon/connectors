@@ -21,6 +21,7 @@ public class TakaroConfig {
     private volatile long maxReconnectDelay = 300000;
     private volatile double backoffMultiplier = 1.5;
     private volatile boolean debugEnabled = false;
+    private volatile boolean protocolV1Enabled = true;
 
     public String getWsUrl() { return wsUrl; }
     public void setWsUrl(String wsUrl) { this.wsUrl = wsUrl; }
@@ -54,6 +55,13 @@ public class TakaroConfig {
     public boolean isDebugEnabled() { return debugEnabled; }
     public void setDebugEnabled(boolean debugEnabled) { this.debugEnabled = debugEnabled; }
 
+    /**
+     * Whether identify offers protocol version 1 next to 0 ({@code protocol=0} in the config
+     * file or {@code TAKARO_PROTOCOL=0} turns it off, which also turns off the map).
+     */
+    public boolean isProtocolV1Enabled() { return protocolV1Enabled; }
+    public void setProtocolV1Enabled(boolean protocolV1Enabled) { this.protocolV1Enabled = protocolV1Enabled; }
+
     public static boolean isSet(String value) {
         return value != null && !value.isEmpty();
     }
@@ -74,6 +82,7 @@ public class TakaroConfig {
         this.serverChatName = other.serverChatName;
         this.configFileHint = other.configFileHint;
         this.debugEnabled = other.debugEnabled;
+        this.protocolV1Enabled = other.protocolV1Enabled;
     }
 
     public void applyEnvOverrides() {
@@ -97,6 +106,10 @@ public class TakaroConfig {
         String chatNameEnv = env.get("TAKARO_SERVER_CHAT_NAME");
         if (isSet(chatNameEnv)) {
             serverChatName = chatNameEnv;
+        }
+        String protocolEnv = env.get("TAKARO_PROTOCOL");
+        if (isSet(protocolEnv)) {
+            this.protocolV1Enabled = !"0".equals(protocolEnv.trim());
         }
         String debugEnv = env.get("TAKARO_DEBUG");
         if (isSet(debugEnv)) {

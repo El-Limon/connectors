@@ -96,7 +96,13 @@ debugCatalog=false
 
 Every key can also be given as an environment variable, which wins over the file and is never
 written into it: `TAKARO_WS_URL`, `TAKARO_REGISTRATION_TOKEN`, `TAKARO_IDENTITY_TOKEN`,
-`TAKARO_SERVER_CHAT_NAME`, `TAKARO_DEBUG`, `TAKARO_LOG_EVENTS`, `TAKARO_DEBUG_CATALOG`.
+`TAKARO_SERVER_CHAT_NAME`, `TAKARO_DEBUG`, `TAKARO_LOG_EVENTS`, `TAKARO_DEBUG_CATALOG`,
+`TAKARO_PROTOCOL`.
+
+The connector speaks Takaro's Generic Game Protocol version 1 when Takaro offers it (it falls
+back to version 0 on an older Takaro). Version 1 gives the map below and resends events that
+happened while the connection was down. `protocol=0` in `TakaroConfig.txt` (or
+`TAKARO_PROTOCOL=0`) turns version 1 off, and with it the map.
 
 ### 6. Check that it worked
 
@@ -168,8 +174,7 @@ timed-ban expiry, shutdown and the zombie-kill event.
 | Player death event | ✅ | Includes the position where the player died. |
 | Entity kill event | ✅ | Proven with a real zombie kill; the weapon used is included. A bare-handed kill reports no weapon. Rate-limited to about 20 per second so a horde cannot flood Takaro. |
 | Log events | ⚠️ | Server log lines are forwarded, but **off by default** — set `logEvents=true` (or `TAKARO_LOG_EVENTS=true`) to turn them on. |
-| Map info | ❌ | Not implemented by this connector. |
-| Map tiles | ❌ | Not supported by Takaro for this connector type. |
+| Map | ⚠️ | Takaro shows your server's own world map (the picture the in-game map draws, read from the game install) with player dots. Ground floor only; areas added by map mods show as grey. |
 | Discord chat bridge | ⚠️ | Not verified in a live test. The underlying chat in both directions works, so it is expected to, but it was not proven. |
 | Shop & economy | ⚠️ | Not verified in a live test. The pieces it needs — item catalogue, give an item, player inventory — are all proven, but the shop itself was not exercised. |
 
@@ -182,8 +187,9 @@ timed-ban expiry, shutdown and the zombie-kill event.
   Takaro setting, so it is left unset by default.
 - **No named locations.** Build 42 simply does not keep a registry of named places, so Takaro
   can only ever see safehouses players have claimed.
-- **No map.** Takaro's API does not support map tiles for Generic-connector servers; nothing on
-  the game server side changes that.
+- **One map, one floor.** The map is the vanilla Knox County picture that ships with the game,
+  built once when the server starts (about 20 seconds, cached in `Takaro/map/`). Basements and
+  upper floors are not separate maps, and map mods that add new areas are not drawn.
 - **A teleport takes a few seconds to show up.** The move happens immediately in game, but the
   position Takaro reads back can lag by roughly 15 seconds.
 - **The connector must be attached before the server starts.** It hooks game classes as the JVM
