@@ -22,12 +22,8 @@
   "build": {"system": "script", "projectDir": "games/ark"},
   "componentRoles": {
     "server-plugin": {
-      "description": "Exact-hash native Linux LD_PRELOAD connector for ShooterGameServer",
+      "description": "Exact-hash native Linux LD_PRELOAD connector for ShooterGameServer; holds the Takaro WebSocket itself",
       "artifactPattern": "takaro-ark-native-{target}-{version}.zip"
-    },
-    "sidecar": {
-      "description": "Node.js Generic WebSocket sidecar for the native connector",
-      "artifactPattern": "takaro-ark-sidecar-{target}-{version}.zip"
     }
   },
   "legacyAssetAliases": {},
