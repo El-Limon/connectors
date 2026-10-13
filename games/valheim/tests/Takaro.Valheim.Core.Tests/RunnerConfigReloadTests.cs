@@ -300,7 +300,7 @@ public sealed class RunnerConfigReloadTests
         public Task<TakaroActionResult> ListEntitiesAsync(CancellationToken cancellationToken = default) => Unused();
         public Task<TakaroActionResult> ListLocationsAsync(CancellationToken cancellationToken = default) => Unused();
         public Task<TakaroActionResult> GetMapInfoAsync(CancellationToken cancellationToken = default) => Unused();
-        public Task<TakaroActionResult> GetMapTileAsync(CancellationToken cancellationToken = default) => Unused();
+        public Task<TakaroActionResult> GetMapTileAsync(int x, int y, int z, CancellationToken cancellationToken = default) => Unused();
         public Task<TakaroActionResult> TeleportPlayerAsync(string identifier, TakaroPosition position, CancellationToken cancellationToken = default) => Unused();
         public Task<TakaroActionResult> KickPlayerAsync(string identifier, string? reason, CancellationToken cancellationToken = default) => Unused();
         public Task<TakaroActionResult> BanPlayerAsync(string identifier, string? reason, CancellationToken cancellationToken = default) => Unused();

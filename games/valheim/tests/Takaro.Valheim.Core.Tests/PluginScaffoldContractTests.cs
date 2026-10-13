@@ -290,11 +290,29 @@ public sealed class PluginScaffoldContractTests
 
         StringAssert.Contains(realAdapter, "private readonly ValheimPlayerResolver playerResolver;");
         StringAssert.Contains(realAdapter, "ValheimPlayerResolver playerResolver,");
-        StringAssert.Contains(realAdapter, "CompanionInventoryCache companionInventory)");
+        StringAssert.Contains(realAdapter, "CompanionInventoryCache companionInventory,");
+        StringAssert.Contains(realAdapter, "WorldMapService worldMap)");
         StringAssert.Contains(realAdapter, "this.playerResolver = playerResolver");
         StringAssert.Contains(realAdapter, "chatSenderName = config.ChatSenderName;");
         Assert.IsFalse(realAdapter.Contains("CompanionServerBridge", StringComparison.Ordinal));
         Assert.IsFalse(realAdapter.Contains("TrySendItemGrant", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void WorldGeneratorIsOnlySampledByTheMainThreadWorldMapBuilder()
+    {
+        // WorldGenerator keeps unsynchronised caches. Map requests run off the main thread,
+        // so the adapter may only read the published raster, never the generator itself.
+        var adapter = ReadPluginSource("ValheimServerAdapter.cs");
+        var worldMap = ReadPluginSource("ValheimWorldMap.cs");
+        var plugin = ReadPluginSource("ValheimTakaroPlugin.cs");
+        var update = SliceMethod(plugin, "private void Update()", "private void OnDestroy()");
+
+        Assert.IsFalse(adapter.Contains("WorldGenerator", StringComparison.Ordinal));
+        StringAssert.Contains(adapter, "worldMap.GetMapTile(x, y, z)");
+        StringAssert.Contains(worldMap, "WorldGenerator.instance");
+        StringAssert.Contains(worldMap, "builder.Step(() => frame.Elapsed.TotalMilliseconds < FrameBudgetMilliseconds)");
+        StringAssert.Contains(update, "worldMap?.Update();");
     }
 
     [TestMethod]

@@ -25,6 +25,7 @@ public sealed class ValheimTakaroPlugin : BaseUnityPlugin
     private readonly object configCheckGate = new();
     private InventoryCompanionBridge? inventoryCompanion;
     private CompanionInventoryCache? companionInventory;
+    private ValheimWorldMap? worldMap;
     private QueuedMainThreadActionScheduler? mainThreadActions;
     private Harmony? harmony;
     private bool shutdownRequested;
@@ -64,7 +65,9 @@ public sealed class ValheimTakaroPlugin : BaseUnityPlugin
 
         var playerResolver = new ValheimPlayerResolver(Logger, knownPlayerNames);
         companionInventory = new CompanionInventoryCache();
-        var adapter = new ValheimServerAdapter(Logger, config, RequestShutdown, playerResolver, companionInventory);
+        var worldMapService = new WorldMapService();
+        worldMap = new ValheimWorldMap(worldMapService, Paths.CachePath, message => Logger.LogInfo(message));
+        var adapter = new ValheimServerAdapter(Logger, config, RequestShutdown, playerResolver, companionInventory, worldMapService);
         runner = new TakaroWebSocketRunner(
             config,
             adapter,
@@ -88,6 +91,7 @@ public sealed class ValheimTakaroPlugin : BaseUnityPlugin
     {
         ValheimServerAdapter.RefreshReadiness();
         mainThreadActions?.Drain();
+        worldMap?.Update();
         ValheimServerEventBridge.Update();
         inventoryCompanion?.Update();
 
