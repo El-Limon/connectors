@@ -1,0 +1,34 @@
+---
+name: takaro-dev-ark
+
+# One service: the native plugin inside the ARK process holds the Takaro
+# WebSocket itself (outbound only). No sidecar, no loopback API.
+services:
+  ark:
+    image: "${ARK_IMAGE:-target-not-resolved}"
+    container_name: takaro-dev-ark
+    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
+    working_dir: /ark/ShooterGame/Binaries/Linux
+    command:
+      - /ark/TakaroArk/TakaroArkNative/launch.sh
+      - /ark
+      - TheIsland?listen?SessionName=Takaro-ARK?Port=7787?QueryPort=27025
+      - -server
+      - -log
+      - -NoBattlEye
+    environment:
+      HOME: /ark/.takaro/home
+      TAKARO_REGISTRATION_TOKEN: "${TAKARO_REGISTRATION_TOKEN:?set TAKARO_REGISTRATION_TOKEN in dev-servers/.env}"
+      TAKARO_IDENTITY_TOKEN: "${TAKARO_IDENTITY_ARK:-takaro-dev-ark}"
+      TAKARO_WS_URL: "${TAKARO_WS_URL:-wss://connect.takaro.io/}"
+      TAKARO_STATE_DIR: /ark/.takaro/ark-native
+    ports:
+      - "7787:7787/udp"
+      - "7788:7788/udp"
+      - "27025:27025/udp"
+    volumes:
+      - ../_data/ark/server:/ark
+    # ARK's normal shutdown aborts (exit 134); as PID 1 that would become 139.
+    init: true
+    stop_grace_period: 120s
+    restart: unless-stopped

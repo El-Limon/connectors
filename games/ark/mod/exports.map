@@ -1,0 +1,8 @@
+/* The only symbol libtakaro-ark-native.so exports: the Steam callback interposer.
+   Everything else (our code, static OpenSSL, libstdc++ templates) stays local so it
+   can never interpose on or be interposed by the game's own exported OpenSSL/UE4 symbols. */
+{
+    global:
+        SteamGameServer_RunCallbacks;
+    local: *;
+};

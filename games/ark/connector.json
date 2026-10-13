@@ -1,0 +1,19 @@
+{
+  "name": "ARK: Survival Evolved",
+  "tagline": "Exact-build native Linux connector for ARK dedicated servers; the plugin connects to Takaro itself.",
+  "assetMode": "all",
+  "requirements": [
+    "ARK Linux dedicated server build 21241282 with the cataloged executable SHA-256",
+    "Takaro registration token",
+    "Control of the server launch command (LD_PRELOAD through the shipped launch.sh)"
+  ],
+  "assets": [
+    {
+      "pattern": "takaro-ark-native-*.zip",
+      "label": "Native server plugin",
+      "requires": "ARK Linux dedicated server build 21241282",
+      "hint": "Unzip into <ark install>/TakaroArk, set TAKARO_REGISTRATION_TOKEN in TakaroArkNative/takaro.cfg and start the server through TakaroArkNative/launch.sh.",
+      "required": true
+    }
+  ]
+}

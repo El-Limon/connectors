@@ -21,6 +21,11 @@
     { "type": "ci", "section": "Continuous Integration", "hidden": false }
   ],
   "packages": {
+    "games/ark": {
+      "release-type": "simple",
+      "component": "ark",
+      "changelog-path": "CHANGELOG.md"
+    },
     "games/rust": {
       "release-type": "simple",
       "component": "rust",

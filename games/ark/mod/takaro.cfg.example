@@ -1,0 +1,23 @@
+# Takaro ARK native connector settings. Copy to takaro.cfg in this folder.
+# KEY=VALUE per line; a non-empty environment variable with the same name wins.
+
+# Required: the registration token of your Takaro domain (Game servers -> Add -> Generic).
+TAKARO_REGISTRATION_TOKEN=
+
+# Optional. Empty: generated once and kept in the state directory.
+# TAKARO_IDENTITY_TOKEN=
+
+# Optional. Empty: "ARK (<first characters of the identity>)". Unique per Takaro domain.
+# TAKARO_SERVER_NAME=
+
+# Optional. Default wss://connect.takaro.io/
+# TAKARO_WS_URL=wss://connect.takaro.io/
+
+# Optional. Default <ark install>/.takaro/ark-native (identity, ban metadata, event cursor, status.json).
+# TAKARO_STATE_DIR=
+
+# Optional trusted CA bundle; the system bundle is used by default.
+# TAKARO_CA_FILE=
+
+# Optional: 1 logs every Takaro frame (tokens redacted) to the server's stderr.
+# TAKARO_WIRE_DEBUG=0
