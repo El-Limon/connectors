@@ -3,7 +3,7 @@
 A server-side plugin for the **Linux** ARK: Survival Evolved dedicated server. It connects to Takaro by itself;
 there is no sidecar and players install nothing.
 
-## What works
+## What works, what doesn't
 
 Proven live on staging Takaro with a real client on the pinned build (see the acceptance ledger in the PR).
 

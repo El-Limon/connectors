@@ -70,7 +70,7 @@ EOF
 cat > "$stage/TakaroArkNative/uninstall-manifest.json" <<EOF
 {"ownedPaths":["TakaroArk/TakaroArkNative"],"preservePaths":["ShooterGame/Saved",".takaro","TakaroArk/TakaroArkNative/takaro.cfg"]}
 EOF
-for role in Native; do
+role=Native
   folder="TakaroArk${role}"
   ARK_STAGE_FOLDER="$stage/$folder" ARK_CONNECTOR_VERSION="$version" \
   ARK_SOURCE_REVISION="${TAKARO_SOURCE_REVISION:-$(git -C "$repo_root" rev-parse HEAD)}" \
@@ -84,9 +84,8 @@ record={'target':os.environ['ARK_TARGET'],'fingerprint':os.environ['ARK_FINGERPR
         'platform':'linux','revision':os.environ['ARK_REVISION']}
 (folder/'takaro-target.json').write_text(json.dumps(record,sort_keys=True)+'\n')
 PY
-done
 
-for spec in "Native:${ARK_ARTIFACT_SERVER_PLUGIN}"; do
+spec="Native:${ARK_ARTIFACT_SERVER_PLUGIN}"
   role="${spec%%:*}"
   name="${spec#*:}"
   name="${name/\{version\}/$version}"
@@ -116,4 +115,3 @@ Path(os.environ['ARK_META_PATH']).write_text(json.dumps({
   'game':'ark','platform':'linux','revision':os.environ['ARK_REVISION']},sort_keys=True)+'\n')
 PY
   sha256sum "$out_dir/$name"
-done
