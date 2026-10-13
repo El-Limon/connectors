@@ -27,6 +27,8 @@ import { PresencePoller } from './dune/presence.js';
 import { DuneRmq, type AmqpConnection, type AmqpConnector } from './dune/rmq.js';
 import { HealthServer, type AdminRoute } from './healthServer.js';
 import { logger } from './logger.js';
+import { MAP_DIMENSIONS } from './dune/mapDimensions.js';
+import { buildManifest } from './takaro/capabilities.js';
 import { TakaroWsClient } from './takaro/client.js';
 import { resolveConfigFile, TakaroSettingsSource } from './takaro/settings.js';
 import type { WsMessage } from './takaro/protocol.js';
@@ -79,7 +81,11 @@ async function main(): Promise<void> {
   const takaro = new TakaroWsClient(
     initial.wsUrl,
     { identityToken: initial.identityToken, registrationToken: initial.registrationToken, serverName: initial.serverName },
-    { baseReconnectMs: config.reconnectBaseMs, maxReconnectMs: config.reconnectMaxMs },
+    {
+      baseReconnectMs: config.reconnectBaseMs,
+      maxReconnectMs: config.reconnectMaxMs,
+      ...(config.takaroProtocol === 1 ? { manifest: () => buildManifest(MAP_DIMENSIONS) } : {}),
+    },
   );
   takaro.setConfigHint(configHint());
 

@@ -121,6 +121,28 @@ Dune's shutdown command displays a countdown but does not stop the map process. 
 `DUNE_SHUTDOWN_CMD` to an operator-owned stop script if Takaro should complete shutdowns. Without
 the hook, the connector reports shutdown as unavailable.
 
+### Map in Takaro
+
+The sidecar declares the Hagga Basin map to Takaro: map id `survival_1`, `x` to the right, `y`
+down, and the playable square from -457200 to 355600 on both axes (Unreal centimetres). It reads
+these numbers from the server's own level data. The dedicated server contains no map image, so you
+upload one yourself: open the game server in the Takaro dashboard, go to the map, and upload the
+image for **Hagga Basin**. Takaro uses the calibration from the connector and does not ask for one.
+
+The image must be square and show exactly the playable square:
+
+- the top-left pixel is the north-west corner (`x = -457200`, `y = -457200`);
+- the bottom-right pixel is the south-east corner (`x = 355600`, `y = 355600`).
+
+The game's own minimap texture `T_Survival_WorldMap_MiniMap_D` (4096 x 4096) has exactly this
+frame. Export it as PNG from your own game client install (`DuneSandbox/Content/Paks`, for example
+with FModel) and upload it unchanged. A screenshot of the in-game map works too, if you crop it to
+the same square. Do not share the exported image: it is Funcom's artwork.
+
+Players on other maps (Deep Desert, social hubs) carry their own map id, for example
+`deepdesert_1`, so they never show up on the Hagga Basin image. Those maps are not declared yet.
+The map needs Takaro protocol version 1. Set `TAKARO_PROTOCOL=0` in `.env` to stay on version 0.
+
 ### Upgrade
 
 Unpack the new sidecar archive somewhere else, replace only the `sidecar` folder with it, then
@@ -155,7 +177,7 @@ the `.so` with one for the same server build, and start it again.
 | Player death events | ✅ | Includes environment, fall, and NPC causes. |
 | Entity kill events | ✅ | Plugin reports entity and weapon display name. |
 | Log events | ⚠️ | Secrets are redacted; at most 50 lines per 30 s are forwarded; Takaro does not retain logs. |
-| Map information and tiles | ❌ | Generic Takaro servers do not support them. |
+| Map | ⚠️ | Hagga Basin, calibrated by the connector; you upload the image (see Map in Takaro). |
 | Module chat commands | ✅ | Commands run and answer in game chat. |
 | Module hooks and cronjobs | ✅ | Hooks and scheduled jobs run normally. |
 | Module teleports | ✅ | Teleport commands move the player. |

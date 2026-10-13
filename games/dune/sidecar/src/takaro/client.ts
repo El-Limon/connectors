@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import EventEmitter from 'node:events';
 import WebSocket from 'ws';
 import { logger } from '../logger.js';
@@ -6,6 +7,7 @@ import {
   createGameEvent,
   createIdentify,
   createResponse,
+  errorForVersion,
   type GameEventType,
   type IdentifyConfig,
   type WsMessage,
@@ -22,6 +24,11 @@ export interface TakaroClientOptions {
   maxMissedPongs?: number;
   /** Treat a send as undelivered when more than this many bytes are still buffered (default 1 MiB). */
   maxBufferedBytes?: number;
+  /**
+   * The Capability Manifest. When set, identify offers protocol versions [0, 1] with it; Takaro picks the highest it
+   * speaks, so an older Takaro keeps the connection on version 0. Unset offers version 0 only.
+   */
+  manifest?: () => unknown[];
 }
 
 /**
@@ -57,6 +64,14 @@ export class TakaroWsClient extends EventEmitter {
   private pingId = 0;
   /** Pings written but not yet ponged, oldest first. `upTo` = the sendId a pong for this ping would confirm. */
   private outstandingPings: { id: number; upTo: number }[] = [];
+  private readonly manifest: (() => unknown[]) | null;
+  /** The version Takaro chose in identifyResponse (0 until identified). */
+  private protocolVersion = 0;
+  /**
+   * Version 1 event stream: one per process. `seq` is the sendId, which only ever grows, so it stays strictly
+   * increasing across reconnects as the protocol requires.
+   */
+  private readonly streamId = randomUUID();
 
   private configHint: ConfigHint = { file: '', hasFile: false };
 
@@ -72,6 +87,12 @@ export class TakaroWsClient extends EventEmitter {
     this.idleTimeoutMs = options.idleTimeoutMs ?? 20_000;
     this.maxMissedPongs = options.maxMissedPongs ?? 2;
     this.maxBufferedBytes = options.maxBufferedBytes ?? 1024 * 1024;
+    this.manifest = options.manifest ?? null;
+  }
+
+  /** The protocol version negotiated on the current connection (0 until identified, and on an older Takaro). */
+  getProtocolVersion(): number {
+    return this.protocolVersion;
   }
 
   /** Where the operator edits the settings; named in the banners. */
@@ -101,7 +122,8 @@ export class TakaroWsClient extends EventEmitter {
       this.lastActivity = Date.now();
       this.outstandingPings = [];
       this.startWatchdog(ws);
-      this.sendFrame(ws, createIdentify(this.identifyConfig));
+      const v1 = this.manifest ? { protocolVersions: [0, 1], capabilities: this.manifest() } : undefined;
+      this.sendFrame(ws, createIdentify(this.identifyConfig, v1));
     });
     ws.on('message', (data) => {
       if (this.ws !== ws) return;
@@ -122,6 +144,7 @@ export class TakaroWsClient extends EventEmitter {
       this.ws = null;
       this.isIdentified = false;
       this.gameServerId = null;
+      this.protocolVersion = 0;
       this.emit('disconnected');
       this.scheduleReconnect();
     });
@@ -144,6 +167,12 @@ export class TakaroWsClient extends EventEmitter {
 
   private notePong(payload: string): void {
     if (!this.outstandingPings.length) return;
+    // On version 1 Takaro acknowledges events itself (eventAck), which also proves it accepted them. A pong only
+    // proves the bytes arrived, so it must not release an event Takaro may still reject.
+    if (this.protocolVersion === 1) {
+      this.outstandingPings = [];
+      return;
+    }
     const idx = this.outstandingPings.findIndex((p) => String(p.id) === payload);
     // A server that does not echo the ping payload still proves the oldest outstanding ping arrived: match FIFO, which
     // confirms the SMALLEST upTo and is therefore never optimistic.
@@ -182,6 +211,9 @@ export class TakaroWsClient extends EventEmitter {
     if (!this.isIdentified && message.type !== 'identify' && message.type !== 'pong') {
       logger.warn(`Cannot send ${message.type}: Takaro has not identified this connection yet`);
       return false;
+    }
+    if (message.type === 'response' && message.error !== undefined) {
+      message = { ...message, error: errorForVersion(message.error, this.protocolVersion) };
     }
     return this.sendFrame(ws, message);
   }
@@ -250,11 +282,25 @@ export class TakaroWsClient extends EventEmitter {
   }
 
   /**
+   * Replaces the Capability Manifest on a version 1 connection. A version 0 connection has none to replace, and an
+   * identify always carries the current manifest.
+   */
+  sendCapabilities(): boolean {
+    if (!this.manifest || !this.isIdentified || this.protocolVersion !== 1) return false;
+    return this.send({ type: 'capabilities', requestId: randomUUID(), payload: { capabilities: this.manifest() } });
+  }
+
+  /**
    * Writes a gameEvent. `true` means only that the bytes were accepted by the local socket — NOT that Takaro got them
    * (F20). The caller must keep the event until a 'confirmed' event covers `lastSendId()`.
    */
   sendGameEvent(type: GameEventType, data: unknown): boolean {
-    const ok = this.send(createGameEvent(type, data));
+    const frame = createGameEvent(type, data);
+    if (this.protocolVersion === 1) {
+      // Version 1: numbered on this process's stream; Takaro acknowledges up to a seq (eventAck).
+      frame.payload = { ...(frame.payload as object), streamId: this.streamId, seq: this.sendId + 1 };
+    }
+    const ok = this.send(frame);
     if (ok) this.sendId += 1;
     return ok;
   }
@@ -278,6 +324,7 @@ export class TakaroWsClient extends EventEmitter {
       this.outstandingPings = [];
       this.isIdentified = false;
       this.gameServerId = null;
+      this.protocolVersion = 0;
       try {
         old.close(1000, 'Takaro settings changed');
       } catch {
@@ -326,10 +373,12 @@ export class TakaroWsClient extends EventEmitter {
         logger.info('Takaro confirmed WebSocket connection');
         break;
       case 'identifyResponse': {
-        const payload = (message.payload ?? {}) as { error?: unknown; gameServerId?: string; server?: { id?: string } };
-        if (payload.error) {
-          const reason = describeTakaroError(payload.error);
-          if (isNameConflict(payload.error, reason)) {
+        const payload = (message.payload ?? {}) as { error?: unknown; gameServerId?: string; server?: { id?: string }; protocolVersion?: number };
+        // Version 1 puts a refused identify in a top-level error and then closes the socket (1008).
+        const identifyError = payload.error ?? message.error;
+        if (identifyError) {
+          const reason = describeTakaroError(identifyError);
+          if (isNameConflict(identifyError, reason)) {
             logBanner(logger.error, [
               `Takaro rejected identify: ${reason}.`,
               `Takaro already has a game server named '${this.identifyConfig.serverName ?? this.identifyConfig.identityToken}'.`,
@@ -351,12 +400,31 @@ export class TakaroWsClient extends EventEmitter {
         this.reconnectAttempts = 0;
         this.isIdentified = true;
         this.gameServerId = payload.gameServerId ?? payload.server?.id ?? null;
-        logger.info(`Identified with Takaro${this.gameServerId ? ` (gameServerId=${this.gameServerId})` : ''}`);
+        this.protocolVersion = payload.protocolVersion === 1 ? 1 : 0;
+        // On version 1 the heartbeat no longer confirms delivery, so pings already out must not either.
+        if (this.protocolVersion === 1) this.outstandingPings = [];
+        logger.info(
+          `Identified with Takaro${this.gameServerId ? ` (gameServerId=${this.gameServerId})` : ''}, protocol version ${this.protocolVersion}`,
+        );
         this.emit('identified', this.gameServerId);
         break;
       }
       case 'request':
         this.emit('request', message);
+        break;
+      case 'eventAck':
+        this.acknowledge(message.payload);
+        break;
+      case 'eventError': {
+        // Takaro refused one numbered event (DTO validation). It is acknowledged too, so it is not resent.
+        const reason = JSON.stringify({ ...(message.payload as object), error: message.error });
+        logger.error(`Takaro rejected event: ${describeTakaroError(message.error ?? message.payload ?? {})} ${reason.slice(0, 300)}`);
+        this.emit('rejected', reason);
+        break;
+      }
+      case 'capabilitiesResponse':
+        if (message.error) logger.error(`Takaro rejected the capability manifest: ${describeTakaroError(message.error)}`);
+        else logger.info('Takaro accepted the capability manifest');
         break;
       case 'ping':
         if (this.ws) this.sendFrame(this.ws, { type: 'pong' });
@@ -372,6 +440,17 @@ export class TakaroWsClient extends EventEmitter {
       }
       default:
         logger.debug(`Unhandled Takaro message type=${message.type}`);
+    }
+  }
+
+  /** Version 1 `eventAck { streamId, upTo }`: every event up to that seq reached Takaro and was processed. */
+  private acknowledge(payload: unknown): void {
+    const { streamId, upTo } = (payload ?? {}) as { streamId?: unknown; upTo?: unknown };
+    if (streamId !== this.streamId || typeof upTo !== 'number') return;
+    const confirmed = Math.min(upTo, this.sendId);
+    if (confirmed > this.confirmedId) {
+      this.confirmedId = confirmed;
+      this.emit('confirmed', this.confirmedId);
     }
   }
 
