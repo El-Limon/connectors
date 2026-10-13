@@ -11,6 +11,7 @@ void RunUnitTests();
 void RunParityTests(const std::string& fixtureDir);
 void RunBridgeTests();
 void RunConfigFileTests();
+void RunMapTileTests();
 
 namespace t {
 
@@ -35,6 +36,7 @@ int main(int argc, char** argv) {
     RunParityTests(fixtures);
     RunBridgeTests();
     RunConfigFileTests();
+    RunMapTileTests();
     printf("native tests: %d checks, %d failures\n", t::S().checks, t::S().failures);
     return t::S().failures ? 1 : 0;
 }

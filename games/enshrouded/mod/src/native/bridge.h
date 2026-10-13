@@ -40,6 +40,7 @@ struct BridgeOptions {
     Store* store = nullptr;
     std::function<int64_t()> steadyMs;  // monotonic
     std::function<int64_t()> wallMs;    // Unix epoch
+    std::function<std::string()> newStreamId;  // protocol 1 event stream id for a new outbox (random UUID)
     int64_t reconcileIntervalMs = 30000;
     int64_t healthIntervalMs = 15000;
     int64_t banCheckIntervalMs = 5000;
@@ -103,6 +104,10 @@ private:
     void Complete(const std::shared_ptr<Job>& job);
     void CheckDeadlines(int64_t now);
     void SendResponse(uint64_t epoch, FrameKind kind, const std::string& frame);
+    // Response frames in the shape of the current connection's protocol version.
+    std::string OkFrame(const std::string& requestId, const std::string& action, JsonValue payload) const;
+    std::string ErrorFrame(const std::string& requestId, const std::string& code, const std::string& message) const;
+    void HandleEventAck(const JsonValue& msg);
     void PollEvents(int64_t now);
     void DeliverEvents(int64_t now);
     void AdmitEvent(const std::string& type, const JsonValue& data, const SourceCursor& source, int64_t now);
@@ -138,6 +143,7 @@ private:
     // bridge-thread state
     uint64_t epoch_ = 0;
     bool open_ = false, identified_ = false;
+    int protocol_ = 0;  // negotiated protocol version of the current connection (0 until identified)
     std::string gameServerId_, clientId_;
     uint64_t lastQueuedId_ = 0;
     std::map<uint64_t, std::shared_ptr<Job>> inflight_;
@@ -165,9 +171,9 @@ private:
     uint64_t requests_ = 0, responses_ = 0, errorResponses_ = 0, duplicates_ = 0, malformed_ = 0, overloads_ = 0,
              timeouts_ = 0, lateResults_ = 0, droppedResponses_ = 0, oversizeIds_ = 0, identifyErrors_ = 0,
              eventsAdmitted_ = 0, eventsQueued_ = 0, eventsMalformed_ = 0, ringGaps_ = 0, reconciled_ = 0,
-             tailEvents_ = 0, expiredBans_ = 0, noticeOverflows_ = 0;
+             tailEvents_ = 0, expiredBans_ = 0, noticeOverflows_ = 0, eventAcks_ = 0, eventErrors_ = 0;
     int64_t maxRequestLatencyMs_ = 0;
-    std::string lastError_, lastIdentifyError_, lastRequestAction_;
+    std::string lastError_, lastIdentifyError_, lastRequestAction_, lastEventError_;
     std::vector<std::string> oldSecrets_;  // tokens used before a Reconfigure, still redacted
 
     mutable std::mutex healthMu_;

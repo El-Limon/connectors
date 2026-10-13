@@ -25,7 +25,7 @@ client and Takaro. ✅ = works, ⚠️ = works with a caveat or not re-verified,
 | Give an item | ✅ | The item arrives in the backpack. The game ignores the count, so the connector splits it into stacks of at most 64. |
 | Item catalogue | ✅ | 3,317 items sync with their in-game English names, e.g. "Spectral Ward". Items the game never names and abilities are left out; giving an item by its code works for every item. |
 | Entity catalogue | ⚠️ | 397 creature and NPC templates sync. Bosses, NPCs and fish have their in-game names (e.g. "Fell Thunderbrute", "Oswald Anders"). The game shows no name for other creatures, so they get a readable name built from the internal code, e.g. "Rat". |
-| Locations / points of interest | ⚠️ | The connector serves 1,031 locations, but Takaro never asks for them. |
+| Locations / points of interest | ⚠️ | The connector serves 1,031 locations. Takaro may show them as markers on the map; this was not checked. |
 | Run a console command | ✅ | Enshrouded has no console; the connector provides its own set: `help`, `players`, `say`, `whisper`, `location`, `teleport`/`tp`, `inventory`, `give`, `item`, `kick`, `save-and-shutdown`. Unknown commands are refused with a hint. |
 | Broadcast a message | ✅ | Everyone sees it in chat, under the character name of an online player: Enshrouded has no "server" sender. |
 | Whisper a player | ⚠️ | Reaches the player; that nobody else sees it was not checked (one test account). |
@@ -40,8 +40,8 @@ client and Takaro. ✅ = works, ⚠️ = works with a caveat or not re-verified,
 | Player death event | ✅ | Falls and creature kills, with the position; the creature that killed the player is named in the message the same way as in the entity catalogue, e.g. "Limon was killed by Rat". |
 | Entity kill event | ⚠️ | Real kills reach Takaro, once each, with the weapon's in-game name (melee and bow tested). The creature is named the same way as in the entity catalogue, e.g. "Rat". Kills with magic are not tested yet. Destroyed props are not reported. |
 | Log events | ⚠️ | Sent, but Takaro does not store server log lines as events. |
-| Map info | ⚠️ | Not verified in a live test. |
-| Map tiles | ❌ | Takaro does not support map tiles for Generic game servers. |
+| Map | ✅ | The connector tells Takaro the size and orientation of the world ("Embervale", 10,240 m square, north up). The server has no map picture of its own, so you upload one image once on the game server's map page in Takaro (see INSTALL.md, "Map"); player dots then sit at the right spot on it. Without an upload Takaro shows a grid with the player dots. |
+| Map on an older Takaro | ⚠️ | A Takaro without protocol 1 shows a map only from a tile pack in `takaro/map/` that you render yourself (see INSTALL.md). |
 | Modules: chat commands | ✅ | In-game `@` commands reach the module and answer in chat. |
 | Modules: hooks | ✅ | Chat and join hooks fire and run their code. |
 | Modules: cronjobs | ✅ | Scheduled and triggered runs message the server. |
