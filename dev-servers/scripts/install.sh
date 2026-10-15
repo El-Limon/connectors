@@ -29,7 +29,6 @@ if ds_is_installed "$GAME" && [ "$FORCE" != "--force" ]; then
     exit 0
 fi
 
-DATA="$(ds_data_dir "$GAME")"
 ds_prepare_data_dir "$GAME"
 mkdir -p "$(dirname "$(ds_marker "$GAME")")"
 
