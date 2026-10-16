@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -19,6 +20,52 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertIn("GameManager.Instance.adminTools.Blacklist.GetBanned()", mirror)
         self.assertIn("Platform.BlockedPlayerList.Instance.GetEntriesOrdered", mirror)
         self.assertIn("Shared.TransformBanRecordToTakaroBan(record)", mirror)
+
+    def test_ban_capture_keys_entries_by_eos_id(self):
+        mirror = self.source("src/Services/StateMirror.cs")
+        capture = mirror.split("private static List<BanRecord> CaptureBans()", 1)[1].split(
+            "#if SEVEND2D_V3_3", 1
+        )[0]
+        self.assertIn("return BanIdentity.Capture(", capture)
+        self.assertIn("blacklist,", capture)
+        self.assertIn("blocked,", capture)
+        self.assertNotIn('Replace("EOS_", "")', capture)
+
+    def test_transport_drives_the_session_state_machine(self):
+        transport = self.source("src/WebSocket/WebSocketTransport.cs")
+        poll = transport.split("CheckInboundLiveness();", 1)[1].split("FlushPending();", 1)[0]
+        self.assertIn("_session.ApplyAcknowledgements();", poll)
+        self.assertIn("CloseIfIdentifyOverdue();", poll)
+
+        flush = transport.split("private void FlushPending()", 1)[1].split("while (true)", 1)[0]
+        self.assertIn("_session.ReplayUnconfirmedOnNewSocket()", flush)
+
+        inbound = transport.split("private void HandleInboundFrame(", 1)[1].split(
+            "private void LogEventError", 1
+        )[0]
+        routed = inbound.split("case InboundKind.Request:", 1)[1].split("break;", 1)[0]
+        self.assertIn("RequestRouter.Route(e.Data);", routed)
+        self.assertEqual(inbound.count("RequestRouter.Route"), 1)
+
+        closed = transport.split("socket.OnClose +=", 1)[1]
+        self.assertIn("e.Code == 1008", closed)
+
+    def test_entity_kill_reports_internal_class_name(self):
+        api = self.source("src/API.cs")
+        entity_killed = api.split("public void EntityKilled", 1)[1].split(
+            "private static ModEvents.EModEventResult GameMessage", 1
+        )[0]
+        self.assertIn("Shared.EntityKillName", entity_killed)
+        self.assertNotIn("EntityDisplayName", entity_killed)
+
+    def test_chat_channels_never_publish_unknown(self):
+        publisher = self.source("src/WebSocket/GameEventPublisher.cs")
+        self.assertNotIn('"unknown"', publisher.split("ChatChannelFor", 1)[1].split("public static void SendEntityKilled", 1)[0])
+        self.assertIn("ChatChannelFor(type)", publisher)
+
+    def test_give_item_keeps_the_vanilla_give_default_quality(self):
+        handler = self.source("src/WebSocket/GiveItemHandler.cs")
+        self.assertIn("ushort quality = Constants.cItemMaxQuality;", handler)
 
     def test_timed_bans_use_game_local_deadlines_and_persist_before_kick(self):
         actions = self.source("src/WebSocket/ActionHandlers.cs")
@@ -190,7 +237,7 @@ class SourceRegressionTests(unittest.TestCase):
         actions = self.source("src/WebSocket/ActionHandlers.cs")
         give_item = self.source("src/WebSocket/GiveItemHandler.cs")
         self.assertEqual(0, reads.count("WebSocketMessage.CreateResponse(requestId, null)"))
-        self.assertEqual(2, reads.count('SendError(requestId, "Player not found")'))
+        self.assertEqual(2, reads.count('SendError(requestId, "Player not found", ProtocolErrorCodes.NotFound)'))
         self.assertIn("new TakaroItem[0]", reads)
         self.assertEqual(6, actions.count("WebSocketMessage.CreateResponse(requestId, null)"))
         self.assertEqual(1, give_item.count("WebSocketMessage.CreateResponse(requestId, null)"))
@@ -308,10 +355,10 @@ class SourceRegressionTests(unittest.TestCase):
             "private bool AckPingDue()", 1
         )[0]
         sendable = transport.split("private bool IsSendable(", 1)[1].split("}", 1)[0]
-        self.assertIn("!_deadSocketClosing", sendable)
+        self.assertIn("!_session.DeadSocketClosing", sendable)
         self.assertIn("socket.ReadyState == WebSocketState.Open", sendable)
         # Checked before the write, and again before a failure counts toward a drop.
-        self.assertLess(flush.index("!IsSendable(socket)"), flush.index("socket.Send(head.Json)"))
+        self.assertLess(flush.index("!IsSendable(socket)"), flush.index("socket.Send("))
         catch = flush.split("catch (Exception ex)", 1)[1]
         self.assertLess(
             catch.index("!IsSendable(socket)"), catch.index("_ledger.DropHead()")
@@ -335,6 +382,46 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertIn("iv.GetModification(i)", v3_3)
         self.assertIn("iv.SetModification(i, tmp)", v3_3)
         self.assertNotIn("Modifications", v3_3)
+
+    def test_identify_declares_protocol_v1_game_and_migration(self):
+        handshake = self.source("src/WebSocket/ProtocolHandshake.cs")
+        transport = self.source("src/WebSocket/WebSocketTransport.cs")
+        self.assertIn('GameIdentifier = "7d2d"', handshake)
+        self.assertIn('MigrationSource = "7d2d"', handshake)
+        self.assertIn('"migration.native"', handshake)
+        self.assertIn("OfferedProtocolVersions = { 0, 1 }", handshake)
+        self.assertNotIn("PromoteIfGraceElapsed", transport)
+        self.assertIn("IDENTIFY_DEADLINE_SECONDS", transport)
+
+    def test_event_streams_are_numbered_on_the_sender_thread(self):
+        ledger = self.source("src/Services/OutboundLedger.cs")
+        transport = self.source("src/WebSocket/WebSocketTransport.cs")
+        send = transport.split("public void Send(WebSocketMessage message)", 1)[1].split(
+            "public void SendErrorResponse", 1
+        )[0]
+        self.assertNotIn("Seq", send)
+        self.assertIn("Seq = replayable ? _nextSeq++ : 0", ledger)
+        self.assertIn("_session.WireFrame", transport)
+
+    def test_readme_version_is_release_managed(self):
+        header = next(
+            line
+            for line in self.game_file("README.md").splitlines()
+            if "x-release-please-version" in line
+        )
+        version = self.game_file("version.txt").strip()
+        self.assertIn(f"**{version}**", header)
+        self.assertNotIn("0.1.4", self.game_file("README.md"))
+
+        config = json.loads((REPOSITORY_ROOT / "release-please-config.json").read_text())
+        extra_files = config["packages"]["games/7d2d"]["extra-files"]
+        self.assertIn({"type": "generic", "path": "README.md"}, extra_files)
+
+    def test_new_sources_are_compiled_everywhere(self):
+        project = self.source("Takaro.csproj")
+        harness = self.game_file("scripts/test-contract.sh")
+        self.assertIn(r"src\WebSocket\ProtocolHandshake.cs", project)
+        self.assertIn("/app/mod/src/WebSocket/ProtocolHandshake.cs", harness)
 
 
 if __name__ == "__main__":

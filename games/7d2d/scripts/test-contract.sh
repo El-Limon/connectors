@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 FIXTURE="${PROJECT_ROOT}/tests/fixtures/generic-protocol.json"
+LEGACY_FIXTURE="${PROJECT_ROOT}/tests/fixtures/legacy-parity.json"
 # shellcheck source=lib-target.sh
 . "${SCRIPT_DIR}/lib-target.sh"
 
@@ -17,6 +18,7 @@ API_DEFINES=$(sevend2d_api_defines)
 
 docker compose --project-directory "${PROJECT_ROOT}" run --rm --no-deps \
   --volume "${FIXTURE}:/tmp/generic-protocol.json:ro" \
+  --volume "${LEGACY_FIXTURE}:/tmp/legacy-parity.json:ro" \
   -e API_DEFINES="${API_DEFINES}" \
   builder bash -lc '
     set -euo pipefail
@@ -26,11 +28,14 @@ docker compose --project-directory "${PROJECT_ROOT}" run --rm --no-deps \
       -out:"$test_dir/contract-harness.exe" \
       -r:/usr/lib/mono/msbuild/Current/bin/Newtonsoft.Json.dll \
       /app/mod/src/WebSocket/WebSocketMessage.cs \
+      /app/mod/src/WebSocket/ProtocolHandshake.cs \
       /app/mod/src/WebSocket/GameEventPublisher.cs \
       /app/mod/src/WebSocket/RequestRouter.cs \
       /app/mod/src/WebSocket/ReadHandlers.cs \
       /app/mod/src/WebSocket/GiveItemHandler.cs \
+      /app/mod/src/WebSocket/TransportSession.cs \
       /app/mod/src/Services/BanExpiry.cs \
+      /app/mod/src/Services/BanIdentity.cs \
       /app/mod/src/Services/ConsoleCommandOutcome.cs \
       /app/mod/src/Services/ProtocolDiagnostics.cs \
       /app/mod/src/Services/OutboundLedger.cs \
@@ -42,5 +47,5 @@ docker compose --project-directory "${PROJECT_ROOT}" run --rm --no-deps \
       /app/mod/src/Config/ConfigFiles.cs \
       /app/tests/ContractHarness.cs
     MONO_PATH=/usr/lib/mono/msbuild/Current/bin \
-      mono "$test_dir/contract-harness.exe" /tmp/generic-protocol.json
+      mono "$test_dir/contract-harness.exe" /tmp/generic-protocol.json /tmp/legacy-parity.json
   '

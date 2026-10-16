@@ -22,7 +22,11 @@ namespace Takaro.WebSocket
         {
             if (args == null || string.IsNullOrEmpty(args.Message))
             {
-                SendError(requestId, "Invalid or missing parameters");
+                SendError(
+                    requestId,
+                    "Invalid or missing parameters",
+                    ProtocolErrorCodes.InvalidArgs
+                );
                 return;
             }
 
@@ -41,7 +45,7 @@ namespace Takaro.WebSocket
                     ClientInfo cInfo = Shared.GetClientInfoFromGameId(recipient.GameId);
                     if (cInfo == null)
                     {
-                        SendError(requestId, "Player not found");
+                        SendError(requestId, "Player not found", ProtocolErrorCodes.NotFound);
                         return;
                     }
 
@@ -79,7 +83,7 @@ namespace Takaro.WebSocket
         {
             if (args == null || string.IsNullOrEmpty(args.Command))
             {
-                SendError(requestId, "Invalid or missing command");
+                SendError(requestId, "Invalid or missing command", ProtocolErrorCodes.InvalidArgs);
                 return;
             }
 
@@ -105,7 +109,11 @@ namespace Takaro.WebSocket
         {
             if (args == null || args.Player == null || string.IsNullOrEmpty(args.Player.GameId))
             {
-                SendError(requestId, "Invalid or missing gameId parameter");
+                SendError(
+                    requestId,
+                    "Invalid or missing gameId parameter",
+                    ProtocolErrorCodes.InvalidArgs
+                );
                 return;
             }
 
@@ -116,7 +124,7 @@ namespace Takaro.WebSocket
                 ClientInfo cInfo = Shared.GetClientInfoFromGameId(args.Player.GameId);
                 if (cInfo == null)
                 {
-                    SendError(requestId, "Player not found");
+                    SendError(requestId, "Player not found", ProtocolErrorCodes.NotFound);
                     return;
                 }
 
@@ -140,7 +148,11 @@ namespace Takaro.WebSocket
         {
             if (args == null || args.Player == null || string.IsNullOrEmpty(args.Player.GameId))
             {
-                SendError(requestId, "Invalid or missing gameId parameter");
+                SendError(
+                    requestId,
+                    "Invalid or missing gameId parameter",
+                    ProtocolErrorCodes.InvalidArgs
+                );
                 return;
             }
 
@@ -156,7 +168,11 @@ namespace Takaro.WebSocket
 
                 if (playerData == null)
                 {
-                    SendError(requestId, "Player not found in persistent data");
+                    SendError(
+                        requestId,
+                        "Player not found in persistent data",
+                        ProtocolErrorCodes.NotFound
+                    );
                     return;
                 }
 
@@ -179,7 +195,7 @@ namespace Takaro.WebSocket
                         )
                     )
                     {
-                        SendError(requestId, expiryError);
+                        SendError(requestId, expiryError, ProtocolErrorCodes.InvalidArgs);
                         return;
                     }
                 }
@@ -268,7 +284,11 @@ namespace Takaro.WebSocket
         {
             if (args == null || string.IsNullOrEmpty(args.GameId))
             {
-                SendError(requestId, "Invalid or missing gameId parameter");
+                SendError(
+                    requestId,
+                    "Invalid or missing gameId parameter",
+                    ProtocolErrorCodes.InvalidArgs
+                );
                 return;
             }
 
@@ -277,9 +297,8 @@ namespace Takaro.WebSocket
                 PlatformUserIdentifierAbs userId = PlatformUserIdentifierAbs.FromCombinedString(
                     $"EOS_{args.GameId}"
                 );
-                bool unbanSuccess = false;
-                string playerName = "";
-                string unbanMethod = "";
+                string playerName = null;
+                bool blockedLifted = false;
 
                 if (Platform.BlockedPlayerList.Instance != null)
                 {
@@ -293,42 +312,59 @@ namespace Takaro.WebSocket
 
                         if (result.Item1)
                         {
-                            unbanSuccess = true;
+                            blockedLifted = true;
                             playerName = blockedEntry.PlayerData.PlayerName.Text;
-                            unbanMethod = "BlockedPlayerList";
                         }
                     }
                 }
 
-                if (!unbanSuccess)
+                // listBans merges both stores and reports a Steam_/XBL_ entry under the
+                // player's EOS id, so lift every Blacklist entry that resolves to
+                // args.GameId even when the BlockedPlayerList held one as well.
+                var blacklist = GameManager.Instance.adminTools.Blacklist;
+                PersistentPlayerList playerList = GameManager.Instance.GetPersistentPlayerList();
+                var banned = new List<PlatformUserIdentifierAbs>();
+                var resolved = new List<PersistentPlayerData>();
+                var entries = new List<KeyValuePair<string, string>>();
+                foreach (var ban in blacklist.GetBanned())
                 {
-                    if (
-                        GameManager.Instance.adminTools.Blacklist.IsBanned(
-                            userId,
-                            out DateTime _,
-                            out string _
-                        )
-                    )
-                    {
-                        GameManager.Instance.adminTools.Blacklist.RemoveBan(userId);
-                        unbanSuccess = true;
-                        unbanMethod = "AdminTools.Blacklist";
+                    if (ban.UserIdentifier == null)
+                        continue;
 
-                        PersistentPlayerList playerList =
-                            GameManager.Instance.GetPersistentPlayerList();
-                        PersistentPlayerData playerData = playerList.GetPlayerData(userId);
-                        playerName =
-                            playerData != null
-                                ? playerData.PlayerName.playerName.Text
-                                : $"Player_{args.GameId}";
-                    }
+                    PersistentPlayerData player = StateMirror.FindPersistentPlayer(
+                        playerList,
+                        ban.UserIdentifier
+                    );
+                    banned.Add(ban.UserIdentifier);
+                    resolved.Add(player);
+                    entries.Add(
+                        new KeyValuePair<string, string>(
+                            ban.UserIdentifier.CombinedString,
+                            player?.PrimaryId?.CombinedString
+                        )
+                    );
                 }
 
-                if (!unbanSuccess)
+                List<int> toLift = BanIdentity.SelectEntriesToLift(args.GameId, entries);
+                foreach (int index in toLift)
                 {
-                    SendError(requestId, "Player not found in ban list or failed to unban");
+                    if (playerName == null && resolved[index] != null)
+                        playerName = resolved[index].PlayerName.playerName.Text;
+                    blacklist.RemoveBan(banned[index]);
+                }
+
+                string unbanMethod = BanIdentity.UnbanMethod(blockedLifted, toLift.Count);
+                if (unbanMethod == null)
+                {
+                    SendError(
+                        requestId,
+                        "Player not found in ban list or failed to unban",
+                        ProtocolErrorCodes.NotFound
+                    );
                     return;
                 }
+
+                playerName = playerName ?? $"Player_{args.GameId}";
 
                 StateMirror.Instance.RefreshBans();
 
@@ -344,7 +380,11 @@ namespace Takaro.WebSocket
         {
             if (args == null || args.Player == null || string.IsNullOrEmpty(args.Player.GameId))
             {
-                SendError(requestId, "Invalid or missing gameId parameter");
+                SendError(
+                    requestId,
+                    "Invalid or missing gameId parameter",
+                    ProtocolErrorCodes.InvalidArgs
+                );
                 return;
             }
 
@@ -353,7 +393,7 @@ namespace Takaro.WebSocket
                 ClientInfo cInfo = Shared.GetClientInfoFromGameId(args.Player.GameId);
                 if (cInfo == null)
                 {
-                    SendError(requestId, "Player not found");
+                    SendError(requestId, "Player not found", ProtocolErrorCodes.NotFound);
                     return;
                 }
 
@@ -364,7 +404,7 @@ namespace Takaro.WebSocket
                     )
                 )
                 {
-                    SendError(requestId, "Player entity not found");
+                    SendError(requestId, "Player entity not found", ProtocolErrorCodes.NotFound);
                     return;
                 }
 
@@ -472,9 +512,13 @@ namespace Takaro.WebSocket
             WebSocketTransport.Instance.Send(message);
         }
 
-        private static void SendError(string requestId, string errorMessage)
+        private static void SendError(
+            string requestId,
+            string errorMessage,
+            string code = ProtocolErrorCodes.GameError
+        )
         {
-            WebSocketTransport.Instance.SendErrorResponse(requestId, errorMessage);
+            WebSocketTransport.Instance.SendErrorResponse(requestId, errorMessage, code);
         }
     }
 }
