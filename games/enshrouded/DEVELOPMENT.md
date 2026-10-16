@@ -91,7 +91,7 @@ maintenance/bin/takaro-maint targets resolve --game enshrouded --format env --pr
 | `ENSHROUDED_TARGET`, `ENSHROUDED_FINGERPRINT`, `ENSHROUDED_FP16` | the target id and the hash of everything pinned in it |
 | `ENSHROUDED_REVISION`, `ENSHROUDED_GAME_BUILD` | the game's own build id, `1024233` — what the server prints and the plugin pins against |
 | `ENSHROUDED_HOOKS_PROVEN_BUILD` | the build the signatures were derived on; `verify` fails when the running server reports another one |
-| `ENSHROUDED_IMAGE`, `ENSHROUDED_PROTON` | the game image by digest and the Proton inside it (`GE-Proton10-30`) |
+| `ENSHROUDED_IMAGE`, `ENSHROUDED_PROTON` | the game image by digest and the Proton inside it (`GE-Proton11-9`) |
 | `ENSHROUDED_STEAM_APP`, `_STEAM_BRANCH`, `_STEAM_BUILDID`, `_STEAM_DEPOTS` | the exact Steam pin |
 | `ENSHROUDED_TOOLCHAIN`, `ENSHROUDED_DEP_ZIG_URL`, `ENSHROUDED_DEP_ZIG_SHA256` | the builder image and the zig it installs |
 | `ENSHROUDED_ARTIFACT_SERVER_PLUGIN` | the artifact name pattern |
@@ -122,8 +122,41 @@ over the install when they differ. Both compose files bind-mount
 server and nothing else, and a test asserts it contains no update path at all. `verify`
 greps the boot log for one and fails the run if it finds one.
 
+### Per-build game data (`mod/gamedata/enshrouded-gamedata.json`)
+
+Everything that moves when Keen ships a new `enshrouded_server.exe` lives in one JSON file, one
+section per game build (the number the plugin log prints as `game build:`):
+
+- `functions`: each hooked or called game function as an `rva`, checked against `verify` bytes
+  (the prologue), or a unique `pattern`, or an ECS `job` name (resolved from the job registration
+  table `{char* name, u64 len, fn*}`, which survives code moves).
+- `callsites`: return addresses the detours compare against (player-chat receive, the
+  inventory admin gate); each must sit right after an `E8` call to the matching function.
+- `layout`: struct offsets and ABI switches (server slot table, chat-system bookkeeping, combat
+  context and paged event views, give-item version fields, the account-action event).
+
+`build.sh` embeds the file; the plugin writes it to `takaro/enshrouded-gamedata.json` next to the
+server on first start and reads that copy from then on, so an operator can add a section without a
+new DLL. A section whose entry fails its `verify` bytes disables only that capability (reported
+`degraded`). A build with no section falls back to the built-in signature heuristics in `hooks.cpp`
+and `world.cpp` (written for 1024233).
+
+### Static tables (items, entities, labels)
+
+`src/gamedata.cpp`, `src/itemlabels.cpp` and `src/entitylabels.cpp` are generated:
+
+1. Export with the Enshrouded Mod Loader CLI (`emm run -g <dir> --export`, github.com/Brabb3l/kfc-parser)
+   and `tools/eml-export`: against the **server** for items/templates, against the **client** for the
+   En_Us names. 1.0 changed the container magic to `KFC4`; kfc-parser 0.1.2 refuses it, but accepting
+   `0x3443464B` next to `KFC3` in `crates/kfc-base/src/container/header.rs` is the only change needed.
+2. Write the generator inputs (`items/entities/locations.json`, see `tools/gen_gamedata.py` for the path), then `tools/gen_gamedata.py`,
+   `tools/gen_item_labels.py <export> <note>` and `tools/gen_entity_labels.py <export> research/entities.json <note>`.
+
 ### Moving to a new game build
 
+0. Add a `builds.<new build>` section to `mod/gamedata/enshrouded-gamedata.json` (diff the new exe
+   against the previous one: string anchors, the ECS job table and the reflection field descriptors
+   `{name*, len, type*, offset}` give most values), and regenerate the static tables above.
 1. `takaro-maint steam pin --game enshrouded --metadata` to see what moved, then
    `--record-files … --write` to re-pin the record (id and `revision` follow the new game
    build, so the target is a new file).
@@ -305,7 +338,7 @@ instead of creating an empty tree and a directory named `dbghelp.dll`.
 ## Configuration
 
 `takaro\plugin.json` next to `enshrouded_server.exe` is the one config file (`registrationToken`,
-`identityToken`, `name`, `url`, `caFile`, `token`). The release does not ship it and an upgrade (only
+`identityToken`, `name`, `url`, `protocol`, `token`, `mapDir`, `caFile`). The release does not ship it and an upgrade (only
 `dbghelp.dll`) never touches it. An environment variable, when set and not blank, wins per field and is
 never written to disk. The plugin logs where each value came from, never the value.
 
@@ -317,7 +350,7 @@ never written to disk. The plugin logs where each value came from, never the val
   UUID written in place (`RewriteKeepingAccess`: owner, mode and ACL stay; skipped when the file changed
   since it was read, then retried at the next poll). Nothing else is ever written. A file or identity that cannot be written leaves
   the identity empty: no connection, and a banner says what to set.
-- **Live settings** (`url`, `registrationToken`, `identityToken`, `name`; `src/native/config_file.*`):
+- **Live settings** (`url`, `registrationToken`, `identityToken`, `name`, `protocol`; `src/native/config_file.*`):
   `ConfigWatcher` runs on its own thread (never the game thread) and re-reads the file every 5 s, comparing
   the text. A changed text applies only when the next read 1 s later is the same and it parses (a BOM is
   fine); otherwise the running settings stay and the console says the file is broken. A change calls
@@ -325,7 +358,7 @@ never written to disk. The plugin logs where each value came from, never the val
   the WinHTTP supervisor closes the current epoch and connects at once (no backoff), or idles while there
   is no registration token. An epoch that was being opened during a Retarget is dropped before its Open
   notice. Without a registration token at startup no bridge, transport or state is created; the watcher
-  starts them when a token appears. `caFile`, `token` and every other setting are read at startup.
+  starts them when a token appears. `caFile`, `token`, `mapDir` and every other setting are read at startup.
 - **Defaults:** `url` `wss://connect.takaro.io/` (anything but `wss://` never connects), `name` as above.
   An emptied `registrationToken` disconnects and shows the banner again.
 - **Console:** banners and the `connecting` / `connected` lines go to the process's stdout (one `WriteFile`
