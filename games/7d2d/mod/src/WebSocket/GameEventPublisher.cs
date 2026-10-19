@@ -29,7 +29,7 @@ namespace Takaro.WebSocket
                 return;
 
             SendGameEvent(
-                "player-connected",
+                GameEventTypes.PlayerConnected,
                 new Dictionary<string, object>
                 {
                     { "player", Shared.TransformClientInfoToTakaroPlayer(cInfo) },
@@ -43,9 +43,25 @@ namespace Takaro.WebSocket
                 return;
 
             SendGameEvent(
-                "player-disconnected",
+                GameEventTypes.PlayerDisconnected,
                 new Dictionary<string, object> { { "player", player } }
             );
+        }
+
+        // Takaro accepts only global/team/friends/whisper; anything else is global.
+        public static string ChatChannelFor(EChatType type)
+        {
+            switch (type)
+            {
+                case EChatType.Whisper:
+                    return "whisper";
+                case EChatType.Friends:
+                    return "friends";
+                case EChatType.Party:
+                    return "team";
+                default:
+                    return "global";
+            }
         }
 
         public static void SendChatMessage(
@@ -63,33 +79,13 @@ namespace Takaro.WebSocket
             if (cInfo == null || _senderId < 0)
                 return;
 
-            string channel;
-            switch (type)
-            {
-                case EChatType.Global:
-                    channel = "global";
-                    break;
-                case EChatType.Whisper:
-                    channel = "whisper";
-                    break;
-                case EChatType.Friends:
-                    channel = "friends";
-                    break;
-                case EChatType.Party:
-                    channel = "team";
-                    break;
-                default:
-                    channel = "unknown";
-                    break;
-            }
-
             SendGameEvent(
-                "chat-message",
+                GameEventTypes.ChatMessage,
                 new Dictionary<string, object>
                 {
                     { "player", Shared.TransformClientInfoToTakaroPlayer(cInfo) },
                     { "msg", msg },
-                    { "channel", channel },
+                    { "channel", ChatChannelFor(type) },
                 }
             );
         }
@@ -110,7 +106,7 @@ namespace Takaro.WebSocket
                 { "weapon", string.IsNullOrEmpty(weapon) ? "unknown" : weapon },
             };
 
-            SendGameEvent("entity-killed", eventData);
+            SendGameEvent(GameEventTypes.EntityKilled, eventData);
         }
 
         public static void SendPlayerDeath(
@@ -141,7 +137,7 @@ namespace Takaro.WebSocket
                 eventData["attacker"] = attacker;
             }
 
-            SendGameEvent("player-death", eventData);
+            SendGameEvent(GameEventTypes.PlayerDeath, eventData);
         }
 
         public static void SendLogEvent(string logMessage)
@@ -149,7 +145,10 @@ namespace Takaro.WebSocket
             if (string.IsNullOrEmpty(logMessage))
                 return;
 
-            SendGameEvent("log", new Dictionary<string, object> { { "msg", logMessage } });
+            SendGameEvent(
+                GameEventTypes.Log,
+                new Dictionary<string, object> { { "msg", logMessage } }
+            );
         }
     }
 }

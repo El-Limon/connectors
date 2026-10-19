@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -16,10 +18,13 @@ public static class ContractHarness
     {
         try
         {
-            if (args.Length != 1)
-                throw new ArgumentException("Expected the Generic Connector fixture path");
+            if (args.Length != 2)
+                throw new ArgumentException(
+                    "Expected the Generic Connector fixture path and the legacy parity fixture path"
+                );
 
             JObject fixture = JObject.Parse(File.ReadAllText(args[0]));
+            JObject legacy = JObject.Parse(File.ReadAllText(args[1]));
             AssertBanExpiryConversion();
             AssertConsoleCommandOutcomeClassification();
             AssertResponseSerialization(fixture);
@@ -30,14 +35,34 @@ public static class ContractHarness
             AssertWorldDtoSerialization(fixture);
             AssertPlayerProximateItemDelivery();
             AssertGiveItemProductionValidationAndCardinality();
+            AssertLegacyParityIdentities(legacy);
+            AssertLegacyParityBans(legacy);
+            AssertLegacyParityGiveQuality(legacy);
+            AssertLegacyParityEntityKilled(legacy);
+            AssertLegacyParityChatChannels(legacy);
             AssertProductionNotFoundReadSemantics();
             AssertNestedArgumentParsing();
             AssertRouterParsingAndCardinality(fixture);
             AssertControlFramesDoNotEnterRequestDispatch();
             AssertProtocolErrorsAreBoundedAndSafe();
             AssertIdentifyRejectionIsDetected();
+            AssertIdentifyPayload(fixture);
+            AssertManifestMatchesAnsweredActions(fixture);
+            AssertIdentifyResponsesAreParsed(fixture);
+            AssertV1EventFraming(fixture);
+            AssertLedgerAcknowledgesByStream();
+            AssertV1ErrorResponses(fixture);
+            AssertListLocationsMatchesLocationDto();
             AssertMissingLocalisationIsNotShown();
             AssertOutboundLedgerReplaysUnconfirmedEvents();
+            AssertBanCaptureKeepsOneRecordPerPlayer();
+            AssertUnbanLiftsTheEntriesTheMirrorReports();
+            AssertBanCaptureMergesBothStores();
+            AssertIdentifyDeadline();
+            AssertIdentifyAnswerSetsTheNegotiatedVersion();
+            AssertRefusedIdentifyIsNeverConfirmed();
+            AssertAcknowledgementsAreRoutedByVersion();
+            AssertUnconfirmedEventsReplayOnTheNextSocket();
             AssertCorrelatedMalformedRequestsTerminate();
             AssertRawRequestsAreNotLogged();
             AssertMapCatalog();
@@ -91,13 +116,7 @@ public static class ContractHarness
                 {
                     "mirror record",
                     Takaro.Shared.TransformPlayerRecordToTakaroPlayer(
-                        new Takaro.Persistence.PlayerRecord
-                        {
-                            GameId = "000213691caa4c17ab8134415efd0889",
-                            Name = "Steam Player",
-                            SteamId = "76561198000000001",
-                            EpicOnlineServicesId = "000213691caa4c17ab8134415efd0889",
-                        }
+                        Takaro.Shared.BuildPlayerRecord(steamClient)
                     )
                 },
                 {
@@ -370,10 +389,14 @@ public static class ContractHarness
         Equal(30.75f, (float)deathData["position"]["z"], "death position z");
 
         WebSocketTransport.Instance.TerminalMessages.Clear();
-        GameEventPublisher.SendEntityKilled(identity, "Rabbit", null);
+        GameEventPublisher.SendEntityKilled(identity, "animalRabbit", null);
         AssertPublishedEvent("entity-killed", out JObject killedData);
         TokenEqual(identityJson, killedData["player"], "entity kill uses stable identity");
-        Equal("Rabbit", (string)killedData["entity"], "entity kill uses the display name");
+        Equal(
+            "animalRabbit",
+            (string)killedData["entity"],
+            "entity kill carries the internal class name"
+        );
         Equal("unknown", (string)killedData["weapon"], "entity kill weapon fallback");
 
         WebSocketTransport.Instance.TerminalMessages.Clear();
@@ -427,6 +450,452 @@ public static class ContractHarness
                 && plain == "plain text reason",
             "string error is a rejection with its text"
         );
+    }
+
+    private static JObject ProtocolV1(JObject fixture)
+    {
+        return (JObject)fixture["protocolV1"];
+    }
+
+    private static JObject SerializeFrame(object message)
+    {
+        return JObject.Parse(JsonConvert.SerializeObject(message));
+    }
+
+    private static JObject WithSortedCapabilities(JObject identify)
+    {
+        JObject copy = (JObject)identify.DeepClone();
+        var sorted = new JArray(
+            ((JArray)copy["payload"]["capabilities"]).OrderBy(c => (string)c["name"])
+        );
+        copy["payload"]["capabilities"] = sorted;
+        return copy;
+    }
+
+    private static void AssertIdentifyPayload(JObject fixture)
+    {
+        JObject v1 = ProtocolV1(fixture);
+        JObject patterns = (JObject)v1["patterns"];
+        JObject frame = SerializeFrame(
+            WebSocketMessage.CreateIdentify("fixture-registration-token", "fixture-identity-token")
+        );
+
+        TokenEqual(
+            WithSortedCapabilities((JObject)v1["identify"]),
+            WithSortedCapabilities(frame),
+            "identify frame matches the fixture"
+        );
+        Equal("identify", (string)frame["type"], "identify frame type");
+
+        JObject payload = (JObject)frame["payload"];
+        var keys = payload.Properties().Select(p => p.Name).OrderBy(n => n).ToArray();
+        Equal(
+            "capabilities,game,identityToken,protocolVersions,registrationToken",
+            string.Join(",", keys),
+            "identify payload carries exactly the contract keys"
+        );
+        TokenEqual(
+            new JArray(0, 1),
+            payload["protocolVersions"],
+            "identify offers protocol 0 and 1"
+        );
+        string game = (string)payload["game"];
+        Equal("7d2d", game, "identify sends the game identifier");
+        True(
+            Regex.IsMatch(game, (string)patterns["game"])
+                && game.Length <= (int)patterns["gameMaxLength"],
+            "game identifier satisfies Takaro's pattern"
+        );
+
+        var capabilities = (JArray)payload["capabilities"];
+        True(
+            capabilities.Count <= (int)patterns["capabilityManifestMaxEntries"],
+            "manifest is within Takaro's entry limit"
+        );
+        var names = new HashSet<string>();
+        foreach (JObject capability in capabilities)
+        {
+            string name = (string)capability["name"];
+            True(
+                Regex.IsMatch(name, (string)patterns["capabilityName"])
+                    && name.Length <= (int)patterns["capabilityNameMaxLength"],
+                "capability name " + name + " satisfies Takaro's pattern"
+            );
+            True(names.Add(name), "capability " + name + " is declared once");
+            if (name != "migration.native")
+                True(capability["parameters"] == null, name + " declares no parameters");
+        }
+
+        JObject migration = (JObject)
+            capabilities.Single(c => (string)c["name"] == "migration.native");
+        TokenEqual(
+            JObject.Parse("{\"from\":\"7d2d\"}"),
+            migration["parameters"],
+            "migration.native names the 7d2d source and nothing else"
+        );
+        True(!names.Contains("map"), "map is not declared");
+        True(names.Contains("locations.list"), "locations.list is declared");
+
+        var declaredEvents = names
+            .Where(n => n.StartsWith("events."))
+            .Select(n => n.Substring("events.".Length))
+            .OrderBy(n => n);
+        Equal(
+            string.Join(",", ((JArray)v1["eventTypes"]).Select(t => (string)t).OrderBy(n => n)),
+            string.Join(",", declaredEvents),
+            "manifest declares exactly the events the mod emits"
+        );
+    }
+
+    private static void AssertManifestMatchesAnsweredActions(JObject fixture)
+    {
+        JObject table = (JObject)ProtocolV1(fixture)["actionCapabilities"];
+        var expectedCapabilities = new HashSet<string>();
+        foreach (string action in RequestRouter.SupportedActions)
+        {
+            True(table[action] != null, action + " has a capability decision in the fixture");
+            string capability = (string)table[action]["capability"];
+            if (capability != null)
+                expectedCapabilities.Add(capability);
+        }
+
+        var declared = new HashSet<string>(
+            ProtocolHandshake
+                .BuildCapabilityManifest(RequestRouter.SupportedActions)
+                .Select(c => (string)c["name"])
+                .Where(n => !n.StartsWith("events.") && n != "migration.native")
+        );
+        True(
+            declared.SetEquals(expectedCapabilities),
+            "manifest declares exactly the capabilities of the actions the mod answers"
+        );
+
+        foreach (KeyValuePair<string, string> entry in ProtocolHandshake.ActionCapabilities)
+        {
+            Equal(
+                (string)table[entry.Key]["capability"],
+                entry.Value,
+                entry.Key + " capability agrees with Takaro"
+            );
+            True(
+                RequestRouter.SupportedActions.Contains(entry.Key),
+                entry.Key + " is declared only because the mod answers it"
+            );
+        }
+
+        foreach (string action in RequestRouter.SupportedActions)
+        {
+            JToken args = new JObject();
+            foreach (JObject function in (JArray)fixture["functions"])
+            {
+                if ((string)function["name"] == action)
+                    args = function["args"];
+            }
+            HandlerProbe.Configure(JValue.CreateNull());
+            WebSocketTransport.Instance.ErrorCodes.Clear();
+            RequestRouter.Route(
+                new JObject
+                {
+                    ["type"] = "request",
+                    ["requestId"] = "fixture-request",
+                    ["payload"] = new JObject { ["action"] = action, ["args"] = args.DeepClone() },
+                }.ToString(Formatting.None)
+            );
+            True(
+                !WebSocketTransport.Instance.ErrorCodes.Contains(ProtocolErrorCodes.Unsupported),
+                action + " is routed, not refused as unsupported"
+            );
+        }
+
+        foreach (string action in new[] { "getMapImage", "noSuchAction" })
+        {
+            HandlerProbe.Configure(JValue.CreateNull());
+            WebSocketTransport.Instance.ErrorCodes.Clear();
+            RequestRouter.Route(
+                new JObject
+                {
+                    ["type"] = "request",
+                    ["requestId"] = "fixture-request",
+                    ["payload"] = new JObject { ["action"] = action, ["args"] = new JObject() },
+                }.ToString(Formatting.None)
+            );
+            Equal(
+                ProtocolErrorCodes.Unsupported,
+                WebSocketTransport.Instance.ErrorCodes.SingleOrDefault(),
+                action + " is refused as unsupported"
+            );
+        }
+    }
+
+    private static void AssertIdentifyResponsesAreParsed(JObject fixture)
+    {
+        foreach (JObject example in (JArray)ProtocolV1(fixture)["identifyResponses"])
+        {
+            string name = (string)example["name"];
+            JObject expected = (JObject)example["expected"];
+            IdentifyReply reply = ProtocolHandshake.ParseIdentifyResponse(
+                example["frame"].ToString(Formatting.None)
+            );
+            Equal((bool)expected["accepted"], reply.Accepted, name + ": accepted");
+            if (reply.Accepted)
+            {
+                Equal((int)expected["protocolVersion"], reply.ProtocolVersion, name + ": version");
+                Equal("gs-1", reply.GameServerId, name + ": game server id");
+            }
+            else
+            {
+                Equal((string)expected["errorCode"], reply.ErrorCode, name + ": code");
+                Equal((string)expected["reason"], reply.Reason, name + ": reason");
+            }
+        }
+
+        True(
+            ProtocolDiagnostics.TryGetIdentifyRejection(
+                "{\"type\":\"identifyResponse\",\"payload\":null,\"error\":{\"code\":\"invalid_args\",\"message\":\"bad\"}}",
+                out string code,
+                out string reason
+            )
+                && code == "invalid_args"
+                && reason == "bad",
+            "a v1 top-level identify error is a rejection with its code"
+        );
+        True(
+            !ProtocolDiagnostics.TryGetIdentifyRejection(
+                "{\"type\":\"identifyResponse\",\"payload\":{\"gameServerId\":\"gs-1\",\"protocolVersion\":1}}",
+                out _
+            ),
+            "a v1 acceptance is not a rejection"
+        );
+    }
+
+    private static void AssertV1EventFraming(JObject fixture)
+    {
+        JObject v1 = ProtocolV1(fixture);
+        string streamPattern = (string)v1["patterns"]["streamId"];
+        var ledger = new OutboundLedger(10, 10);
+        True(Regex.IsMatch(ledger.StreamId, streamPattern), "stream id satisfies Takaro's pattern");
+        True(
+            ledger.StreamId != new OutboundLedger(10, 10).StreamId,
+            "every ledger starts a new stream"
+        );
+
+        WebSocketTransport.Instance.TerminalMessages.Clear();
+        GameEventPublisher.SendLogEvent("fixture");
+        string eventJson = JsonConvert.SerializeObject(
+            WebSocketTransport.Instance.TerminalMessages[0]
+        );
+        ledger.Enqueue(eventJson, true, false);
+        ledger.Enqueue("{\"type\":\"ping\"}", false, true);
+        ledger.Enqueue(eventJson, true, false);
+
+        OutboundLedger.Entry first = ledger.PeekHead();
+        Equal(1L, first.Seq, "first event is numbered 1");
+        TokenEqual(
+            v1["eventFrame"],
+            JObject.Parse(
+                ProtocolHandshake.WithStreamPosition(first.Json, "fixture-stream", first.Seq)
+            ),
+            "v1 event frame matches the fixture"
+        );
+
+        ledger.MarkHeadWritten();
+        Equal(0L, ledger.PeekHead().Seq, "a ping is not part of the stream");
+        ledger.MarkHeadWritten();
+        Equal(2L, ledger.PeekHead().Seq, "numbering follows enqueue order, skipping non-events");
+
+        string withDate = ProtocolHandshake.WithStreamPosition(
+            "{\"type\":\"gameEvent\",\"payload\":{\"type\":\"log\",\"data\":{\"at\":\"2030-01-01T00:00:00Z\",\"n\":1.50}}}",
+            "s",
+            7
+        );
+        JObject positioned = JsonConvert.DeserializeObject<JObject>(
+            withDate,
+            new JsonSerializerSettings { DateParseHandling = DateParseHandling.None }
+        );
+        Equal(
+            "2030-01-01T00:00:00Z",
+            (string)positioned["payload"]["data"]["at"],
+            "event data is not rewritten by numbering"
+        );
+        Equal(7L, (long)positioned["payload"]["seq"], "seq is a number");
+    }
+
+    private static void AssertLedgerAcknowledgesByStream()
+    {
+        var ledger = new OutboundLedger(10, 10, "stream-a");
+        ledger.RequeueInFlight(1, false);
+        for (int i = 0; i < 3; i++)
+            ledger.Enqueue("e" + i, true, false);
+        for (int i = 0; i < 3; i++)
+            ledger.MarkHeadWritten();
+        Equal(3, ledger.InFlightCount, "written events wait for an acknowledgement");
+        True(!ledger.NeedsAckPing, "v1 needs no acknowledgement ping");
+
+        ledger.Enqueue("ping", false, true);
+        ledger.MarkHeadWritten();
+        ledger.Enqueue("e3", true, false);
+        ledger.Enqueue("e4", true, false);
+        Equal(0, ledger.AcknowledgePong(), "a pong confirms nothing on v1");
+        Equal(3, ledger.InFlightCount, "events stay in flight after a pong");
+
+        Equal(0, ledger.AcknowledgeUpTo("stream-b", 99), "another stream's ack confirms nothing");
+        Equal(3, ledger.InFlightCount, "events of this stream are untouched");
+        Equal(2, ledger.AcknowledgeUpTo("stream-a", 2), "ack up to 2 confirms events 1 and 2");
+        Equal(1, ledger.InFlightCount, "event 3 is still unconfirmed");
+
+        // The socket dies; event 3 returns to the backlog with its number.
+        Equal(1, ledger.RequeueInFlight(2, false), "unconfirmed event is requeued");
+        Equal(3L, ledger.PeekHead().Seq, "a requeued event keeps its number");
+        Equal(
+            2,
+            ledger.AcknowledgeUpTo("stream-a", 4),
+            "an ack covers requeued and written events"
+        );
+        Equal(1, ledger.PendingCount, "events beyond the ack are still to be sent");
+        Equal(5L, ledger.PeekHead().Seq, "the next event to send is number 5");
+
+        var v0 = new OutboundLedger(10, 10, "stream-v0");
+        v0.RequeueInFlight(1, true);
+        v0.Enqueue("e", true, false);
+        v0.MarkHeadWritten();
+        True(v0.NeedsAckPing, "v0 still confirms by pong");
+    }
+
+    private static void AssertV1ErrorResponses(JObject fixture)
+    {
+        JObject v1 = ProtocolV1(fixture);
+        TokenEqual(
+            v1["errorResponse"],
+            SerializeFrame(
+                WebSocketMessage.CreateErrorResponse(
+                    "fixture-request",
+                    "Player not found",
+                    ProtocolErrorCodes.NotFound,
+                    1
+                )
+            ),
+            "v1 error response matches the fixture"
+        );
+        string v1Json = JsonConvert.SerializeObject(
+            WebSocketMessage.CreateErrorResponse("r", "m", ProtocolErrorCodes.Internal, 1)
+        );
+        True(v1Json.Contains("\"payload\":null"), "v1 error response serialises a null payload");
+
+        JObject v0 = SerializeFrame(
+            WebSocketMessage.CreateErrorResponse("r", "m", ProtocolErrorCodes.Internal, 0)
+        );
+        TokenEqual(
+            JObject.Parse("{\"type\":\"error\",\"payload\":{\"error\":\"m\"},\"requestId\":\"r\"}"),
+            v0,
+            "v0 error response is unchanged"
+        );
+
+        WebSocketTransport.Instance.ProtocolVersion = 1;
+        try
+        {
+            AssertRoutedErrorCode(
+                "{\"type\":\"request\",\"requestId\":\"r\",\"payload\":{\"action\":\"nope\"}}",
+                ProtocolErrorCodes.Unsupported
+            );
+            AssertRoutedErrorCode(
+                "{\"type\":\"request\",\"requestId\":\"r\",\"payload\":{\"action\":\"getPlayer\",\"args\":{}}}",
+                ProtocolErrorCodes.InvalidArgs
+            );
+            AssertRoutedErrorCode(
+                "{\"type\":\"request\",\"requestId\":\"r\",\"payload\":{}}",
+                ProtocolErrorCodes.InvalidArgs
+            );
+            AssertRoutedErrorCode(
+                "{\"type\":\"request\",\"requestId\":\"r\",\"payload\":{\"action\":\"getPlayer\",\"args\":{\"gameId\":\"missing-player\"}}}",
+                ProtocolErrorCodes.NotFound
+            );
+        }
+        finally
+        {
+            WebSocketTransport.Instance.ProtocolVersion = 0;
+        }
+    }
+
+    private static void AssertRoutedErrorCode(string request, string expectedCode)
+    {
+        HandlerProbe.Configure(JValue.CreateNull());
+        WebSocketTransport.Instance.ErrorCodes.Clear();
+        RequestRouter.Route(request);
+        Equal(1, WebSocketTransport.Instance.TerminalMessages.Count, expectedCode + ": one reply");
+        JObject frame = SerializeFrame(WebSocketTransport.Instance.TerminalMessages[0]);
+        Equal("response", (string)frame["type"], expectedCode + ": v1 failures are responses");
+        Equal(expectedCode, (string)frame["error"]["code"], expectedCode + ": code on the wire");
+        Equal(JTokenType.Null, frame["payload"].Type, expectedCode + ": null payload");
+    }
+
+    private static void AssertListLocationsMatchesLocationDto()
+    {
+        var rectangular = new Takaro.TakaroLocation
+        {
+            Name = "Fort Camo",
+            Code = "army_camp_01@100,50,200:r1",
+            Position = new Takaro.TakaroPosition
+            {
+                X = 100,
+                Y = 50,
+                Z = 200,
+            },
+            SizeX = 61,
+            SizeY = 28,
+            SizeZ = 53,
+            Metadata = new Dictionary<string, object> { { "prefab", "army_camp_01" } },
+        };
+        var circular = new Takaro.TakaroLocation
+        {
+            Name = "Spawn",
+            Position = new Takaro.TakaroPosition(),
+            Radius = 30,
+        };
+
+        // ILocationDTO: position {x,y,z}, name string, optional numeric radius and
+        // sizes, optional string code, optional metadata object, nothing else.
+        var allowed = new HashSet<string>
+        {
+            "position",
+            "radius",
+            "sizeX",
+            "sizeY",
+            "sizeZ",
+            "name",
+            "code",
+            "metadata",
+        };
+        foreach (Takaro.TakaroLocation location in new[] { rectangular, circular })
+        {
+            JObject wire = SerializeFrame(location);
+            foreach (JProperty property in wire.Properties())
+                True(
+                    allowed.Contains(property.Name),
+                    "location property " + property.Name + " is in ILocationDTO"
+                );
+            Equal(JTokenType.String, wire["name"].Type, "location name is a string");
+            foreach (string axis in new[] { "x", "y", "z" })
+            {
+                JTokenType type = wire["position"][axis].Type;
+                True(
+                    type == JTokenType.Integer || type == JTokenType.Float,
+                    "location position " + axis + " is a number"
+                );
+            }
+            foreach (string optional in new[] { "radius", "sizeX", "sizeY", "sizeZ" })
+            {
+                if (wire[optional] != null)
+                    True(
+                        wire[optional].Type == JTokenType.Integer
+                            || wire[optional].Type == JTokenType.Float,
+                        "location " + optional + " is a number"
+                    );
+            }
+            if (wire["code"] != null)
+                Equal(JTokenType.String, wire["code"].Type, "location code is a string");
+            if (wire["metadata"] != null)
+                Equal(JTokenType.Object, wire["metadata"].Type, "location metadata is an object");
+        }
     }
 
     private static void AssertMissingLocalisationIsNotShown()
@@ -500,6 +969,479 @@ public static class ContractHarness
         Equal(2, capped.InFlightCount, "in-flight list is capped");
         Equal(2, capped.RequeueInFlight(1), "capped in-flight events are requeued");
         Equal("x2", capped.PeekHead().Json, "requeue keeps the newest unconfirmed events in order");
+    }
+
+    private static Takaro.Persistence.BanRecord BanRecordFor(
+        string banId,
+        string crossplatformId,
+        string name = null
+    )
+    {
+        return Takaro.Services.BanIdentity.ToRecord(
+            banId,
+            crossplatformId,
+            null,
+            name,
+            "fixture",
+            null
+        );
+    }
+
+    private static void AssertBanCaptureKeepsOneRecordPerPlayer()
+    {
+        var captured = new List<Takaro.Persistence.BanRecord>
+        {
+            BanRecordFor("Steam_1", "EOS_abc", "first"),
+            BanRecordFor("EOS_abc", "EOS_abc", "second"),
+            BanRecordFor("XBL_9", "EOS_def"),
+            BanRecordFor("Steam_7", null),
+            BanRecordFor("EOS_ghi", "EOS_ghi"),
+        };
+        True(captured[3] == null, "a native ban of an unknown player has no EOS id");
+
+        var distinct = Takaro.Services.BanIdentity.DistinctByGameId(captured);
+        Equal(3, distinct.Count, "one record per player, unresolvable entries dropped");
+        Equal("abc", distinct[0].GameId, "records keep the mirror order");
+        Equal("Steam_1", distinct[0].Id, "the first entry of a doubly banned player wins");
+        Equal("first", distinct[0].Name, "the winning entry carries its own metadata");
+        Equal("def", distinct[1].GameId, "a native ban is reported under the EOS id");
+        Equal("ghi", distinct[2].GameId, "a plain EOS ban is kept");
+    }
+
+    private static KeyValuePair<string, string> StoredBan(string banId, string eosId)
+    {
+        return new KeyValuePair<string, string>(banId, eosId);
+    }
+
+    private static string LiftedBy(string gameId, params KeyValuePair<string, string>[] entries)
+    {
+        List<int> selected = Takaro.Services.BanIdentity.SelectEntriesToLift(gameId, entries);
+        var ids = new List<string>();
+        foreach (int index in selected)
+            ids.Add(entries[index].Key);
+        return string.Join(",", ids);
+    }
+
+    // listBans reports a Steam_/XBL_ entry under the player's EOS id, so unban by that
+    // id has to find the entry again or the 60 s resync brings the ban back.
+    private static void AssertUnbanLiftsTheEntriesTheMirrorReports()
+    {
+        var entries = new[]
+        {
+            StoredBan("Steam_1", "EOS_abc"),
+            StoredBan("EOS_abc", "EOS_abc"),
+            StoredBan("XBL_9", "EOS_def"),
+            StoredBan("EOS_ghi", null),
+            StoredBan("Steam_7", null),
+        };
+
+        Equal(
+            "Steam_1,EOS_abc",
+            LiftedBy("abc", entries),
+            "unban lifts the native and the EOS ban of the same player"
+        );
+        Equal("XBL_9", LiftedBy("def", entries), "unban lifts an XBL ban by EOS id");
+        Equal("EOS_ghi", LiftedBy("ghi", entries), "unban still lifts a plain EOS ban");
+        Equal("", LiftedBy("zzz", entries), "an unknown gameId lifts nothing");
+        Equal("", LiftedBy("7", entries), "a native id is not a gameId");
+        Equal(
+            "Steam_1",
+            LiftedBy("abc", StoredBan("Steam_1", "EOS_abc")),
+            "a lone native ban is lifted by the EOS id listBans reported"
+        );
+        Equal(
+            "",
+            LiftedBy("abc", StoredBan("Steam_1", null)),
+            "a native ban of a player the game cannot resolve is not reported, so not lifted"
+        );
+
+        Equal(
+            "BlockedPlayerList+AdminTools.Blacklist",
+            Takaro.Services.BanIdentity.UnbanMethod(true, 1),
+            "a player in both stores is lifted from both"
+        );
+        Equal(
+            "BlockedPlayerList",
+            Takaro.Services.BanIdentity.UnbanMethod(true, 0),
+            "a block alone is lifted"
+        );
+        Equal(
+            "AdminTools.Blacklist",
+            Takaro.Services.BanIdentity.UnbanMethod(false, 2),
+            "Blacklist entries alone are lifted"
+        );
+        True(
+            Takaro.Services.BanIdentity.UnbanMethod(false, 0) == null,
+            "nothing lifted is not_found"
+        );
+    }
+
+    private static void AssertBanCaptureMergesBothStores()
+    {
+        var skipped = new List<string>();
+        var blacklist = new[]
+        {
+            new Takaro.Services.BanIdentity.BanSource
+            {
+                BanId = "Steam_1",
+                CrossplatformId = "EOS_abc",
+                NativeId = "Steam_1",
+                Name = "timed",
+                Reason = "griefing",
+                ExpiresAt = "2030-01-01T00:00:00.000Z",
+            },
+            new Takaro.Services.BanIdentity.BanSource { BanId = "Steam_7" },
+        };
+        var blocked = new[]
+        {
+            new Takaro.Services.BanIdentity.BanSource
+            {
+                BanId = "EOS_abc",
+                CrossplatformId = "EOS_abc",
+                Name = "blocked",
+                Reason = "Blocked",
+            },
+            new Takaro.Services.BanIdentity.BanSource
+            {
+                BanId = "EOS_def",
+                CrossplatformId = "EOS_def",
+                NativeId = "XBL_9",
+                Name = "xbox",
+                Reason = "Blocked",
+            },
+        };
+
+        List<Takaro.Persistence.BanRecord> captured = Takaro.Services.BanIdentity.Capture(
+            blacklist,
+            blocked,
+            skipped.Add
+        );
+
+        Equal(2, captured.Count, "both stores are merged into one record per player");
+        Equal("abc", captured[0].GameId, "the Blacklist entry comes first");
+        Equal("timed", captured[0].Name, "the Blacklist entry wins over the block");
+        Equal("griefing", captured[0].Reason, "the Blacklist reason survives the merge");
+        Equal("1", captured[0].SteamId, "the native id is reported");
+        Equal("def", captured[1].GameId, "a block that only the BlockedPlayerList holds is kept");
+        Equal("9", captured[1].XboxLiveId, "the block's native id is reported");
+        Equal(
+            "Steam_7",
+            string.Join(",", skipped),
+            "an entry without an EOS id is reported skipped"
+        );
+    }
+
+    private const string AcceptedV1 =
+        "{\"type\":\"identifyResponse\",\"payload\":{\"gameServerId\":\"gs-1\",\"protocolVersion\":1}}";
+    private const string AcceptedV0 =
+        "{\"type\":\"identifyResponse\",\"payload\":{\"gameServerId\":\"gs-1\"}}";
+    private const string GameEventFrame =
+        "{\"type\":\"gameEvent\",\"payload\":{\"type\":\"chat\",\"data\":{}}}";
+
+    private sealed class SessionRig
+    {
+        public long Now = 1000L * TimeSpan.TicksPerSecond;
+        public readonly OutboundLedger Ledger;
+        public readonly TransportSession Session;
+        public long Socket;
+
+        public SessionRig(string streamId = "stream-a")
+        {
+            Ledger = new OutboundLedger(50, 50, streamId);
+            Session = new TransportSession(Ledger, () => Now);
+        }
+
+        public void Advance(int seconds)
+        {
+            Now += seconds * TimeSpan.TicksPerSecond;
+        }
+
+        // A socket that has been opened and has written identify.
+        public void OpenSocket()
+        {
+            Socket = Session.BeginSocket();
+            Session.MarkOpened();
+            Session.MarkIdentifySent();
+        }
+
+        public InboundResult Receive(string frame)
+        {
+            return Session.HandleInbound(Socket, true, frame);
+        }
+
+        // Identify accepted and confirmed, then what the sender does first on a
+        // confirmed socket: requeue the events the previous socket left unconfirmed.
+        public int Accept(string identifyResponse)
+        {
+            Equal(
+                InboundKind.IdentifyAccepted,
+                Receive(identifyResponse).Kind,
+                "identify is accepted"
+            );
+            True(Session.TryConfirm(), "an accepted identify confirms the connection");
+            return Session.ReplayUnconfirmedOnNewSocket();
+        }
+
+        public void Write(int events, bool ping)
+        {
+            for (int i = 0; i < events; i++)
+                Ledger.Enqueue(GameEventFrame, true, false);
+            if (ping)
+                Ledger.Enqueue("{\"type\":\"ping\"}", false, true);
+            while (Ledger.PeekHead() != null)
+                Ledger.MarkHeadWritten();
+        }
+    }
+
+    private static void AssertIdentifyDeadline()
+    {
+        var rig = new SessionRig();
+        rig.OpenSocket();
+        rig.Advance(29);
+        True(!rig.Session.IdentifyOverdue(30), "identify is not overdue before the deadline");
+        rig.Advance(1);
+        True(rig.Session.IdentifyOverdue(30), "identify is overdue at the deadline");
+
+        rig.Session.DeadSocketClosing = true;
+        True(!rig.Session.IdentifyOverdue(30), "a socket already being closed is not closed twice");
+
+        var answered = new SessionRig();
+        answered.OpenSocket();
+        answered.Accept(AcceptedV1);
+        answered.Advance(120);
+        True(!answered.Session.IdentifyOverdue(30), "a confirmed socket has no deadline");
+
+        var refused = new SessionRig();
+        refused.OpenSocket();
+        refused.Receive(
+            "{\"type\":\"identifyResponse\",\"payload\":null,\"error\":{\"code\":\"unsupported\",\"message\":\"no\"}}"
+        );
+        refused.Advance(120);
+        True(!refused.Session.IdentifyOverdue(30), "a rejected socket is closed by the rejection");
+
+        var next = new SessionRig();
+        next.OpenSocket();
+        next.Advance(40);
+        True(next.Session.IdentifyOverdue(30), "the old socket is overdue");
+        next.OpenSocket();
+        True(!next.Session.IdentifyOverdue(30), "a new socket gets a fresh deadline");
+        Equal(0, next.Session.SecondsSinceOpened(), "uptime counts from the new socket");
+
+        int uptime = next.Session.MarkClosed(out bool wasConfirmed);
+        Equal(0, uptime, "closing reports the uptime");
+        True(!wasConfirmed, "an unanswered socket closes unconfirmed");
+        Equal(-1, next.Session.SecondsSinceInbound(), "no socket means no inbound clock");
+        True(!next.Session.IdentifyOverdue(30), "a closed socket has no deadline");
+    }
+
+    private static void AssertIdentifyAnswerSetsTheNegotiatedVersion()
+    {
+        var rig = new SessionRig();
+        rig.OpenSocket();
+        Equal(-1, rig.Session.ProtocolVersion, "no version before identify is answered");
+
+        Equal(InboundKind.Welcome, rig.Receive("{\"type\":\"connected\"}").Kind, "welcome frame");
+        True(!rig.Session.IsConfirmed, "the welcome frame is not an acknowledgement");
+        Equal(InboundKind.Ignored, rig.Receive("{\"type\":\"pong\"}").Kind, "early pong");
+        Equal(InboundKind.Ignored, rig.Receive("{\"type\":\"request\"}").Kind, "early request");
+        Equal(
+            InboundKind.Ignored,
+            rig.Session.HandleInbound(rig.Socket, false, AcceptedV1).Kind,
+            "binary frames never carry the identify answer"
+        );
+        True(!rig.Session.IsConfirmed, "nothing but identifyResponse confirms");
+
+        Equal(InboundKind.IdentifyAccepted, rig.Receive(AcceptedV1).Kind, "v1 acceptance");
+        Equal(1, rig.Session.ProtocolVersion, "the negotiated version is kept");
+        True(!rig.Session.IsConfirmed, "the transport confirms after logging the acceptance");
+        True(rig.Session.TryConfirm(), "first confirmation");
+        True(!rig.Session.TryConfirm(), "a socket is confirmed once");
+        Equal(InboundKind.Ignored, rig.Receive(AcceptedV1).Kind, "a second answer is ignored");
+
+        var legacy = new SessionRig();
+        legacy.OpenSocket();
+        legacy.Accept(AcceptedV0);
+        Equal(0, legacy.Session.ProtocolVersion, "an answer without a version means protocol 0");
+
+        var unsent = new SessionRig();
+        unsent.Session.BeginSocket();
+        unsent.Session.MarkOpened();
+        unsent.Receive(AcceptedV1);
+        True(
+            !unsent.Session.TryConfirm(),
+            "a socket whose identify was not written is not confirmed"
+        );
+
+        rig.Session.BeginSocket();
+        Equal(-1, rig.Session.ProtocolVersion, "a new socket renegotiates the version");
+    }
+
+    private static void AssertRefusedIdentifyIsNeverConfirmed()
+    {
+        string[] codes = { "unsupported", "no_shared_protocol_version", "invalid_args" };
+        foreach (string code in codes)
+        {
+            var rig = new SessionRig();
+            rig.OpenSocket();
+            InboundResult result = rig.Receive(
+                "{\"type\":\"identifyResponse\",\"payload\":null,\"error\":{\"code\":\""
+                    + code
+                    + "\",\"message\":\"refused\"}}"
+            );
+            Equal(InboundKind.IdentifyRejected, result.Kind, code + " is a rejection");
+            Equal(code, result.Reply.ErrorCode, code + " keeps its code");
+            True(rig.Session.IdentifyRejected, code + " marks the socket rejected");
+            True(!rig.Session.IsConfirmed, code + " never confirms");
+            Equal(-1, rig.Session.ProtocolVersion, code + " negotiates no version");
+            Equal(
+                InboundKind.Ignored,
+                rig.Receive(AcceptedV1).Kind,
+                code + " later answers are ignored"
+            );
+            Equal(InboundKind.Ignored, rig.Receive("{\"type\":\"pong\"}").Kind, code + " pongs");
+            Equal(
+                InboundKind.Ignored,
+                rig.Receive("{\"type\":\"request\"}").Kind,
+                code + " requests"
+            );
+
+            rig.OpenSocket();
+            True(!rig.Session.IdentifyRejected, code + " does not poison the next socket");
+        }
+
+        True(
+            TransportSession.RejectionAdvice("unsupported").Contains("Connector Migration"),
+            "an unsupported refusal names the pending migration"
+        );
+        True(
+            TransportSession.RejectionAdvice("no_shared_protocol_version").Contains("protocol"),
+            "a version refusal says no protocol version is shared"
+        );
+        True(
+            TransportSession.RejectionAdvice("invalid_args").Contains("RegistrationToken"),
+            "other refusals point at the tokens"
+        );
+    }
+
+    private static void AssertAcknowledgementsAreRoutedByVersion()
+    {
+        Func<string, long, string> ack = (stream, upTo) =>
+            "{\"type\":\"eventAck\",\"payload\":{\"streamId\":\""
+            + stream
+            + "\",\"upTo\":"
+            + upTo
+            + "}}";
+        const string eventError =
+            "{\"type\":\"eventError\",\"payload\":{\"streamId\":\"stream-a\",\"seq\":1},\"error\":{\"code\":\"invalid_args\",\"message\":\"bad\"}}";
+
+        var v1 = new SessionRig();
+        v1.OpenSocket();
+        v1.Accept(AcceptedV1);
+        v1.Write(3, true);
+        Equal(3, v1.Ledger.InFlightCount, "three events wait for an acknowledgement");
+
+        Equal(InboundKind.EventAck, v1.Receive(ack("stream-a", 2)).Kind, "v1 eventAck");
+        Equal(InboundKind.EventAck, v1.Receive(ack("stream-b", 3)).Kind, "foreign eventAck");
+        Equal(
+            InboundKind.EventAck,
+            v1.Receive("{\"type\":\"eventAck\",\"payload\":{}}").Kind,
+            "bad eventAck"
+        );
+        Equal(InboundKind.Pong, v1.Receive("{\"type\":\"pong\"}").Kind, "v1 pong");
+        Equal(InboundKind.EventError, v1.Receive(eventError).Kind, "v1 eventError");
+        Equal(InboundKind.Request, v1.Receive("{\"type\":\"request\"}").Kind, "request is routed");
+        Equal(3, v1.Ledger.InFlightCount, "nothing is acknowledged until the sender applies it");
+        v1.Session.ApplyAcknowledgements();
+        Equal(1, v1.Ledger.InFlightCount, "ack up to 2 confirms two events, the pong none");
+
+        var v0 = new SessionRig();
+        v0.OpenSocket();
+        v0.Accept(AcceptedV0);
+        v0.Write(2, true);
+        Equal(
+            InboundKind.Request,
+            v0.Receive(ack("stream-a", 2)).Kind,
+            "v0 does not know eventAck"
+        );
+        Equal(InboundKind.Request, v0.Receive(eventError).Kind, "v0 does not know eventError");
+        Equal(InboundKind.Pong, v0.Receive("{\"type\":\"pong\"}").Kind, "v0 pong");
+        v0.Session.ApplyAcknowledgements();
+        Equal(0, v0.Ledger.InFlightCount, "a pong confirms the events written before its ping");
+
+        var stale = new SessionRig();
+        stale.OpenSocket();
+        stale.Accept(AcceptedV0);
+        stale.Write(1, true);
+        stale.Session.HandleInbound(stale.Socket - 1, true, "{\"type\":\"pong\"}");
+        stale.Session.ApplyAcknowledgements();
+        Equal(1, stale.Ledger.InFlightCount, "a pong from an older socket confirms nothing");
+    }
+
+    private static void AssertUnconfirmedEventsReplayOnTheNextSocket()
+    {
+        var v1 = new SessionRig();
+        v1.OpenSocket();
+        v1.Accept(AcceptedV1);
+        v1.Write(2, false);
+        Equal(2, v1.Ledger.InFlightCount, "two events are in flight");
+        True(!v1.Ledger.ConfirmsByPong, "v1 events are not confirmed by pong");
+
+        JObject first = JObject.Parse(
+            v1.Session.WireFrame(
+                new OutboundLedger.Entry
+                {
+                    Json = GameEventFrame,
+                    Replayable = true,
+                    Seq = 7,
+                }
+            )
+        );
+        Equal("stream-a", (string)first["payload"]["streamId"], "v1 events carry the stream");
+        Equal(7L, (long)first["payload"]["seq"], "v1 events carry their number");
+        Equal(
+            "{\"type\":\"pong\"}",
+            v1.Session.WireFrame(new OutboundLedger.Entry { Json = "{\"type\":\"pong\"}" }),
+            "v1 leaves non-events as they are"
+        );
+
+        v1.Session.MarkClosed(out _);
+        v1.OpenSocket();
+        Equal(2, v1.Accept(AcceptedV1), "v1 replays both unconfirmed events");
+        Equal(0, v1.Session.ReplayUnconfirmedOnNewSocket(), "replay happens once per socket");
+        Equal(2, v1.Ledger.PendingCount, "the events are back in the backlog");
+        Equal(1L, v1.Ledger.PeekHead().Seq, "the oldest event goes first, keeping its number");
+        v1.Write(0, true);
+        v1.Receive("{\"type\":\"pong\"}");
+        v1.Session.ApplyAcknowledgements();
+        Equal(2, v1.Ledger.InFlightCount, "a pong does not confirm v1 events");
+        v1.Receive("{\"type\":\"eventAck\",\"payload\":{\"streamId\":\"stream-a\",\"upTo\":2}}");
+        v1.Session.ApplyAcknowledgements();
+        Equal(0, v1.Ledger.InFlightCount, "the eventAck confirms the replayed events");
+
+        var v0 = new SessionRig();
+        v0.OpenSocket();
+        v0.Accept(AcceptedV0);
+        v0.Write(1, false);
+        Equal(
+            GameEventFrame,
+            v0.Session.WireFrame(
+                new OutboundLedger.Entry
+                {
+                    Json = GameEventFrame,
+                    Replayable = true,
+                    Seq = 1,
+                }
+            ),
+            "v0 events are written unnumbered"
+        );
+        v0.Session.MarkClosed(out _);
+        v0.OpenSocket();
+        Equal(1, v0.Accept(AcceptedV0), "v0 replays its unconfirmed event");
+        True(v0.Ledger.ConfirmsByPong, "v0 keeps confirming by pong after a replay");
+        v0.Write(0, true);
+        v0.Receive("{\"type\":\"pong\"}");
+        v0.Session.ApplyAcknowledgements();
+        Equal(0, v0.Ledger.InFlightCount, "the pong of the new socket confirms the replayed event");
     }
 
     private static void AssertPublishedEvent(string expectedType, out JObject eventData)
@@ -682,6 +1624,250 @@ public static class ContractHarness
         Equal(1, GameManager.Instance.ItemDrops.Count, "fallback drops one stack at the player");
         Equal(2, GameManager.Instance.ItemDrops[0].Stack.count, "fallback keeps the amount");
         Equal(0, world.Spawned.Count, "fallback spawns no collect entity");
+    }
+
+    private static void AssertLegacyParityIdentities(JObject legacy)
+    {
+        foreach (JToken identityCase in (JArray)legacy["identities"])
+        {
+            string name = (string)identityCase["name"];
+            JToken input = identityCase["input"];
+            ClientInfo client = new ClientInfo
+            {
+                CrossplatformId = new PlatformUserIdentifierAbs
+                {
+                    CombinedString = (string)input["crossplatformId"],
+                },
+                PlatformId = new PlatformUserIdentifierAbs
+                {
+                    CombinedString = (string)input["platformId"],
+                },
+                playerName = (string)input["playerName"],
+            };
+            var shapes = new Dictionary<string, Takaro.TakaroPlayer>
+            {
+                { "connected", Takaro.Shared.TransformClientInfoToTakaroPlayer(client) },
+                {
+                    "event identity",
+                    Takaro.Shared.TransformClientInfoToTakaroPlayerIdentity(client)
+                },
+                {
+                    "mirror record",
+                    Takaro.Shared.TransformPlayerRecordToTakaroPlayer(
+                        Takaro.Shared.BuildPlayerRecord(client)
+                    )
+                },
+            };
+            foreach (KeyValuePair<string, Takaro.TakaroPlayer> shape in shapes)
+                AssertMatchesLegacyPlayer(
+                    JObject.Parse(JsonConvert.SerializeObject(shape.Value)),
+                    identityCase,
+                    name + " " + shape.Key
+                );
+        }
+    }
+
+    private static void AssertMatchesLegacyPlayer(JObject wire, JToken fixtureCase, string label)
+    {
+        var legacyKeys = new HashSet<string>();
+        foreach (JProperty expected in ((JObject)fixtureCase["legacy"]).Properties())
+        {
+            legacyKeys.Add(expected.Name);
+            Equal((string)expected.Value, (string)wire[expected.Name], label + " " + expected.Name);
+        }
+        foreach (JProperty modOnly in ((JObject)fixtureCase["modOnly"]).Properties())
+        {
+            legacyKeys.Add(modOnly.Name);
+            // The mirror record carries no platformId; only live shapes assert it.
+            if (!label.EndsWith("mirror record"))
+                Equal(
+                    (string)modOnly.Value,
+                    (string)wire[modOnly.Name],
+                    label + " " + modOnly.Name
+                );
+        }
+        foreach (
+            string identityKey in new[]
+            {
+                "steamId",
+                "xboxLiveId",
+                "epicOnlineServicesId",
+                "platformId",
+            }
+        )
+        {
+            if (!legacyKeys.Contains(identityKey))
+                True(wire[identityKey] == null, label + " has no " + identityKey);
+        }
+    }
+
+    private static void AssertLegacyParityBans(JObject legacy)
+    {
+        foreach (JToken banCase in (JArray)legacy["bans"]["cases"])
+        {
+            string name = "ban " + (string)banCase["name"];
+            Takaro.Persistence.BanRecord record = Takaro.Services.BanIdentity.ToRecord(
+                (string)banCase["banId"],
+                (string)banCase["crossplatformId"],
+                null,
+                null,
+                "fixture",
+                null
+            );
+            if (banCase["expected"].Type == JTokenType.Null)
+            {
+                True(record == null, name + " is skipped, as the legacy integration did");
+                continue;
+            }
+
+            True(record != null, name + " is sent");
+            JObject wire = JObject.Parse(
+                JsonConvert.SerializeObject(
+                    Takaro.Shared.TransformBanRecordToTakaroBan(record).Player
+                )
+            );
+            foreach (JProperty expected in ((JObject)banCase["expected"]).Properties())
+                Equal(
+                    (string)expected.Value,
+                    (string)wire[expected.Name],
+                    name + " " + expected.Name
+                );
+            True(
+                !((string)wire["gameId"]).StartsWith("Steam_")
+                    && !((string)wire["gameId"]).StartsWith("XBL_")
+                    && !((string)wire["gameId"]).StartsWith("EOS_"),
+                name + " gameId is a bare EOS id"
+            );
+            True(
+                !((string)wire["name"]).Contains("Steam_")
+                    && !((string)wire["name"]).Contains("XBL_"),
+                name + " fallback name carries no platform prefix"
+            );
+        }
+
+        JToken legacyOnly = legacy["bans"]["legacyResult"][0];
+        Takaro.Persistence.BanRecord eosRecord = Takaro.Services.BanIdentity.ToRecord(
+            "EOS_" + (string)legacyOnly["gameId"],
+            null,
+            null,
+            null,
+            null,
+            null
+        );
+        Equal(
+            "Player_" + (string)legacyOnly["gameId"],
+            eosRecord.Name,
+            "unnamed EOS ban gets a bare-id name"
+        );
+    }
+
+    private static void AssertLegacyParityGiveQuality(JObject legacy)
+    {
+        foreach (JToken giveCase in (JArray)legacy["giveItem"]["cases"])
+        {
+            string name = "give " + (string)giveCase["name"];
+            GameManager.Instance.ResetGiveItemFixture();
+            AssertGiveItemTerminal(
+                GiveItemArgs("fixture-player", "resourceWood", 2, (string)giveCase["quality"]),
+                WebSocketMessage.MessageTypes.Response,
+                name
+            );
+            ushort delivered = GameManager
+                .Instance
+                .World
+                .Spawned[0]
+                .CreationData
+                .itemStack
+                .itemValue
+                .Quality;
+            Equal((ushort)(int)giveCase["expected"], delivered, name + " matches the legacy give");
+        }
+
+        foreach (string quality in new[] { null, "", "4" })
+        {
+            GameManager.Instance.ResetGiveItemFixture();
+            ItemClass.list[42] = new ItemClass { HasSubItems = true };
+            AssertGiveItemTerminal(
+                GiveItemArgs("fixture-player", "resourceWood", 1, quality),
+                WebSocketMessage.MessageTypes.Response,
+                "give sub-item quality " + (quality ?? "absent")
+            );
+            ItemValue delivered = GameManager
+                .Instance
+                .World
+                .Spawned[0]
+                .CreationData
+                .itemStack
+                .itemValue;
+            Equal(
+                quality == "4" ? (ushort)4 : Constants.cItemMaxQuality,
+                delivered.Modifications[0].Quality,
+                "sub-item modification quality for " + (quality ?? "absent")
+            );
+        }
+    }
+
+    private static void AssertLegacyParityEntityKilled(JObject legacy)
+    {
+        Takaro.TakaroPlayer killer = new Takaro.TakaroPlayer { GameId = "fixture-player" };
+        foreach (JToken killCase in (JArray)legacy["entityKilled"])
+        {
+            string className = (string)killCase["entityClassName"];
+            string name = Takaro.Shared.EntityKillName(className, "Zombie");
+            Equal((string)killCase["expected"], name, "entity kill name for " + className);
+            if (killCase["localizedName"] != null)
+                True(
+                    name != (string)killCase["localizedName"],
+                    "entity kill is not the localized name"
+                );
+
+            WebSocketTransport.Instance.TerminalMessages.Clear();
+            GameEventPublisher.SendEntityKilled(killer, name, null);
+            AssertPublishedEvent("entity-killed", out JObject published);
+            Equal(className, (string)published["entity"], "published entity for " + className);
+        }
+
+        Equal("zombie", Takaro.Shared.EntityKillName(null, "Zombie"), "unnamed zombie fallback");
+        Equal("animal", Takaro.Shared.EntityKillName("", "Animal"), "unnamed animal fallback");
+    }
+
+    private static void AssertLegacyParityChatChannels(JObject legacy)
+    {
+        JObject expected = (JObject)legacy["chatChannels"]["expected"];
+        var allowed = new HashSet<string>(legacy["chatChannels"]["allowed"].Values<string>());
+        foreach (EChatType type in Enum.GetValues(typeof(EChatType)))
+        {
+            string channel = GameEventPublisher.ChatChannelFor(type);
+            Equal((string)expected[type.ToString()], channel, "chat channel for " + type);
+            True(allowed.Contains(channel), "chat channel " + channel + " is one Takaro accepts");
+        }
+        Equal(
+            (string)expected["other"],
+            GameEventPublisher.ChatChannelFor((EChatType)99),
+            "unknown chat type maps to global"
+        );
+
+        WebSocketTransport.Instance.TerminalMessages.Clear();
+        GameEventPublisher.SendChatMessage(
+            new ClientInfo
+            {
+                CrossplatformId = new PlatformUserIdentifierAbs
+                {
+                    CombinedString = "EOS_fixture-player",
+                },
+                PlatformId = new PlatformUserIdentifierAbs
+                {
+                    CombinedString = "Steam_fixture-player",
+                },
+                playerName = "Fixture Player",
+            },
+            (EChatType)99,
+            1,
+            "hello",
+            null
+        );
+        AssertPublishedEvent("chat-message", out JObject chat);
+        Equal("global", (string)chat["channel"], "unknown chat type is published as global");
     }
 
     private static void AssertGiveItemProductionValidationAndCardinality()
@@ -1762,15 +2948,22 @@ namespace Takaro.WebSocket
     {
         public static readonly WebSocketTransport Instance = new WebSocketTransport();
         public readonly List<WebSocketMessage> TerminalMessages = new List<WebSocketMessage>();
+        public readonly List<string> ErrorCodes = new List<string>();
+        public int ProtocolVersion;
 
         public void Send(WebSocketMessage message)
         {
             TerminalMessages.Add(message);
         }
 
-        public void SendErrorResponse(string requestId, string message)
+        public void SendErrorResponse(
+            string requestId,
+            string message,
+            string code = ProtocolErrorCodes.GameError
+        )
         {
-            Send(WebSocketMessage.CreateErrorResponse(requestId, message));
+            ErrorCodes.Add(code);
+            Send(WebSocketMessage.CreateErrorResponse(requestId, message, code, ProtocolVersion));
         }
     }
 }
@@ -1902,6 +3095,7 @@ namespace Takaro.Persistence
         public string Name { get; set; }
         public string Ip { get; set; }
         public int Ping { get; set; }
+        public int EntityId { get; set; }
         public string SteamId { get; set; }
         public string XboxLiveId { get; set; }
         public string EpicOnlineServicesId { get; set; }
@@ -1914,6 +3108,7 @@ namespace Takaro.Persistence
 
     public sealed class BanRecord
     {
+        public string Id { get; set; }
         public string GameId { get; set; }
         public string Name { get; set; }
         public string SteamId { get; set; }
@@ -2009,7 +3204,10 @@ public sealed class ItemValue
     {
         this.type = type;
         Quality = 0;
-        Modifications = new ItemValue[0];
+        Modifications =
+            ItemClass.list.TryGetValue(type, out ItemClass itemClass) && itemClass.HasSubItems
+                ? new[] { new ItemValue(-2, false) }
+                : new ItemValue[0];
     }
 
     // The V3.3.0 accessors that replaced the public Modifications array.

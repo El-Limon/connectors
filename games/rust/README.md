@@ -5,7 +5,9 @@ A server-side-only plugin that connects a Rust dedicated server to Takaro. It is
 **Carbon**, which runs the same plugins. Players do not install anything.
 
 **Tested live against Rust public build 25823813 (the 2026-10-09 update) with Carbon v2.0.262,
-with a real game client.** Other Rust builds and other Carbon builds are unverified — the plugin will very likely
+with a real game client.** The release targets public build 25902425 (the 2026-10-13 update, same
+Carbon v2.0.262): CI compiles and protocol-checks the plugin on it, but it has not been tested with a
+game client yet. Other Rust builds and other Carbon builds are unverified — the plugin will very likely
 still load, but nothing here was checked against them.
 
 ## Install
@@ -31,7 +33,7 @@ From the latest `rust-vX.Y.Z` release on the releases page
 
 download either name — they are the same bytes:
 
-- **`takaro-rust-plugin-carbon-25823813-<version>.cs`** — the build's own name, which says exactly
+- **`takaro-rust-plugin-carbon-25902425-<version>.cs`** — the build's own name, which says exactly
   which Rust build and which Carbon it was verified against.
 - **`TakaroConnector.cs`** — the same file under the name the framework loads. Direct link pattern:
   `https://github.com/gettakaro/connectors/releases/download/rust-v<version>/TakaroConnector.cs`
@@ -175,13 +177,13 @@ implemented or not supported.
 | Shop & economy | ✅ | Currency, buying a listing and delivering it into the player's inventory. |
 | Discord chat bridge | ✅ | Both ways: game chat appears in Discord, Discord messages appear in game. |
 | Oxide / uMod | ⚠️ | Written against the Oxide plugin API, but only Carbon has been run. |
-| Map info | ✅ | Reports the world size so Takaro and the player map can draw it. |
-| Map tiles | ✅ | The server draws the game's own world map once per world and serves it as map tiles. |
+| Map info | ⚠️ | Reports the world size so Takaro and the player map can draw it. Proven only on Takaro staging; not yet verified on takaro.io. |
+| Map tiles | ⚠️ | The server draws the game's own world map once per world and serves it as map tiles. Proven only on Takaro staging; not yet verified on takaro.io. |
 
 ### Known issues
 
-- **The first start on a new map pauses the server for a few seconds** while it draws the world map
-  (about 4 s for a 1000 m map, longer for big maps). Later starts reuse the saved drawing.
+- **The first start on a new map pauses the server** while it draws the world map: 3.6 s to 12 s
+  for a 1000 m map in our runs, not measured on big maps (expect longer). Later starts reuse the saved drawing.
 - **Item quality is not reported.** Inventory entries always come back with an empty quality field.
 - **Unknown console commands look successful.** Rust gives no error for a command it does not know.
 - **Releases 0.0.4 to 0.1.0 made every ban permanent.** Update to get working timed bans.

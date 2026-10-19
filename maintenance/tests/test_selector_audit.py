@@ -178,6 +178,11 @@ ALLOWLIST: tuple[Allow, ...] = (
         r"production_build",
         "the input pins sha256 and size; the tag is an address, not an identity (games/rust/DEVELOPMENT.md)",
     ),
+    Allow(
+        "catalog/rust/targets/carbon-25902425.json",
+        r"production_build",
+        "the input pins sha256 and size; the tag is an address, not an identity (games/rust/DEVELOPMENT.md)",
+    ),
 )
 
 
@@ -472,7 +477,7 @@ def test_the_catalog_rigs_take_their_images_from_the_resolved_target() -> None:
 #: asset name stays on record for a release. Anything else pointing at an unknown role is a typo.
 RETIRED_ALIASES = {
     # The sidecar was dropped in enshrouded 0.6.0: the plugin connects to Takaro itself.
-    ("enshrouded", "takaro-enshrouded-sidecar.zip"): "proton-1024233/sidecar",
+    ("enshrouded", "takaro-enshrouded-sidecar.zip"): "proton-1267041/sidecar",
 }
 
 
