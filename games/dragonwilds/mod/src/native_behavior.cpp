@@ -1,4 +1,5 @@
 #include "native_behavior.h"
+#include "game_profile.h"
 #include "native_log.h"
 #include "actions.h"
 #include "common.h"
@@ -888,6 +889,8 @@ ActionOutcome Engine::ExecuteAction(const PreparedAction& p) {
                                       {"reason", Str(kv.second, "reason")},
                                       {"expiresAt", kv.second.value("expiresAt", Json())}});
             out.payloadJson = mapped.dump();
+        } else if (action == "getGameIcon") {
+            out.payloadJson = GameProfile::IconResponseJson();
         } else if (action == "shutdown") {
             out.payloadJson = "{}";
             out.deferredShutdown = true;
@@ -1351,4 +1354,30 @@ std::string Engine::HealthJson() const {
 }
 
 NativePersistence::Result Engine::Publish() { return {true, {}}; }
+std::string CapabilityManifestJson(const std::string& gameVersion) {
+    Json manifest = Json::array();
+    for (const char* name : {"players.list", "players.get", "players.location", "players.inventory", "players.teleport",
+                             "items.list", "items.give", "entities.list", "locations.list", "chat.send",
+                             "console.execute", "moderation.kick", "moderation.ban", "moderation.unban",
+                             "moderation.listBans", "server.shutdown", "events.player-connected",
+                             "events.player-disconnected", "events.chat-message", "events.player-death",
+                             "events.entity-killed", "events.log"})
+        manifest.push_back(Json{{"name", name}});
+    manifest.push_back(Parse(GameProfile::CapabilityJson(gameVersion)));
+    return manifest.dump();
+}
+
+std::string ErrorCode(const std::string& message) {
+    const std::string m = Lower(message);
+    auto has = [&](const char* x) { return m.find(x) != std::string::npos; };
+    if (has("unknown takaro action") || has("cannot perform this action")) return "unsupported";
+    if (has("overloaded") || has("duplicate requestid") || has("response exceeds") || has("connection expired") ||
+        has("persistence") || has("native apply failed") || has("connector busy"))
+        return "internal";
+    if (has("not online") || has("unknown player") || has("no such player")) return "not_found";
+    if (has("requires") || has("must be") || has("expected player identifier") || has("invalid request") ||
+        has("argument json") || has("invalid position"))
+        return "invalid_args";
+    return "game_error";
+}
 }  // namespace NativeBehavior

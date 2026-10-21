@@ -72,6 +72,7 @@ environment variable wins over `takaro.cfg` and needs a restart to change.
 | `TAKARO_IDENTITY_TOKEN` | no | Filled in by the connector; keep it. |
 | `TAKARO_SERVER_NAME` | no | Server name shown in Takaro; unique in your Takaro domain. |
 | `TAKARO_WS_URL` | no | Default `wss://connect.takaro.io/`. |
+| `TAKARO_PROTOCOL` | no | Set `0` to stay on Takaro protocol version 0 (read at start). By default the connector offers versions 0 and 1 and Takaro picks. |
 | `TAKARO_SENDER_NAME` | no | Sender name for broadcasts; default is the server name. |
 | `TAKARO_STATE_DIR` | Docker: yes | A persistent, writable directory, e.g. `/opt/takaro-state`. Default `<server>/RSDragonwilds/Binaries/Linux/takaro`. |
 | `DRAGONWILDS_LOG_FILE` | no | The server log; found from the binary by default. |
@@ -161,6 +162,7 @@ Your `takaro.cfg` next to it, `.env` and the state directory are never touched.
 | Log events | ✅ | Passwords removed; rate-limited to stay under Takaro's limit. |
 | Map info | ❌ | Takaro has no map info for Generic game servers. |
 | Map tiles | ❌ | Takaro has no map tiles for Generic game servers. |
+| Game name, version and icon | ⚠️ | Needs Takaro protocol 1 (not yet on takaro.io). Takaro shows the server as RuneScape: Dragonwilds with the running game version (for example `1.0.1.1`), the game icon and the connector version. |
 | Modules: chat commands | ✅ |  |
 | Modules: hooks | ✅ |  |
 | Modules: cronjobs | ✅ |  |
