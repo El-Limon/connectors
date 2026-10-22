@@ -3,16 +3,25 @@
 local json = require("takaro.json")
 local coverage = require("takaro.coverage")
 local map = require("takaro.map")
+local profile = require("takaro.profile")
 
 local doc = json.object({
   game = "SCUM",
   connector = "Takaro SCUM native connector (UE4SS mod TakaroSCUM)",
   architecture = "in-process UE4SS mod inside SCUMServer.exe: Lua protocol + game adapter (Scripts/), C++ WinHTTP "
     .. "WebSocket transport (dlls/main.dll); outbound WSS only, no sidecar, no inbound port",
-  runtime = "SCUMServer.exe (Steam app 3792580) with UE4SS v3.0.1-1176-g1ba38db4",
+  runtime = "SCUMServer.exe (Steam app 3792580) with UE4SS v3.0.1-1181-g83330635",
   takaroConnection = "outbound_websocket",
   protocolVersions = { 0, 1 },
   map = map.dimension(),
+  gameProfile = json.object({
+    game = profile.GAME,
+    connector = profile.CONNECTOR_NAME,
+    name = profile.DISPLAY_NAME,
+    version = "the running build from GeneralProjectSettings.ProjectVersion (e.g. 1.3.4.2.161892), declared once read",
+    icon = profile.ICON_FILE .. " in the mod folder (256x256 PNG); revision = first 12 hex of its sha256",
+    actions = { "getGameIcon" },
+  }),
   statusDefinitions = json.object({
     ["live-supported"] = "proven end to end through Takaro on a real server",
     ["schema-fallback"] = "answers a valid empty or placeholder DTO; the game data is not wired yet or not available",

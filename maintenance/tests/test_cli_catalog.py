@@ -301,9 +301,11 @@ def test_the_wired_fixture_serves_exactly_the_targets_it_says(wired: Any) -> Non
         "carbon-25823813": "no repinner for platform 'carbon'",
         "carbon-25902425": "no repinner for platform 'carbon'",
         "fabric-26.3": "the repinner has no fixture for this target",
-        "linux-1.0.17": "no repinner for platform 'linux'",
+        "linux-1.0.20": "no repinner for platform 'linux'",
         "linux-25689360": "no repinner for platform 'linux'",
         "linux-25789279": "no repinner for platform 'linux'",
+        "linux-25936522": "no repinner for platform 'linux'",
+        "linux-26051014": "no repinner for platform 'linux'",
         "linux-25465077": "no repinner for platform 'linux'",
         "linux-25501739": "no repinner for platform 'linux'",
         "linux-25630937": "no repinner for platform 'linux'",
@@ -315,6 +317,7 @@ def test_the_wired_fixture_serves_exactly_the_targets_it_says(wired: Any) -> Non
         "linux-25947352": "no repinner for platform 'linux'",
         "linux-25966348": "no repinner for platform 'linux'",
         "linux-25991736": "no repinner for platform 'linux'",
+        "linux-25995664": "no repinner for platform 'linux'",
         "linux-21241282": "no repinner for platform 'linux'",
         "linux-3.2.0.b10": "no repinner for platform 'linux'",
         "linux-3.3.0.b18": "no repinner for platform 'linux'",
@@ -329,6 +332,7 @@ def test_the_wired_fixture_serves_exactly_the_targets_it_says(wired: Any) -> Non
         "windows-25738716": "no repinner for platform 'windows'",
         "windows-25792439": "no repinner for platform 'windows'",
         "windows-25803875": "no repinner for platform 'windows'",
+        "windows-25995664": "no repinner for platform 'windows'",
     }
     remaining = sorted(
         json.loads(path.read_text(encoding="utf-8"))["id"] for path in (wired.root / "catalog").glob("*/targets/*.json")

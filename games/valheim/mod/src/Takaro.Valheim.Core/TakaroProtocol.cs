@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Takaro.Valheim.Core;
 
@@ -8,18 +9,29 @@ public static class TakaroProtocol
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public static string CreateIdentify(ConnectorConfig config)
+    public static string CreateIdentify(ConnectorConfig config, GameProfile? profile = null, bool includeMap = false)
     {
-        return JsonSerializer.Serialize(new
+        var protocolVersions = new JsonArray();
+        foreach (var version in ProtocolHandshake.OfferedProtocolVersions)
         {
-            type = "identify",
-            payload = new
-            {
-                identityToken = config.IdentityToken,
-                registrationToken = config.RegistrationToken,
-                name = config.ServerName
-            }
-        }, JsonOptions);
+            protocolVersions.Add(version);
+        }
+
+        var payload = new JsonObject
+        {
+            ["identityToken"] = config.IdentityToken,
+            ["registrationToken"] = config.RegistrationToken,
+            ["name"] = config.ServerName,
+            ["protocolVersions"] = protocolVersions,
+            ["capabilities"] = ProtocolHandshake.BuildCapabilityManifest(profile, includeMap)
+        };
+        if (profile is not null)
+        {
+            payload["game"] = GameProfile.GameIdentifier;
+            payload["connector"] = profile.ToIdentifyConnector();
+        }
+
+        return new JsonObject { ["type"] = "identify", ["payload"] = payload }.ToJsonString();
     }
 
     /// <summary>
@@ -100,11 +112,33 @@ public static class TakaroProtocol
         string requestId,
         string action,
         TakaroActionResult result,
-        out string? response)
+        out string? response,
+        int protocolVersion = 0)
     {
         if (result.Success)
         {
             response = CreateResponse(requestId, result.Payload!);
+            return true;
+        }
+
+        if (protocolVersion >= 1)
+        {
+            if (action == TakaroActionNames.TestReachability)
+            {
+                // Unreachable is the answer to this action, not a failure of it.
+                response = CreateResponse(requestId, new { connectable = false, reason = FormatActionError(result) });
+            }
+            else if (action is TakaroActionNames.GetPlayer or TakaroActionNames.GetPlayerLocation
+                     && result.ErrorCode == "player_not_found")
+            {
+                // The protocol keeps null as the answer for a player who is not online.
+                response = JsonSerializer.Serialize(new { type = "response", requestId, payload = (object?)null }, JsonOptions);
+            }
+            else
+            {
+                response = CreateErrorResponse(requestId, ProtocolHandshake.ToProtocolErrorCode(result.ErrorCode), FormatActionError(result));
+            }
+
             return true;
         }
 
@@ -180,6 +214,17 @@ public static class TakaroProtocol
                 response = CreateResponse(requestId, new { error });
                 return true;
         }
+    }
+
+    /// <summary>The version 1 standard error shape: a present error wins over any payload.</summary>
+    public static string CreateErrorResponse(string requestId, string code, string message)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = "response",
+            requestId,
+            error = new { code, message }
+        }, JsonOptions);
     }
 
     public static string CreateGameEvent(string eventType, object data)

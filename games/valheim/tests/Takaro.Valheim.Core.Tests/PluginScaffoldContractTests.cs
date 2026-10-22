@@ -526,9 +526,9 @@ public sealed class PluginScaffoldContractTests
 
         StringAssert.Contains(source, "lifecycle event queued");
         Assert.IsFalse(source.Contains("event sent for", StringComparison.Ordinal));
-        StringAssert.Contains(source, "while (identified && pendingEvents.TryPeekUnsent(out var frame))");
+        StringAssert.Contains(source, "while (identified && pendingEvents.TryPeekUnsent(out var frame, out var streamSeq))");
         StringAssert.Contains(source, "pendingEvents.MarkSent(frame);");
-        StringAssert.Contains(source, "pendingEvents.ConfirmOldestCheckpoint();");
+        StringAssert.Contains(source, "pendingEvents.ConfirmOldestCheckpoint(releaseFrames: protocolVersion == 0);");
         StringAssert.Contains(source, "pendingEvents.ResetForNewConnection();");
         StringAssert.Contains(source, "activeSocket.Abort();");
         var identifiedAt = source.IndexOf("if (LogIdentifyResponse(message, out var rejection))", StringComparison.Ordinal);

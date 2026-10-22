@@ -3,7 +3,7 @@
 A BepInEx plugin (version **4.0.0**) that runs inside a Valheim dedicated server and connects it
 to Takaro. Players do not install anything: they join with plain, unmodified Valheim. Only
 reading a player's inventory needs an optional mod on that player's game
-([step 7](#7-optional-inventory-mod-for-players)). Built against **Valheim 1.0.17** with
+([step 7](#7-optional-inventory-mod-for-players)). Built against **Valheim 1.0.20** with
 **BepInExPack Valheim 5.4.2351**.
 
 ## Install
@@ -23,7 +23,7 @@ The exact server builds this connector is maintained for:
 <!-- takaro-maint:targets:begin -->
 | Target | Game version | Platform | Loader / API | Java | Support | Verified level |
 | --- | --- | --- | --- | --- | --- | --- |
-| `linux-1.0.17` | 1.0.17 | linux | — | None | maintained | contract |
+| `linux-1.0.20` | 1.0.20 | linux | — | None | candidate | contract |
 <!-- takaro-maint:targets:end -->
 
 ### 2. Download
@@ -31,7 +31,7 @@ The exact server builds this connector is maintained for:
 From the latest `valheim-v4.x.x` release at <https://github.com/gettakaro/connectors/releases>
 (also linked from <https://takaro.io/connectors/valheim>), download
 **`takaro-valheim-plugin.zip`**. The same zip is also published under its target name, for
-example `takaro-valheim-plugin-linux-1.0.17-4.0.0.zip`, next to a `SHA256SUMS` file. Do not use
+example `takaro-valheim-plugin-linux-1.0.20-4.0.0.zip`, next to a `SHA256SUMS` file. Do not use
 the `valheim-dev` pre-release.
 
 ### 3. Copy it into place
@@ -164,6 +164,7 @@ Tested on Valheim 1.0.16 with BepInExPack 5.4.2351 and a vanilla game client, 20
 | What | | Notes |
 |---|---|---|
 | Connection & heartbeat | ✅ | Dials out to Takaro; server shows online. |
+| Game name, build and icon | ✅ | Takaro shows "Valheim", the server's game build, the Valheim icon and the connector version. On a fresh install the icon can take up to about two hours to appear (Takaro fetches it on its periodic sync when the first try came before the world loaded). |
 | Player list | ✅ | Name, Steam id and online state. |
 | Single player lookup | ❌ | Takaro offers no route to ask for one player. |
 | Player location | ✅ | The server's known position; never invented. |
@@ -188,7 +189,7 @@ Tested on Valheim 1.0.16 with BepInExPack 5.4.2351 and a vanilla game client, 20
 | Entity kill event | ✅ | Every player kill counted; with the mod, assists aren't counted as kills. |
 | Log events | ✅ | Connector log lines forwarded (`enableLogEvents`). |
 | Map info | ⚠️ | The whole world map, drawn by the server from the world seed. Proven on Takaro staging; not yet verified on takaro.io. |
-| Map tiles | ⚠️ | Ready about 4 minutes after the first start, then at once on later starts. Shows the whole world, not only explored areas. Proven on Takaro staging; not yet verified on takaro.io. |
+| Map tiles | ⚠️ | Ready about 4 minutes after the first start, then at once on later starts. Shows the whole world, not only explored areas. Served to both older and current Takaro versions. Proven on Takaro staging; not yet verified on takaro.io. |
 | Modules: chat commands | ✅ | `@` commands work; replies show in normal chat. |
 | Modules: hooks | ✅ | Join, leave and chat hooks fire. |
 | Modules: cronjobs | ✅ | Run on schedule for this server. |

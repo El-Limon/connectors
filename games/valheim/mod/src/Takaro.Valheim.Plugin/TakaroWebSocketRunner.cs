@@ -20,6 +20,9 @@ public sealed class TakaroWebSocketRunner : IDisposable
     private readonly TakaroRequestDispatcher dispatcher;
     private readonly IMainThreadActionScheduler mainThreadActions;
     private readonly Action<string> log;
+    private readonly GameProfile? profile;
+    // Declared as the version 1 map when present; version 0 keeps getMapInfo/getMapTile.
+    private readonly WorldMapService? worldMap;
     private readonly CancellationTokenSource shutdown = new();
     private readonly SemaphoreSlim sendLock = new(1, 1);
     private readonly PlayerLifecyclePollCoordinator lifecycleCoordinator = new();
@@ -40,10 +43,10 @@ public sealed class TakaroWebSocketRunner : IDisposable
     private readonly object heartbeatLock = new();
     private ClientWebSocket? socket;
     private volatile bool identified;
-    // Identify goes out on connect and again on Takaro's "connected"; both are answered, and for a
-    // server Takaro does not know yet the second create can fail with a 409 while the first
-    // succeeds. Only the last outstanding answer decides a rejection.
-    private int identifiesAwaiting;
+    // Negotiated per connection; 0 until Takaro picks a version.
+    private volatile int protocolVersion;
+    // One event stream per process: kept across reconnects so Takaro dedupes resent events.
+    private readonly string streamId = Guid.NewGuid().ToString("N");
     private Task? runLoop;
 
     public TakaroWebSocketRunner(
@@ -53,9 +56,13 @@ public sealed class TakaroWebSocketRunner : IDisposable
         IMainThreadActionScheduler? mainThreadActions = null,
         Action<string>? warn = null,
         string configPath = "BepInEx/config/com.takaro.valheim.cfg",
-        TimeSpan? backoffUnit = null)
+        TimeSpan? backoffUnit = null,
+        GameProfile? profile = null,
+        WorldMapService? worldMap = null)
     {
         this.config = config;
+        this.profile = profile;
+        this.worldMap = worldMap;
         this.backoffUnit = backoffUnit ?? TimeSpan.FromSeconds(1);
         this.configPath = configPath;
         this.adapter = adapter;
@@ -146,7 +153,7 @@ public sealed class TakaroWebSocketRunner : IDisposable
         try
         {
             var wrote = false;
-            while (identified && pendingEvents.TryPeekUnsent(out var frame))
+            while (identified && pendingEvents.TryPeekUnsent(out var frame, out var streamSeq))
             {
                 var activeSocket = socket;
                 if (activeSocket is null || activeSocket.State != WebSocketState.Open)
@@ -154,7 +161,10 @@ public sealed class TakaroWebSocketRunner : IDisposable
                     return;
                 }
 
-                await SendOpenAsync(activeSocket, frame, cancellationToken);
+                await SendOpenAsync(
+                    activeSocket,
+                    protocolVersion >= 1 ? ProtocolHandshake.WithStreamPosition(frame, streamId, streamSeq) : frame,
+                    cancellationToken);
                 pendingEvents.MarkSent(frame);
                 wrote = true;
             }
@@ -197,7 +207,7 @@ public sealed class TakaroWebSocketRunner : IDisposable
         int confirmed;
         lock (heartbeatLock)
         {
-            confirmed = pendingEvents.ConfirmOldestCheckpoint();
+            confirmed = pendingEvents.ConfirmOldestCheckpoint(releaseFrames: protocolVersion == 0);
             oldestUnansweredPingAt = pendingEvents.OutstandingCheckpoints == 0
                 ? DateTimeOffset.MaxValue
                 : DateTimeOffset.UtcNow;
@@ -319,6 +329,7 @@ public sealed class TakaroWebSocketRunner : IDisposable
 
                 using var client = new ClientWebSocket();
                 identified = false;
+                protocolVersion = 0;
                 lock (heartbeatLock)
                 {
                     var resend = pendingEvents.ResetForNewConnection();
@@ -356,8 +367,7 @@ public sealed class TakaroWebSocketRunner : IDisposable
                     cancellationToken);
                 connectedAt = DateTimeOffset.UtcNow;
                 log("Takaro Valheim WebSocket connected.");
-                Interlocked.Exchange(ref identifiesAwaiting, 1);
-                await SendAsync(client, TakaroProtocol.CreateIdentify(current), cancellationToken);
+                await SendAsync(client, TakaroProtocol.CreateIdentify(current, profile, worldMap is not null), cancellationToken);
                 log("Takaro Valheim identify sent.");
                 attempt = 0;
 
@@ -560,6 +570,20 @@ public sealed class TakaroWebSocketRunner : IDisposable
         }
     }
 
+    private TakaroActionResult GetFrameTile(JsonElement args)
+    {
+        if (args.ValueKind != JsonValueKind.Object
+            || !args.TryGetProperty("dimension", out var dimension) || dimension.ValueKind != JsonValueKind.String
+            || !args.TryGetProperty("zoom", out var zoom) || zoom.ValueKind != JsonValueKind.Number || !zoom.TryGetInt32(out var z)
+            || !args.TryGetProperty("x", out var x) || x.ValueKind != JsonValueKind.Number || !x.TryGetInt32(out var tileX)
+            || !args.TryGetProperty("y", out var y) || y.ValueKind != JsonValueKind.Number || !y.TryGetInt32(out var tileY))
+        {
+            return TakaroActionResult.Error(ProtocolErrorCodes.InvalidArgs, "getMapTile needs { dimension, zoom, x, y }.");
+        }
+
+        return worldMap!.GetFrameTile(dimension.GetString()!, z, tileX, tileY);
+    }
+
     private async Task ReceiveLoopAsync(ClientWebSocket socket, ConnectorConfig current, CancellationToken cancellationToken)
     {
         var buffer = new byte[32 * 1024];
@@ -589,17 +613,16 @@ public sealed class TakaroWebSocketRunner : IDisposable
             if (ContainsIgnoreCase(message, "\"type\":\"connected\"")
                 || ContainsIgnoreCase(message, "\"type\": \"connected\""))
             {
-                log("Takaro Valheim WebSocket acknowledged by Takaro; sending identify.");
-                Interlocked.Increment(ref identifiesAwaiting);
-                await SendAsync(socket, TakaroProtocol.CreateIdentify(current), cancellationToken);
-                log("Takaro Valheim identify sent.");
+                // Informational: identify already went out when the socket opened. A second one
+                // would race the first create of a new server into a 409, which on protocol
+                // version 1 closes the socket.
+                log("Takaro Valheim WebSocket acknowledged by Takaro.");
                 continue;
             }
 
             if (ContainsIgnoreCase(message, "\"type\":\"identifyResponse\"")
                 || ContainsIgnoreCase(message, "\"type\": \"identifyResponse\""))
             {
-                var stillAwaiting = Math.Max(0, Interlocked.Decrement(ref identifiesAwaiting));
                 if (LogIdentifyResponse(message, out var rejection))
                 {
                     identified = true;
@@ -611,11 +634,40 @@ public sealed class TakaroWebSocketRunner : IDisposable
 
                     _ = Task.Run(() => FlushPendingEventsAsync(cancellationToken), cancellationToken);
                 }
-                else if (rejection is not null && !identified && stillAwaiting == 0)
+                else if (rejection is not null && !identified)
                 {
+                    // Thrown before Takaro's close arrives, so a rejection always backs off.
                     throw new IdentifyRejectedException(rejection);
                 }
 
+                continue;
+            }
+
+            if (ContainsIgnoreCase(message, "\"type\":\"eventAck\"")
+                || ContainsIgnoreCase(message, "\"type\": \"eventAck\""))
+            {
+                if (ProtocolHandshake.TryParseEventAck(message, out var ackedStream, out var upTo) && ackedStream == streamId)
+                {
+                    int acknowledged;
+                    lock (heartbeatLock)
+                    {
+                        acknowledged = pendingEvents.AcknowledgeUpTo(upTo);
+                    }
+
+                    if (acknowledged > 0)
+                    {
+                        log($"Takaro Valheim confirmed delivery of {acknowledged} event(s) up to seq {upTo}.");
+                    }
+                }
+
+                continue;
+            }
+
+            if (ContainsIgnoreCase(message, "\"type\":\"eventError\"")
+                || ContainsIgnoreCase(message, "\"type\": \"eventError\""))
+            {
+                // Takaro acknowledges rejected events too, so they are never resent.
+                log($"Takaro Valheim game event rejected by Takaro: {ProtocolHandshake.DescribeEventError(message)}");
                 continue;
             }
 
@@ -634,12 +686,32 @@ public sealed class TakaroWebSocketRunner : IDisposable
 
             var request = TakaroProtocol.ParseRequest(message);
             log($"Takaro Valheim request received: action={request.Action}, requestId={request.RequestId}.");
-            var response = await dispatcher.DispatchAsync(request, cancellationToken);
+            var version = protocolVersion;
+            TakaroActionResult response;
+            if (version >= 1 && !ProtocolHandshake.IsDeclared(request.Action, profile, worldMap is not null))
+            {
+                response = TakaroActionResult.Error(ProtocolErrorCodes.Unsupported, $"Valheim connector did not declare action '{request.Action}'.");
+            }
+            else if (version >= 1 && request.Action == TakaroActionNames.GetGameIcon)
+            {
+                // The icon is bytes shipped with the plugin; it never needs the game thread.
+                response = profile!.GetGameIcon();
+            }
+            else if (version >= 1 && request.Action == TakaroActionNames.GetMapTile)
+            {
+                // The version 1 shape { dimension, zoom, x, y }; rendering stays off the game loop.
+                response = GetFrameTile(request.Args);
+            }
+            else
+            {
+                response = await dispatcher.DispatchAsync(request, cancellationToken);
+            }
             if (!TakaroProtocol.TryCreateActionResponse(
                     request.RequestId,
                     request.Action,
                     response,
-                    out var responseFrame))
+                    out var responseFrame,
+                    version))
             {
                 if (suppressedResponseLogs.ShouldLog(request.Action, response.ErrorCode, DateTimeOffset.UtcNow))
                 {
@@ -736,30 +808,16 @@ public sealed class TakaroWebSocketRunner : IDisposable
         rejection = null;
         try
         {
-            using var doc = JsonDocument.Parse(message);
-            var payload = doc.RootElement.TryGetProperty("payload", out var payloadElement)
-                ? payloadElement
-                : default;
-
-            if (payload.ValueKind == JsonValueKind.Object
-                && payload.TryGetProperty("error", out var error)
-                && error.ValueKind != JsonValueKind.Null
-                && error.ValueKind != JsonValueKind.Undefined)
+            var reply = ProtocolHandshake.ParseIdentifyResponse(message);
+            if (reply.Accepted)
             {
-                rejection = TakaroProtocol.DescribeError(error);
-                log($"Takaro Valheim identification failed: {rejection}");
-                return false;
-            }
-
-            if (payload.ValueKind == JsonValueKind.Object
-                && payload.TryGetProperty("gameServerId", out var gameServerId)
-                && gameServerId.ValueKind == JsonValueKind.String)
-            {
-                log($"Takaro Valheim identified as gameServerId={gameServerId.GetString()}.");
+                protocolVersion = reply.ProtocolVersion;
+                log($"Takaro Valheim identified as gameServerId={reply.GameServerId} (protocol version {reply.ProtocolVersion}).");
                 return true;
             }
 
-            log("Takaro Valheim identifyResponse received without gameServerId.");
+            rejection = reply.ErrorCode is null ? reply.Reason : $"{reply.Reason} ({reply.ErrorCode})";
+            log($"Takaro Valheim identification failed: {rejection}");
             return false;
         }
         catch (Exception ex)

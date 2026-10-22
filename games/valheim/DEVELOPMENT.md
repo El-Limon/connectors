@@ -6,7 +6,7 @@ need [README.md](README.md).
 ## The catalog target
 
 Everything here is built against one catalog target,
-[`catalog/valheim/targets/linux-1.0.17.json`](../../catalog/valheim/targets/linux-1.0.17.json).
+[`catalog/valheim/targets/linux-1.0.20.json`](../../catalog/valheim/targets/linux-1.0.20.json).
 Unlike the other games in this catalog, a Valheim target pins **two** inputs:
 
 - `inputs.server` — the Steam app, branch, build id and depot manifest that identify the
@@ -67,8 +67,8 @@ dotnet test mod/Takaro.Valheim.sln
 Fetch the target's inputs and build the release archive, in the pinned .NET SDK image:
 
 ```bash
-./scripts/setup-environment.sh --target linux-1.0.17
-./scripts/build-release.sh <version> dist --target linux-1.0.17
+./scripts/setup-environment.sh --target linux-1.0.20
+./scripts/build-release.sh <version> dist --target linux-1.0.20
 ```
 
 `--target` may be left out; the game's default target is resolved instead.
@@ -289,6 +289,60 @@ Hook bodies stay on the Unity game thread only long enough to read the packet; s
 serialisation run on pool threads. Valheim adapter calls are marshalled to the main thread
 through a bounded `Update()`-drained action scheduler (`QueuedMainThreadActionScheduler`).
 
+### Takaro protocol versions
+
+`identify` offers Generic Game Protocol versions `[0, 1]` with a Capability Manifest
+(`ProtocolHandshake`), and the connector speaks whatever `identifyResponse.protocolVersion`
+names, per connection (missing means 0, so an older Takaro keeps working unchanged).
+
+- The manifest declares exactly the `live-supported` actions of `capabilities.json`
+  (testReachability is always allowed) and an `events.<type>` entry per event. getPlayer and
+  listLocations are not declared, so a version 1 Takaro never sends them; on version 0 they
+  work as before.
+- The world map is declared as the `map` capability (`WorldMapFrame`): one tiled Dimension
+  `valheim` (the `dimension` every position reports), bounds = the world square ±10,500 m, +X
+  right and +Z (north) up, 256 px tiles, zoom 0 to 4 (about 5 m per pixel at zoom 4). Version 1
+  refuses `getMapInfo` and sends `getMapTile { dimension, zoom, x, y }` in the standard XYZ
+  layout; those tiles are rendered from the same raster as the version 0 ones, off the main
+  thread, and answer `not_found` until the raster is ready (Takaro retries). Version 0 keeps
+  `getMapInfo`/`getMapTile { x, y, z }` unchanged.
+- Version 1 failures use the standard error shape
+  `{ "type": "response", "requestId", "error": { "code", "message" } }`; the connector's own
+  codes map onto `invalid_args`, `not_found`, `unsupported`, `game_error` and `internal`. Array
+  actions can now report a failure instead of letting the request expire. An undeclared
+  action is answered `unsupported` without reaching the game.
+- Version 1 events carry `streamId` (one per server process) and `seq` (assigned when the event
+  is queued, so a resent event keeps it). Only `eventAck` releases them from the 1000-event
+  buffer; after every reconnect the unacknowledged ones are resent in `seq` order. On version 0
+  the ping/pong confirmation above is unchanged.
+- A version 1 identify rejection closes the socket; the connector backs off (2 s doubling to
+  60 s) instead of reconnecting at once. Identify goes out once per connection, when the socket
+  opens; Takaro's `connected` message is only logged.
+- On version 1, `getPlayerLocation` for a player who is not online answers `payload: null`.
+
+### Game Profile
+
+`identify` sends `game: "valheim"` and `connector: { "name": "takaro-valheim", "version" }`, and the
+manifest declares `game.profile` (`GameProfile`):
+
+- `connector.version` is the release version: `TakaroValheimReleaseVersion`, which
+  `build-release.sh` passes and which otherwise defaults to `version.txt` (a test keeps them equal).
+- `name` is `Valheim`; `version` is the running game build from `Version.CurrentVersion` (for
+  example `1.0.17`; `GetVersionString()` would prefix the platform, `l-1.0.17` on Linux), omitted
+  when it is empty or not 1 to 32 printable ASCII characters.
+- `icon` is `assets/icon-256.png` (Steam library capsule art of app 892970, 256 × 256 PNG, at
+  most 128 KiB), embedded in `Takaro.Valheim.Core`; `revision` is the first 12 hex characters of
+  its sha256 and `size` its byte length, both computed from the shipped bytes at startup. A
+  changed icon therefore always gets a new revision. Takaro fetches it with `getGameIcon` only
+  on version 1 and only for a revision it has not stored or rejected.
+- The icon is declared in every identify, also while the world is still loading: a manifest
+  without it makes Takaro drop the stored icon. Takaro fetches a new revision only while the
+  server answers reachable and gives up on the identify-time fetch after about 30 s, so on a
+  fresh install (or a new icon) whose world takes longer to load, the icon shows after Takaro's
+  periodic game-icon sync (or a manual `syncGameIcons` job) instead of at once.
+- If the profile cannot be built, the connector still connects without it (Takaro then shows
+  the `game` identifier).
+
 ## Configuration
 
 One file, `BepInEx/config/com.takaro.valheim.cfg`, a BepInEx-style INI with a `[Takaro]` section,
@@ -363,6 +417,7 @@ Ownership values are `server-owned`, `upstream-blocked` or `unsupported`.
 | `unbanPlayer` | `live-supported` | Removes the identifier from Valheim's official ban list; `listBans` then returns an empty array. |
 | `listBans` | `live-supported` | Reads Valheim's official ban entries. |
 | `shutdown` | `live-supported` | Writes its success response before quitting, then shuts down on Unity's main thread. Valheim performs a clean `ZNet` shutdown and the server process exits. |
+| `getGameIcon` | `live-supported` | Protocol version 1 only. Serves the shipped `assets/icon-256.png` (embedded in `Takaro.Valheim.Core`) as base64 under the revision declared in `game.profile`, off the main thread. See "Game Profile". |
 
 ### Events
 
@@ -449,8 +504,8 @@ alias and a compatibility record naming the exact inputs.
 Locally, from `games/valheim/`:
 
 ```bash
-./scripts/setup-environment.sh --target linux-1.0.17
-./scripts/build-release.sh 0.1.0 dist --target linux-1.0.17
+./scripts/setup-environment.sh --target linux-1.0.20
+./scripts/build-release.sh 0.1.0 dist --target linux-1.0.20
 ```
 
 `setup-environment.sh` writes game compile references only to
@@ -466,8 +521,8 @@ installation. BepInEx comes from the pinned Thunderstore
 failed download or a hash mismatch leaves the previous pack exactly as it was.
 
 The release produces two zips per target, named after the target
-(`takaro-valheim-plugin-linux-1.0.17-<version>.zip` and
-`takaro-valheim-inventory-companion-linux-1.0.17-<version>.zip`), each with a `.meta.json`
+(`takaro-valheim-plugin-linux-1.0.20-<version>.zip` and
+`takaro-valheim-inventory-companion-linux-1.0.20-<version>.zip`), each with a `.meta.json`
 sidecar recording the target, the fingerprint and the role (`server-plugin` or
 `client-companion`). The unsuffixed names `takaro-valheim-plugin.zip` and
 `takaro-valheim-inventory-companion.zip` are published alongside as byte-identical aliases of
